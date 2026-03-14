@@ -9,6 +9,7 @@ import requests
 load_dotenv()
 DECODO_USERNAME = os.environ.get("DECODO_USERNAME")
 DECODO_PASSWORD = os.environ.get("DECODO_PASSWORD")
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

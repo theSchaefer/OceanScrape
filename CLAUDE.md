@@ -4,113 +4,73 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**boatBloat** — A global maritime chokepoint monitor. Scrapes MarineTraffic.com using anti-detection browser automation across 34 ocean regions (5 zoom tiers), counts ships via OpenCV computer vision inline, stores results in SQLite, and displays economic impact estimates on a PHP dashboard. Covers ~16% of global ocean area including all major shipping lanes and chokepoints.
+**MarineScraper** — Scrapes MarineTraffic.com using anti-detection browser automation across 34 ocean regions, counts ships via OpenCV inline, and stores results in SQLite. Covers major shipping chokepoints across 5 zoom tiers (z9–z13).
 
 ## Key Commands
 
 ```bash
-# Activate virtual environment
-cd boatBloat && source .venv/bin/activate
-
-# Install dependencies
+# Set up environment
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # Run the full pipeline (scrape → inline detection → database)
 python run.py
 
-# Run individual components
-python scraper_global.py                  # Global scraper (34 regions, tab parallelism)
-python scraper_global.py --save-images    # Also save tile images to disk
-python scraper_global.py --regions N,S,H  # Run specific regions only
-python scraper_global.py --list-regions   # Show all defined regions
-python scraper_patchright_pan.py          # Legacy scraper (8 regions, one browser per region)
-python seer.py                            # OpenCV ship counter (CLI mode)
-python update_database.py                 # Write results to SQLite from captures log
+# Run the scraper directly
+python scraper_global.py                   # All 34 regions
+python scraper_global.py --save-images     # Also save tile images to disk
+python scraper_global.py --regions N,S,P   # Specific regions only (single-letter codes)
+python scraper_global.py --list-regions    # Print all region codes and names
 
-# Serve the web dashboard (requires PHP)
-cd web && php -S localhost:8000
+# Diagnostics
+python discover_map.py                     # One-shot JS introspection → map_discovery.json
+python seer.py path/to/image.jpg           # Run OpenCV detection on a file (CLI mode)
 ```
 
 ## Architecture
 
-### Current pipeline (scraper_global.py)
-
 ```
-scraper_global.py  →  (inline seer.py)  →  captures_log.json  →  update_database.py  →  web/get_latest.php
-  (browser + tabs)    (in-memory OpenCV)     (counts + metadata)    (SQLite writes)        (dashboard API)
+scraper_global.py  →  seer.py (inline)  →  captures_log.json  →  update_database.py  →  SQLite (data/)
+  browser + tabs      in-memory OpenCV      counts + metadata       (not yet committed)
 ```
 
-Ship detection happens **inline** during capture — `count_ships_from_bytes()` runs OpenCV on the screenshot bytes in memory. By default, no images are saved to disk (use `--save-images` flag for debugging). The captures log JSON contains per-tile tanker/cargo counts and the database is updated from that.
+- **`scraper_global.py`** — Main scraper. Launches Patchright (undetected Playwright fork) browsers with tab parallelism (`TABS_PER_BROWSER` × `MAX_BROWSERS`). Navigates MarineTraffic once per browser, then pans via Leaflet `setView()` for subsequent tiles. Calls `count_ships_from_bytes()` inline — no images written to disk by default.
+- **`seer.py`** — OpenCV ship counter. HSV color masking → contour detection → shape classification: triangles (3 vertices via `approxPolyDP`) = moving ships; circles (high circularity ratio) = stationary ships. Red = tankers, green = cargo. Exports `count_ships_from_bytes()` for in-memory use and `extract_marker_coords()` for lat/lon position extraction.
+- **`grid.py`** — Web Mercator projection utilities. `get_tile_centers()` computes non-overlapping tile grids covering a polygon's bounding box. `generate_ocean_grid()` auto-tiles large bounding boxes. Snake/boustrophedon tile ordering.
+- **`geo_profile.py`** — Resolves proxy IP geolocation via ip-api.com. Maps country codes to locale/Accept-Language/timezone for browser fingerprinting. Requires `DECODO_USERNAME`/`DECODO_PASSWORD` in `.env`.
+- **`run.py`** — Orchestrator. Calls `scraper_global.py` as subprocess, then `update_database.process_log()`.
+- **`discover_map.py`** — Dev/debug tool. Injects constructor hooks before page load to introspect how MarineTraffic stores its Leaflet map instance. Outputs to `map_discovery.json`.
 
-### Legacy pipeline (scraper_patchright_pan.py)
+## Region Codes
+
+Single-letter keys passed to `--regions`. Examples: `N`/`S` = Suez North/South, `P` = Panama, `M` = Malacca, `H` = Hormuz. Run `--list-regions` for the full list. All polygon boundaries are overridable via env vars (e.g. `NORTH_POLYGON="lat,lon;lat,lon;..."`).
+
+## Configuration (`.env`)
 
 ```
-scraper_patchright_pan.py  →  seer.py  →  update_database.py  →  web/get_latest.php
-    (browser scraping)       (OpenCV)     (SQLite writes)         (dashboard API)
+DECODO_USERNAME / DECODO_PASSWORD   # Proxy credentials (decodo.com, ports 10011–10025)
+VIEWPORT_WIDTH / VIEWPORT_HEIGHT    # Default 7680×4320 (8K — maximizes area per tile)
+TABS_PER_BROWSER                    # Default 4
+MAX_BROWSERS                        # Default 4 (16 regions load concurrently)
+SAVE_IMAGES                         # Default 0; set to 1 or use --save-images flag
+SCREENSHOT_FORMAT / QUALITY         # Default jpeg / 85
+SCRAPE_INTERVAL_MINUTES             # Default 60
+JITTER_SECONDS                      # Default 300
 ```
 
-### Key modules
+## Anti-Detection
 
-- **`scraper_global.py`** — Main scraper. 34 regions across 5 zoom tiers (z9-z13). Uses tab-based parallelism (multiple regions per browser, `TABS_PER_BROWSER` tabs × `MAX_BROWSERS` concurrent browsers). Inline OpenCV detection. JPEG screenshots. Smart AIS marker detection replaces fixed sleeps.
-- **`scraper_patchright_pan.py`** — Legacy scraper (8 regions, one browser per region, fixed zoom 13). Still functional but superseded by `scraper_global.py`.
-- **`grid.py`** — Mercator projection utilities. Converts lat/lon ↔ pixel coordinates. Computes tile grids with snake/boustrophedon ordering. Includes `generate_ocean_grid()` for auto-tiling large bounding boxes and `tile_area_km2()` for capacity planning.
-- **`geo_profile.py`** — Resolves proxy IP geolocation via ip-api.com. Maps country codes to locale/language settings for browser fingerprinting.
-- **`seer.py`** — OpenCV-based ship detection. Detects two marker shapes: **circles** (stationary ships) and **triangles** (moving ships), both in red (tanker) and green (cargo) colors. Uses HSV color masking → contour detection → shape classification via `cv2.approxPolyDP` (3 vertices = triangle/moving) and circularity ratio (high circularity = circle/stationary). Returns dict with `stationary_tankers`, `moving_tankers`, `stationary_cargos`, `moving_cargos`. Provides `count_ships_from_bytes()` for in-memory detection and `extract_marker_coords()` for lat/lon position extraction with `"motion": "stationary"|"moving"` field.
-- **`run.py`** — Pipeline orchestrator. Runs `scraper_global.py` then `update_database.py`.
-- **`update_database.py`** — Reads captures log JSON and inserts into SQLite. Supports both inline detection counts (from `scraper_global.py`) and legacy OpenCV-on-disk mode.
-- **`web/index.php`** — Dashboard frontend (Tailwind CSS, TradingView chart embed). Shows per-region vessel cards with stationary/moving breakdown for all chokepoints.
-- **`web/get_latest.php`** — JSON API. Groups by `region` column, returns per-region tanker/cargo counts with moving/stationary breakdown + economic model outputs. Stationary ships are weighted higher in the economic model (indicate congestion).
+Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-profile spoofing (timezone, locale, geolocation derived from proxy IP). UA rotation. Single `page.goto()` per browser + `setView()` panning avoids repeated Cloudflare challenges. Tab parallelism shares one Cloudflare pass across multiple regions.
 
-## Region Definitions (scraper_global.py)
+## Notes
 
-34 regions organized by zoom tier:
-
-| Zoom | Regions | Use case |
-|------|---------|----------|
-| **13** | Suez N/S, Panama, Malacca, Bosporus | Narrow canals — individual ships must be distinguishable |
-| **12** | Hormuz, Bab al-Mandab, Gibraltar, Dover, Sunda, Lombok, Singapore | Dense chokepoints |
-| **11** | Taiwan, Korea, Danish, Sicily, Yucatan | Wide straits, moderate traffic |
-| **10** | South China Sea, Red Sea, Persian Gulf, Gulf of Aden, East China Sea, Mozambique, Cape of Good Hope, Java Sea, Yellow Sea | Regional corridors |
-| **9** | North Atlantic E/W, Mediterranean E/W, Arabian Sea, Bay of Bengal, Western Pacific, Indian Ocean | Open ocean shipping lanes |
-
-Each region has: `polygon` (lat/lon bounds), `zoom` (per-region), `name` (human-readable). All are env-var overridable via `_parse_polygon()`.
-
-## Configuration
-
-Scraper config in `boatBloat/.env`:
-- `VIEWPORT_WIDTH`/`VIEWPORT_HEIGHT` (default 7680×4320) — 8K viewport for maximum area per tile
-- `ZOOM_LEVEL` (default 13) — Fallback only; `scraper_global.py` uses per-region zoom
-- `TABS_PER_BROWSER` (default 4) — Regions loaded as tabs in one browser
-- `MAX_BROWSERS` (default 4) — Concurrent browser processes
-- `SAVE_IMAGES` (default 0) — Set to 1 or use `--save-images` flag to save tiles to disk
-- `SCREENSHOT_FORMAT` (default jpeg), `SCREENSHOT_QUALITY` (default 85)
-- `SCRAPE_INTERVAL_MINUTES` (default 60), `JITTER_SECONDS` (default 300)
-- Region polygons: `NORTH_POLYGON`, `SOUTH_POLYGON`, etc. (semicolon-separated lat,lon pairs)
-
-## Database Schema (SQLite — history.db)
-
-Single `history` table: `image` (BLOB, nullable), `is_north` (BOOLEAN, legacy), `region` (TEXT), `tankers`/`cargos` (INTEGER, total counts), `moving_tankers`/`moving_cargos` (INTEGER, moving-only subset), `date_time`, `run_timestamp`, `tile_row`/`tile_col`, `center_lat`/`center_lon`, `zoom`, `status`, `file_size_kb`.
-
-Stationary counts are derived: `stationary_tankers = tankers - moving_tankers`. The `region` column replaced the binary `is_north` flag. Old rows are backfilled via `ALTER TABLE` migration in `_ensure_table()`. The `moving_tankers`/`moving_cargos` columns are also auto-migrated (default 0 for pre-existing rows).
-
-## Anti-Detection Strategy
-
-Patchright (undetected Playwright fork) with `channel="chrome"` + `--headless=new`. Proxy rotation (decodo.com, ports 10011-10025). Geo-profile spoofing (timezone, locale, geolocation from proxy IP). UA rotation. Leaflet map hooks to disable inertia. Single-load + `setView()` panning avoids repeated `page.goto()` and Cloudflare checks. Tab parallelism shares one Cloudflare pass across multiple regions in the same browser.
-
-## Performance Notes
-
-- At 7680×4320 viewport, most regions fit in 1 tile (57 total tiles across 34 regions)
-- Tab parallelism: 4 tabs/browser × 4 browsers = 16 regions loading concurrently
-- Smart AIS detection (`_wait_for_ais_markers`) replaces fixed 500ms sleeps — detects overlay canvas content, falls back after timeout
-- JPEG output is ~5× smaller and ~2× faster to encode than PNG
-- Inline detection avoids writing images to disk (default) — total storage per run is ~40 KB
-- `generate_ocean_grid()` in `grid.py` can auto-tile arbitrary bounding boxes for expansion
+- `update_database.py` is imported by `run.py` but is not yet in the repo — the full pipeline will fail until it's added.
+- `data/` directory is gitignored; it holds `history.db` (SQLite) and `captures_log.json`.
+- At 8K viewport, most regions fit in a single tile (57 total tiles across 34 regions).
 
 ## Learning & Discovery
 
-- When you use a library, framework, technique, or import that I may not be familiar with,
-  briefly introduce it before using it: what it is, why it's useful here, and how it works.
-- Break down unfamiliar concepts step by step — from the high-level idea down to the
-  specific usage in context.
+- When you use a library, framework, technique, or import that I may not be familiar with, briefly introduce it before using it: what it is, why it's useful here, and how it works.
+- Break down unfamiliar concepts step by step — from the high-level idea down to the specific usage in context.
 - If there are common alternatives, mention them and explain why you chose this one.
 - Keep explanations concise but complete enough to understand without external lookup.
