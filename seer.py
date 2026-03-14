@@ -1,0 +1,264 @@
+#!/bin/python3
+"""OpenCV-based ship detection for MarineTraffic screenshots.
+
+Detects two marker shapes on the map:
+  - Circles (dots)    → stationary ships
+  - Triangles (arrows) → moving ships
+
+Both shapes use the same color coding:
+  - Red   → tankers
+  - Green → cargo ships
+
+Detection pipeline: HSV color masking → contour finding → shape classification
+via cv2.approxPolyDP (vertex count) and circularity ratio.
+"""
+
+import math
+import sys
+import cv2
+import numpy as np
+
+########
+# Define color ranges
+# Red (in HSV, red wraps around 0 and 180)
+lower_red1 = np.array([0, 100, 100])
+upper_red1 = np.array([10, 255, 255])
+lower_red2 = np.array([160, 100, 100])
+upper_red2 = np.array([179, 255, 255])
+
+# Green
+lower_green = np.array([40, 50, 50])
+upper_green = np.array([90, 255, 255])
+
+# Contour area bounds (in pixels²) — filters out noise and oversized blobs
+MIN_MARKER_AREA = 10
+MAX_MARKER_AREA = 15000
+
+# Shape classification thresholds
+CIRCULARITY_THRESHOLD = 0.55   # 4π·area/perimeter² above this → circle
+POLY_EPSILON_FACTOR = 0.04     # approxPolyDP epsilon as fraction of arc length
+
+
+########
+# Shape-based marker detection (replaces HoughCircles)
+
+def detect_markers(mask, original_img=None, color_name=""):
+    """Detect circles (stationary) and triangles (moving) on a binary color mask.
+
+    Uses contour detection + polygon approximation:
+      - 3 vertices  → triangle (arrow marker) → moving ship
+      - High circularity → circle (dot marker) → stationary ship
+
+    Returns (stationary_count, moving_count).
+    """
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    stationary = 0
+    moving = 0
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < MIN_MARKER_AREA or area > MAX_MARKER_AREA:
+            continue
+        perimeter = cv2.arcLength(cnt, True)
+        if perimeter == 0:
+            continue
+
+        approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
+        circularity = 4 * math.pi * area / (perimeter * perimeter)
+
+        if circularity < CIRCULARITY_THRESHOLD:
+            # Low circularity → arrow/triangle → moving ship
+            moving += 1
+            if original_img is not None:
+                cv2.drawContours(original_img, [cnt], -1, (0, 255, 255), 2)
+                M = cv2.moments(cnt)
+                if M["m00"] > 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    cv2.putText(original_img, f"{color_name}(mov)",
+                                (cx - 20, cy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        else:
+            # High circularity → circle/dot → stationary ship
+            stationary += 1
+            if original_img is not None:
+                M = cv2.moments(cnt)
+                if M["m00"] > 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    cv2.circle(original_img, (cx, cy), 8, (0, 255, 0), 2)
+                    cv2.putText(original_img, color_name,
+                                (cx - 10, cy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+    return (stationary, moving)
+
+
+########
+# Convenience wrappers
+
+def _build_masks(image_hsv):
+    """Build red (tanker) and green (cargo) binary masks from an HSV image."""
+    mask_red1 = cv2.inRange(image_hsv, lower_red1, upper_red1)
+    mask_red2 = cv2.inRange(image_hsv, lower_red2, upper_red2)
+    mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+
+    mask_green = cv2.inRange(image_hsv, lower_green, upper_green)
+
+    return mask_red, mask_green
+
+
+def show(image):
+    cv2.imshow("Ships", image)
+    while True:
+        key = cv2.waitKey(0)
+        if key == ord('q'):
+            break
+    cv2.destroyAllWindows()
+
+
+def count_ships(image):
+    """Detect ships in a BGR image.
+
+    Returns dict:
+        {
+            "stationary_tankers": int,
+            "moving_tankers": int,
+            "stationary_cargos": int,
+            "moving_cargos": int,
+        }
+    """
+    image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask_red, mask_green = _build_masks(image_hsv)
+
+    stat_red, mov_red = detect_markers(mask_red, image, "Red")
+    stat_green, mov_green = detect_markers(mask_green, image, "Green")
+
+    return {
+        "stationary_tankers": stat_red,
+        "moving_tankers": mov_red,
+        "stationary_cargos": stat_green,
+        "moving_cargos": mov_green,
+    }
+
+def count_ships_from_bytes(img_bytes):
+    """Detect ships from raw image bytes (PNG or JPEG) in memory.
+
+    Returns dict with stationary/moving breakdown per ship type.
+    Used by the scraper for inline detection so images don't need to be saved.
+    """
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return {
+            "stationary_tankers": 0, "moving_tankers": 0,
+            "stationary_cargos": 0, "moving_cargos": 0,
+        }
+    return count_ships(image)
+
+
+def extract_marker_coords(img_bytes, center_lat, center_lon, zoom,
+                          viewport_w, viewport_h):
+    """Detect ships and return their approximate lat/lon positions.
+
+    Each marker is converted from pixel (x, y) → geographic coordinates
+    using the tile's center and the Mercator projection scale at the
+    given zoom level.
+
+    Returns list of dicts:
+        [{"lat": ..., "lon": ..., "type": "tanker"|"cargo",
+          "motion": "stationary"|"moving"}]
+    """
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return []
+
+    image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, w = image.shape[:2]
+
+    total_px = 256 * (2 ** zoom)
+
+    # Center pixel position in the global Mercator grid
+    cx_px = (center_lon + 180) / 360.0 * total_px
+    lat_rad = math.radians(center_lat)
+    cy_px = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * total_px
+
+    def _pixel_to_latlon(px_x, px_y):
+        """Convert image pixel coords to lat/lon via global Mercator."""
+        gx = cx_px + (px_x - w / 2)
+        gy = cy_px + (px_y - h / 2)
+        lon = gx / total_px * 360.0 - 180.0
+        merc_y = gy / total_px
+        lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
+        return round(lat, 5), round(lon, 5)
+
+    def _find_markers(mask, ship_type):
+        """Find contours on mask, classify as stationary/moving, geolocate."""
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        results = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < MIN_MARKER_AREA or area > MAX_MARKER_AREA:
+                continue
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter == 0:
+                continue
+
+            approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
+            circularity = 4 * math.pi * area / (perimeter * perimeter)
+
+            if circularity < CIRCULARITY_THRESHOLD:
+                motion = "moving"
+            else:
+                motion = "stationary"
+
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            mx = int(M["m10"] / M["m00"])
+            my = int(M["m01"] / M["m00"])
+            lat, lon = _pixel_to_latlon(mx, my)
+            results.append({
+                "lat": lat,
+                "lon": lon,
+                "type": ship_type,
+                "motion": motion,
+            })
+        return results
+
+    mask_red, mask_green = _build_masks(image_hsv)
+    markers = _find_markers(mask_red, "tanker") + _find_markers(mask_green, "cargo")
+    return markers
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("SEER -- detect stationary and moving tankers/cargo ships on a picture")
+        print("Stationary ships: circles/dots  |  Moving ships: triangles/arrows")
+        print("Tankers = red markers  |  Cargo = green markers")
+        print("Usage: ./seer.py image1 image2 ... imageN")
+        exit(0)
+
+    for arg in sys.argv[1:]:
+        image = cv2.imread(arg)
+
+        is_north = arg[0] == 'N'
+        date_time = arg.split('.')[0][1:]
+
+        if image is None:
+            print(f"Image {arg} doesn't exit")
+            exit(1)
+
+        result = count_ships(image)
+        st = result["stationary_tankers"]
+        mt = result["moving_tankers"]
+        sc = result["stationary_cargos"]
+        mc = result["moving_cargos"]
+
+        # Machine-digestible format (backward-compatible totals + new breakdown)
+        total_tankers = st + mt
+        total_cargo = sc + mc
+        print(f"{arg}:{is_north}:{date_time}:{total_tankers}:{total_cargo}"
+              f":{st}:{mt}:{sc}:{mc}")

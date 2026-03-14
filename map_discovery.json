@@ -1,0 +1,5127 @@
+{
+  "meta": {
+    "url": "https://www.marinetraffic.com/en/ais/home/centerx:32.075/centery:31.696/zoom:13",
+    "title": "MarineTraffic: Global Ship Tracking Intelligence | AIS Marine Traffic",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "timestamp": "2026-03-09T17:15:36.650Z",
+    "cookie_names": [
+      "vTo",
+      "usprivacy"
+    ],
+    "ready_state": "complete"
+  },
+  "constructor_hook": {
+    "map_found": false,
+    "count": 0
+  },
+  "leaflet_global": {
+    "exists": false
+  },
+  "map_like_globals": [],
+  "non_native_globals": [
+    {
+      "name": "0",
+      "type": "object",
+      "constructor": "Window",
+      "key_count": 237,
+      "keys": [
+        "window",
+        "self",
+        "document",
+        "name",
+        "location",
+        "customElements",
+        "history",
+        "navigation",
+        "locationbar",
+        "menubar",
+        "personalbar",
+        "scrollbars",
+        "statusbar",
+        "toolbar",
+        "status",
+        "closed",
+        "frames",
+        "length",
+        "top",
+        "opener",
+        "parent",
+        "frameElement",
+        "navigator",
+        "origin",
+        "external"
+      ],
+      "proto_name": "Window"
+    },
+    {
+      "name": "1",
+      "type": "object",
+      "constructor": "Window",
+      "key_count": 237,
+      "keys": [
+        "window",
+        "self",
+        "document",
+        "name",
+        "location",
+        "customElements",
+        "history",
+        "navigation",
+        "locationbar",
+        "menubar",
+        "personalbar",
+        "scrollbars",
+        "statusbar",
+        "toolbar",
+        "status",
+        "closed",
+        "frames",
+        "length",
+        "top",
+        "opener",
+        "parent",
+        "frameElement",
+        "navigator",
+        "origin",
+        "external"
+      ],
+      "proto_name": "Window"
+    },
+    {
+      "name": "2",
+      "type": "object",
+      "constructor": "Window",
+      "key_count": 237,
+      "keys": [
+        "window",
+        "self",
+        "document",
+        "name",
+        "location",
+        "customElements",
+        "history",
+        "navigation",
+        "locationbar",
+        "menubar",
+        "personalbar",
+        "scrollbars",
+        "statusbar",
+        "toolbar",
+        "status",
+        "closed",
+        "frames",
+        "length",
+        "top",
+        "opener",
+        "parent",
+        "frameElement",
+        "navigator",
+        "origin",
+        "external"
+      ],
+      "proto_name": "Window"
+    },
+    {
+      "name": "AggregateError",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "name",
+        "message"
+      ]
+    },
+    {
+      "name": "globalThis",
+      "type": "object",
+      "constructor": "Window",
+      "key_count": 240,
+      "keys": [
+        "0",
+        "1",
+        "2",
+        "window",
+        "self",
+        "document",
+        "name",
+        "location",
+        "customElements",
+        "history",
+        "navigation",
+        "locationbar",
+        "menubar",
+        "personalbar",
+        "scrollbars",
+        "statusbar",
+        "toolbar",
+        "status",
+        "closed",
+        "frames",
+        "length",
+        "top",
+        "opener",
+        "parent",
+        "frameElement"
+      ],
+      "proto_name": "Window"
+    },
+    {
+      "name": "Atomics",
+      "type": "object",
+      "constructor": "Object",
+      "key_count": 0,
+      "keys": []
+    },
+    {
+      "name": "BigUint64Array",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    {
+      "name": "BigInt64Array",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    {
+      "name": "Uint8ClampedArray",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    {
+      "name": "DataView",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "buffer",
+        "byteLength",
+        "byteOffset",
+        "getInt8",
+        "setInt8",
+        "getUint8",
+        "setUint8",
+        "getInt16",
+        "setInt16",
+        "getUint16",
+        "setUint16",
+        "getInt32",
+        "setInt32",
+        "getUint32",
+        "setUint32"
+      ]
+    },
+    {
+      "name": "Iterator",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "reduce",
+        "toArray",
+        "forEach",
+        "some",
+        "every",
+        "find",
+        "map",
+        "filter",
+        "take",
+        "drop",
+        "flatMap"
+      ]
+    },
+    {
+      "name": "FinalizationRegistry",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "register",
+        "unregister"
+      ]
+    },
+    {
+      "name": "Option",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "disabled",
+        "form",
+        "label",
+        "defaultSelected",
+        "selected",
+        "value",
+        "text",
+        "index"
+      ]
+    },
+    {
+      "name": "XPathResult",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "resultType",
+        "numberValue",
+        "stringValue",
+        "booleanValue",
+        "singleNodeValue",
+        "invalidIteratorState",
+        "snapshotLength",
+        "ANY_TYPE",
+        "NUMBER_TYPE",
+        "STRING_TYPE",
+        "BOOLEAN_TYPE",
+        "UNORDERED_NODE_ITERATOR_TYPE",
+        "ORDERED_NODE_ITERATOR_TYPE",
+        "UNORDERED_NODE_SNAPSHOT_TYPE",
+        "ORDERED_NODE_SNAPSHOT_TYPE"
+      ]
+    },
+    {
+      "name": "XPathExpression",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "evaluate"
+      ]
+    },
+    {
+      "name": "XPathEvaluator",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "createExpression",
+        "createNSResolver",
+        "evaluate"
+      ]
+    },
+    {
+      "name": "WheelEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "deltaX",
+        "deltaY",
+        "deltaZ",
+        "deltaMode",
+        "wheelDeltaX",
+        "wheelDeltaY",
+        "wheelDelta",
+        "DOM_DELTA_PIXEL",
+        "DOM_DELTA_LINE",
+        "DOM_DELTA_PAGE"
+      ]
+    },
+    {
+      "name": "WaveShaperNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "curve",
+        "oversample"
+      ]
+    },
+    {
+      "name": "VisibilityStateEntry",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "VirtualKeyboardGeometryChangeEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": []
+    },
+    {
+      "name": "ViewTransitionTypeSet",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "size",
+        "add",
+        "clear",
+        "delete",
+        "entries",
+        "forEach",
+        "has",
+        "keys",
+        "values"
+      ]
+    },
+    {
+      "name": "ViewTransition",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "finished",
+        "ready",
+        "updateCallbackDone",
+        "types",
+        "skipTransition",
+        "waitUntil"
+      ]
+    },
+    {
+      "name": "ViewTimeline",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "subject",
+        "startOffset",
+        "endOffset"
+      ]
+    },
+    {
+      "name": "VideoPlaybackQuality",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "creationTime",
+        "totalVideoFrames",
+        "droppedVideoFrames",
+        "corruptedVideoFrames"
+      ]
+    },
+    {
+      "name": "VideoFrame",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "format",
+        "timestamp",
+        "duration",
+        "codedWidth",
+        "codedHeight",
+        "codedRect",
+        "visibleRect",
+        "rotation",
+        "flip",
+        "displayWidth",
+        "displayHeight",
+        "colorSpace",
+        "allocationSize",
+        "clone",
+        "close"
+      ]
+    },
+    {
+      "name": "VideoColorSpace",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "primaries",
+        "transfer",
+        "matrix",
+        "fullRange",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "ValidityState",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "valueMissing",
+        "typeMismatch",
+        "patternMismatch",
+        "tooLong",
+        "tooShort",
+        "rangeUnderflow",
+        "rangeOverflow",
+        "stepMismatch",
+        "badInput",
+        "customError",
+        "valid"
+      ]
+    },
+    {
+      "name": "VTTCue",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "vertical",
+        "snapToLines",
+        "line",
+        "position",
+        "size",
+        "align",
+        "text",
+        "getCueAsHTML"
+      ]
+    },
+    {
+      "name": "UserActivation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "hasBeenActive",
+        "isActive"
+      ]
+    },
+    {
+      "name": "TrustedTypePolicyFactory",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "emptyHTML",
+        "emptyScript",
+        "defaultPolicy",
+        "createPolicy",
+        "getAttributeType",
+        "getPropertyType",
+        "getTypeMapping",
+        "isHTML",
+        "isScript",
+        "isScriptURL"
+      ]
+    },
+    {
+      "name": "TrustedTypePolicy",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "name",
+        "createHTML",
+        "createScript",
+        "createScriptURL"
+      ]
+    },
+    {
+      "name": "TrustedScriptURL",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "toJSON",
+        "toString"
+      ]
+    },
+    {
+      "name": "TrustedScript",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "toJSON",
+        "toString"
+      ]
+    },
+    {
+      "name": "TrustedHTML",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "toJSON",
+        "toString"
+      ]
+    },
+    {
+      "name": "TreeWalker",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "root",
+        "whatToShow",
+        "filter",
+        "currentNode",
+        "firstChild",
+        "lastChild",
+        "nextNode",
+        "nextSibling",
+        "parentNode",
+        "previousNode",
+        "previousSibling"
+      ]
+    },
+    {
+      "name": "TransitionEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "propertyName",
+        "elapsedTime",
+        "pseudoElement"
+      ]
+    },
+    {
+      "name": "TransformStreamDefaultController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "desiredSize",
+        "enqueue",
+        "error",
+        "terminate"
+      ]
+    },
+    {
+      "name": "TransformStream",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "readable",
+        "writable"
+      ]
+    },
+    {
+      "name": "TrackEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "track"
+      ]
+    },
+    {
+      "name": "ToggleEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "oldState",
+        "newState",
+        "source"
+      ]
+    },
+    {
+      "name": "TimeRanges",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "length",
+        "end",
+        "start"
+      ]
+    },
+    {
+      "name": "TaskSignal",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "priority",
+        "onprioritychange"
+      ]
+    },
+    {
+      "name": "TaskPriorityChangeEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "previousPriority"
+      ]
+    },
+    {
+      "name": "TaskController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "setPriority"
+      ]
+    },
+    {
+      "name": "TaskAttributionTiming",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "containerType",
+        "containerSrc",
+        "containerId",
+        "containerName",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "SyncManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getTags",
+        "register"
+      ]
+    },
+    {
+      "name": "Subscriber",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "active",
+        "signal",
+        "addTeardown",
+        "complete",
+        "error",
+        "next"
+      ]
+    },
+    {
+      "name": "SubmitEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "submitter"
+      ]
+    },
+    {
+      "name": "StereoPannerNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "pan"
+      ]
+    },
+    {
+      "name": "StaticRange",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": []
+    },
+    {
+      "name": "ScriptProcessorNode",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onaudioprocess",
+        "bufferSize"
+      ]
+    },
+    {
+      "name": "Scheduling",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "isInputPending"
+      ]
+    },
+    {
+      "name": "Scheduler",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "postTask",
+        "yield"
+      ]
+    },
+    {
+      "name": "ReadableStreamDefaultReader",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "read",
+        "releaseLock",
+        "closed",
+        "cancel"
+      ]
+    },
+    {
+      "name": "ReadableStreamDefaultController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "desiredSize",
+        "close",
+        "enqueue",
+        "error"
+      ]
+    },
+    {
+      "name": "ReadableStreamBYOBRequest",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "view",
+        "respond",
+        "respondWithNewView"
+      ]
+    },
+    {
+      "name": "ReadableStreamBYOBReader",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "read",
+        "releaseLock",
+        "closed",
+        "cancel"
+      ]
+    },
+    {
+      "name": "ReadableStream",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "locked",
+        "cancel",
+        "getReader",
+        "pipeThrough",
+        "pipeTo",
+        "tee",
+        "values"
+      ]
+    },
+    {
+      "name": "ReadableByteStreamController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "byobRequest",
+        "desiredSize",
+        "close",
+        "enqueue",
+        "error"
+      ]
+    },
+    {
+      "name": "RadioNodeList",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "value"
+      ]
+    },
+    {
+      "name": "ProgressEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "lengthComputable",
+        "loaded",
+        "total"
+      ]
+    },
+    {
+      "name": "Profiler",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "sampleInterval",
+        "stopped",
+        "stop"
+      ]
+    },
+    {
+      "name": "ProcessingInstruction",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "target",
+        "sheet"
+      ]
+    },
+    {
+      "name": "PopStateEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "state",
+        "hasUAVisualTransition"
+      ]
+    },
+    {
+      "name": "PictureInPictureWindow",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "width",
+        "height",
+        "onresize"
+      ]
+    },
+    {
+      "name": "PictureInPictureEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "pictureInPictureWindow"
+      ]
+    },
+    {
+      "name": "PeriodicWave",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": []
+    },
+    {
+      "name": "Path2D",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "addPath",
+        "roundRect",
+        "arc",
+        "arcTo",
+        "bezierCurveTo",
+        "closePath",
+        "ellipse",
+        "lineTo",
+        "moveTo",
+        "quadraticCurveTo",
+        "rect"
+      ]
+    },
+    {
+      "name": "PannerNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "panningModel",
+        "positionX",
+        "positionY",
+        "positionZ",
+        "orientationX",
+        "orientationY",
+        "orientationZ",
+        "distanceModel",
+        "refDistance",
+        "maxDistance",
+        "rolloffFactor",
+        "coneInnerAngle",
+        "coneOuterAngle",
+        "coneOuterGain",
+        "setOrientation"
+      ]
+    },
+    {
+      "name": "PageTransitionEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "persisted"
+      ]
+    },
+    {
+      "name": "OverconstrainedError",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "constraint"
+      ]
+    },
+    {
+      "name": "OscillatorNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "type",
+        "frequency",
+        "detune",
+        "setPeriodicWave"
+      ]
+    },
+    {
+      "name": "OffscreenCanvasRenderingContext2D",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "canvas",
+        "lang",
+        "font",
+        "textAlign",
+        "textBaseline",
+        "direction",
+        "fontKerning",
+        "fontStretch",
+        "fontVariantCaps",
+        "letterSpacing",
+        "textRendering",
+        "wordSpacing",
+        "globalCompositeOperation",
+        "filter",
+        "imageSmoothingQuality"
+      ]
+    },
+    {
+      "name": "OffscreenCanvas",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "width",
+        "height",
+        "oncontextlost",
+        "oncontextrestored",
+        "convertToBlob",
+        "getContext",
+        "transferToImageBitmap"
+      ]
+    },
+    {
+      "name": "OfflineAudioContext",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "oncomplete",
+        "length",
+        "resume",
+        "startRendering",
+        "suspend"
+      ]
+    },
+    {
+      "name": "OfflineAudioCompletionEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "renderedBuffer"
+      ]
+    },
+    {
+      "name": "Observable",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "catch",
+        "drop",
+        "every",
+        "filter",
+        "finally",
+        "find",
+        "first",
+        "flatMap",
+        "forEach",
+        "inspect",
+        "last",
+        "map",
+        "reduce",
+        "some",
+        "subscribe"
+      ]
+    },
+    {
+      "name": "NodeList",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "entries",
+        "keys",
+        "values",
+        "forEach",
+        "length",
+        "item"
+      ]
+    },
+    {
+      "name": "NodeIterator",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "root",
+        "referenceNode",
+        "pointerBeforeReferenceNode",
+        "whatToShow",
+        "filter",
+        "detach",
+        "nextNode",
+        "previousNode"
+      ]
+    },
+    {
+      "name": "NodeFilter",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "Node",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "nodeType",
+        "nodeName",
+        "baseURI",
+        "isConnected",
+        "ownerDocument",
+        "parentNode",
+        "parentElement",
+        "childNodes",
+        "firstChild",
+        "lastChild",
+        "previousSibling",
+        "nextSibling",
+        "nodeValue",
+        "textContent",
+        "ELEMENT_NODE"
+      ]
+    },
+    {
+      "name": "NetworkInformation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onchange",
+        "effectiveType",
+        "rtt",
+        "downlink",
+        "saveData"
+      ]
+    },
+    {
+      "name": "NavigationTransition",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "navigationType",
+        "from",
+        "finished",
+        "to",
+        "committed"
+      ]
+    },
+    {
+      "name": "NavigationHistoryEntry",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "key",
+        "id",
+        "url",
+        "index",
+        "sameDocument",
+        "ondispose",
+        "getState"
+      ]
+    },
+    {
+      "name": "NavigationDestination",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "key",
+        "id",
+        "url",
+        "index",
+        "sameDocument",
+        "getState"
+      ]
+    },
+    {
+      "name": "NavigationCurrentEntryChangeEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "navigationType",
+        "from"
+      ]
+    },
+    {
+      "name": "NavigationActivation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "entry",
+        "from",
+        "navigationType"
+      ]
+    },
+    {
+      "name": "Navigation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "currentEntry",
+        "transition",
+        "activation",
+        "canGoBack",
+        "canGoForward",
+        "onnavigate",
+        "onnavigatesuccess",
+        "onnavigateerror",
+        "oncurrententrychange",
+        "back",
+        "entries",
+        "forward",
+        "navigate",
+        "reload",
+        "traverseTo"
+      ]
+    },
+    {
+      "name": "NavigateEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "navigationType",
+        "destination",
+        "canIntercept",
+        "userInitiated",
+        "hashChange",
+        "signal",
+        "formData",
+        "downloadRequest",
+        "info",
+        "intercept",
+        "scroll",
+        "hasUAVisualTransition",
+        "sourceElement"
+      ]
+    },
+    {
+      "name": "MouseEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "screenX",
+        "screenY",
+        "clientX",
+        "clientY",
+        "ctrlKey",
+        "shiftKey",
+        "altKey",
+        "metaKey",
+        "button",
+        "buttons",
+        "relatedTarget",
+        "pageX",
+        "pageY",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "name": "MimeTypeArray",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "length",
+        "item",
+        "namedItem"
+      ]
+    },
+    {
+      "name": "MimeType",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "type",
+        "suffixes",
+        "description",
+        "enabledPlugin"
+      ]
+    },
+    {
+      "name": "MathMLElement",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onabort",
+        "onbeforeinput",
+        "onbeforematch",
+        "onbeforetoggle",
+        "onblur",
+        "oncancel",
+        "oncanplay",
+        "oncanplaythrough",
+        "onchange",
+        "onclick",
+        "onclose",
+        "oncommand",
+        "oncontentvisibilityautostatechange",
+        "oncontextlost",
+        "oncontextmenu"
+      ]
+    },
+    {
+      "name": "LayoutShiftAttribution",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "node",
+        "previousRect",
+        "currentRect",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "LayoutShift",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "value",
+        "hadRecentInput",
+        "lastInputTime",
+        "sources",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "LargestContentfulPaint",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "renderTime",
+        "loadTime",
+        "size",
+        "id",
+        "url",
+        "element",
+        "toJSON",
+        "paintTime",
+        "presentationTime"
+      ]
+    },
+    {
+      "name": "KeyframeEffect",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "target",
+        "pseudoElement",
+        "composite",
+        "getKeyframes",
+        "setKeyframes"
+      ]
+    },
+    {
+      "name": "Ink",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "requestPresenter"
+      ]
+    },
+    {
+      "name": "IdleDeadline",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "didTimeout",
+        "timeRemaining"
+      ]
+    },
+    {
+      "name": "IIRFilterNode",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "getFrequencyResponse"
+      ]
+    },
+    {
+      "name": "HighlightRegistry",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "size",
+        "clear",
+        "delete",
+        "entries",
+        "forEach",
+        "get",
+        "has",
+        "keys",
+        "set",
+        "values",
+        "highlightsFromPoint"
+      ]
+    },
+    {
+      "name": "Highlight",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "priority",
+        "type",
+        "size",
+        "add",
+        "clear",
+        "delete",
+        "entries",
+        "forEach",
+        "has",
+        "keys",
+        "values"
+      ]
+    },
+    {
+      "name": "HashChangeEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "oldURL",
+        "newURL"
+      ]
+    },
+    {
+      "name": "GeolocationPositionError",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "code",
+        "message",
+        "PERMISSION_DENIED",
+        "POSITION_UNAVAILABLE",
+        "TIMEOUT"
+      ]
+    },
+    {
+      "name": "GeolocationPosition",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "coords",
+        "timestamp",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "GeolocationCoordinates",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "latitude",
+        "longitude",
+        "altitude",
+        "accuracy",
+        "altitudeAccuracy",
+        "heading",
+        "speed",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "Geolocation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "clearWatch",
+        "getCurrentPosition",
+        "watchPosition"
+      ]
+    },
+    {
+      "name": "GainNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "gain"
+      ]
+    },
+    {
+      "name": "FeaturePolicy",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "allowedFeatures",
+        "allowsFeature",
+        "features",
+        "getAllowlistForFeature"
+      ]
+    },
+    {
+      "name": "External",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "AddSearchProvider",
+        "IsSearchProviderInstalled"
+      ]
+    },
+    {
+      "name": "ErrorEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "message",
+        "filename",
+        "lineno",
+        "colno",
+        "error"
+      ]
+    },
+    {
+      "name": "EncodedVideoChunk",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "type",
+        "timestamp",
+        "duration",
+        "byteLength",
+        "copyTo"
+      ]
+    },
+    {
+      "name": "EncodedAudioChunk",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "type",
+        "timestamp",
+        "byteLength",
+        "duration",
+        "copyTo"
+      ]
+    },
+    {
+      "name": "ElementInternals",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "form",
+        "willValidate",
+        "validity",
+        "validationMessage",
+        "labels",
+        "states",
+        "shadowRoot",
+        "role",
+        "ariaAtomic",
+        "ariaAutoComplete",
+        "ariaBusy",
+        "ariaBrailleLabel",
+        "ariaBrailleRoleDescription",
+        "ariaChecked",
+        "ariaColCount"
+      ]
+    },
+    {
+      "name": "Element",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "namespaceURI",
+        "prefix",
+        "localName",
+        "tagName",
+        "id",
+        "className",
+        "classList",
+        "slot",
+        "attributes",
+        "shadowRoot",
+        "part",
+        "assignedSlot",
+        "innerHTML",
+        "outerHTML",
+        "scrollTop"
+      ]
+    },
+    {
+      "name": "EditContext",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "text",
+        "selectionStart",
+        "selectionEnd",
+        "characterBoundsRangeStart",
+        "ontextupdate",
+        "ontextformatupdate",
+        "oncharacterboundsupdate",
+        "oncompositionstart",
+        "oncompositionend",
+        "attachedElements",
+        "characterBounds",
+        "updateCharacterBounds",
+        "updateControlBounds",
+        "updateSelection",
+        "updateSelectionBounds"
+      ]
+    },
+    {
+      "name": "DynamicsCompressorNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "threshold",
+        "knee",
+        "ratio",
+        "reduction",
+        "attack",
+        "release"
+      ]
+    },
+    {
+      "name": "DragEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "dataTransfer"
+      ]
+    },
+    {
+      "name": "DocumentType",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "name",
+        "publicId",
+        "systemId",
+        "after",
+        "before",
+        "remove",
+        "replaceWith"
+      ]
+    },
+    {
+      "name": "DocumentTimeline",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "DocumentFragment",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "children",
+        "firstElementChild",
+        "lastElementChild",
+        "childElementCount",
+        "append",
+        "getElementById",
+        "moveBefore",
+        "prepend",
+        "querySelector",
+        "querySelectorAll",
+        "replaceChildren"
+      ]
+    },
+    {
+      "name": "Document",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "implementation",
+        "URL",
+        "documentURI",
+        "compatMode",
+        "characterSet",
+        "charset",
+        "inputEncoding",
+        "contentType",
+        "doctype",
+        "documentElement",
+        "xmlEncoding",
+        "xmlVersion",
+        "xmlStandalone",
+        "domain",
+        "referrer"
+      ]
+    },
+    {
+      "name": "DelegatedInkTrailPresenter",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "presentationArea",
+        "updateInkTrailStartPoint"
+      ]
+    },
+    {
+      "name": "DelayNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "delayTime"
+      ]
+    },
+    {
+      "name": "DecompressionStream",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "readable",
+        "writable"
+      ]
+    },
+    {
+      "name": "CountQueuingStrategy",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "highWaterMark",
+        "size"
+      ]
+    },
+    {
+      "name": "ConvolverNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "buffer",
+        "normalize"
+      ]
+    },
+    {
+      "name": "ContentVisibilityAutoStateChangeEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "skipped"
+      ]
+    },
+    {
+      "name": "ConstantSourceNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "offset"
+      ]
+    },
+    {
+      "name": "CompressionStream",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "readable",
+        "writable"
+      ]
+    },
+    {
+      "name": "CompositionEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "data",
+        "initCompositionEvent"
+      ]
+    },
+    {
+      "name": "Comment",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "CommandEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "source",
+        "command"
+      ]
+    },
+    {
+      "name": "CloseWatcher",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "oncancel",
+        "onclose",
+        "close",
+        "destroy",
+        "requestClose"
+      ]
+    },
+    {
+      "name": "CloseEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "wasClean",
+        "code",
+        "reason"
+      ]
+    },
+    {
+      "name": "CharacterData",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "data",
+        "length",
+        "previousElementSibling",
+        "nextElementSibling",
+        "after",
+        "appendData",
+        "before",
+        "deleteData",
+        "insertData",
+        "remove",
+        "replaceData",
+        "replaceWith",
+        "substringData"
+      ]
+    },
+    {
+      "name": "CharacterBoundsUpdateEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "rangeStart",
+        "rangeEnd"
+      ]
+    },
+    {
+      "name": "ChannelSplitterNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": []
+    },
+    {
+      "name": "ChannelMergerNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": []
+    },
+    {
+      "name": "CaretPosition",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "offsetNode",
+        "offset",
+        "getClientRect"
+      ]
+    },
+    {
+      "name": "CSPViolationReportBody",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "documentURL",
+        "referrer",
+        "blockedURL",
+        "effectiveDirective",
+        "originalPolicy",
+        "sourceFile",
+        "sample",
+        "disposition",
+        "statusCode",
+        "lineNumber",
+        "columnNumber",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "CDATASection",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "ByteLengthQueuingStrategy",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "highWaterMark",
+        "size"
+      ]
+    },
+    {
+      "name": "BrowserCaptureMediaStreamTrack",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "cropTo",
+        "restrictTo"
+      ]
+    },
+    {
+      "name": "BiquadFilterNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "type",
+        "frequency",
+        "detune",
+        "Q",
+        "gain",
+        "getFrequencyResponse"
+      ]
+    },
+    {
+      "name": "BeforeUnloadEvent",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "returnValue"
+      ]
+    },
+    {
+      "name": "BeforeInstallPromptEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "platforms",
+        "userChoice",
+        "prompt"
+      ]
+    },
+    {
+      "name": "BaseAudioContext",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "destination",
+        "sampleRate",
+        "currentTime",
+        "listener",
+        "state",
+        "onstatechange",
+        "createAnalyser",
+        "createBiquadFilter",
+        "createBuffer",
+        "createBufferSource",
+        "createChannelMerger",
+        "createChannelSplitter",
+        "createConstantSource",
+        "createConvolver",
+        "createDelay"
+      ]
+    },
+    {
+      "name": "BarProp",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "visible"
+      ]
+    },
+    {
+      "name": "Attr",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "namespaceURI",
+        "prefix",
+        "localName",
+        "name",
+        "value",
+        "ownerElement",
+        "specified"
+      ]
+    },
+    {
+      "name": "AnimationTimeline",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "currentTime",
+        "duration"
+      ]
+    },
+    {
+      "name": "AnimationPlaybackEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "currentTime",
+        "timelineTime"
+      ]
+    },
+    {
+      "name": "AnimationEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "animationName",
+        "elapsedTime",
+        "pseudoElement"
+      ]
+    },
+    {
+      "name": "AnimationEffect",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getComputedTiming",
+        "getTiming",
+        "updateTiming"
+      ]
+    },
+    {
+      "name": "Animation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "effect",
+        "timeline",
+        "startTime",
+        "currentTime",
+        "playbackRate",
+        "rangeStart",
+        "rangeEnd",
+        "playState",
+        "replaceState",
+        "pending",
+        "id",
+        "onfinish",
+        "oncancel",
+        "onremove",
+        "finished"
+      ]
+    },
+    {
+      "name": "AnalyserNode",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "fftSize",
+        "frequencyBinCount",
+        "minDecibels",
+        "maxDecibels",
+        "smoothingTimeConstant",
+        "getByteFrequencyData",
+        "getByteTimeDomainData",
+        "getFloatFrequencyData",
+        "getFloatTimeDomainData"
+      ]
+    },
+    {
+      "name": "AbstractRange",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "startContainer",
+        "startOffset",
+        "endContainer",
+        "endOffset",
+        "collapsed"
+      ]
+    },
+    {
+      "name": "AbortSignal",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "aborted",
+        "reason",
+        "onabort",
+        "throwIfAborted"
+      ]
+    },
+    {
+      "name": "AbortController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "signal",
+        "abort"
+      ]
+    },
+    {
+      "name": "customElements",
+      "type": "null"
+    },
+    {
+      "name": "navigation",
+      "type": "object",
+      "constructor": "Navigation",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Navigation"
+    },
+    {
+      "name": "external",
+      "type": "object",
+      "constructor": "External",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "External"
+    },
+    {
+      "name": "innerWidth",
+      "type": "number"
+    },
+    {
+      "name": "innerHeight",
+      "type": "number"
+    },
+    {
+      "name": "scrollX",
+      "type": "number"
+    },
+    {
+      "name": "pageXOffset",
+      "type": "number"
+    },
+    {
+      "name": "scrollY",
+      "type": "number"
+    },
+    {
+      "name": "pageYOffset",
+      "type": "number"
+    },
+    {
+      "name": "screenX",
+      "type": "number"
+    },
+    {
+      "name": "screenY",
+      "type": "number"
+    },
+    {
+      "name": "outerWidth",
+      "type": "number"
+    },
+    {
+      "name": "outerHeight",
+      "type": "number"
+    },
+    {
+      "name": "devicePixelRatio",
+      "type": "number"
+    },
+    {
+      "name": "event",
+      "type": "undefined"
+    },
+    {
+      "name": "clientInformation",
+      "type": "object",
+      "constructor": "Navigator",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Navigator"
+    },
+    {
+      "name": "offscreenBuffering",
+      "type": "boolean"
+    },
+    {
+      "name": "screenLeft",
+      "type": "number"
+    },
+    {
+      "name": "screenTop",
+      "type": "number"
+    },
+    {
+      "name": "styleMedia",
+      "type": "object",
+      "constructor": "Object",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Object"
+    },
+    {
+      "name": "trustedTypes",
+      "type": "object",
+      "constructor": "TrustedTypePolicyFactory",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "TrustedTypePolicyFactory"
+    },
+    {
+      "name": "crypto",
+      "type": "object",
+      "constructor": "Crypto",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Crypto"
+    },
+    {
+      "name": "indexedDB",
+      "type": "object",
+      "constructor": "IDBFactory",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "IDBFactory"
+    },
+    {
+      "name": "localStorage",
+      "type": "object",
+      "constructor": "Storage",
+      "key_count": 6,
+      "keys": [
+        "gbFeaturesCache-mt",
+        "CMPList",
+        "snackbar",
+        "guest",
+        "searchDropDownStorage",
+        "guest.announcementData"
+      ],
+      "proto_name": "Storage"
+    },
+    {
+      "name": "sessionStorage",
+      "type": "object",
+      "constructor": "Storage",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Storage"
+    },
+    {
+      "name": "captureEvents",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "releaseEvents",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "Temporal",
+      "type": "object",
+      "constructor": "Object",
+      "key_count": 0,
+      "keys": []
+    },
+    {
+      "name": "SuppressedError",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "name",
+        "message"
+      ]
+    },
+    {
+      "name": "DisposableStack",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "use",
+        "dispose",
+        "adopt",
+        "defer",
+        "move",
+        "disposed"
+      ]
+    },
+    {
+      "name": "AsyncDisposableStack",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "use",
+        "disposeAsync",
+        "adopt",
+        "defer",
+        "move",
+        "disposed"
+      ]
+    },
+    {
+      "name": "Float16Array",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    {
+      "name": "crashReport",
+      "type": "object",
+      "constructor": "CrashReportContext",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "CrashReportContext"
+    },
+    {
+      "name": "documentPictureInPicture",
+      "type": "object",
+      "constructor": "DocumentPictureInPicture",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "DocumentPictureInPicture"
+    },
+    {
+      "name": "sharedStorage",
+      "type": "object",
+      "constructor": "SharedStorage",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "SharedStorage"
+    },
+    {
+      "name": "AbsoluteOrientationSensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "Accelerometer",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "name": "BatteryManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "charging",
+        "chargingTime",
+        "dischargingTime",
+        "level",
+        "onchargingchange",
+        "onchargingtimechange",
+        "ondischargingtimechange",
+        "onlevelchange"
+      ]
+    },
+    {
+      "name": "CookieChangeEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "changed",
+        "deleted"
+      ]
+    },
+    {
+      "name": "CookieStore",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "delete",
+        "get",
+        "getAll",
+        "set",
+        "onchange"
+      ]
+    },
+    {
+      "name": "CookieStoreManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getSubscriptions",
+        "subscribe",
+        "unsubscribe"
+      ]
+    },
+    {
+      "name": "CreateMonitor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "ondownloadprogress"
+      ]
+    },
+    {
+      "name": "DeviceMotionEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "acceleration",
+        "accelerationIncludingGravity",
+        "rotationRate",
+        "interval"
+      ]
+    },
+    {
+      "name": "DeviceMotionEventAcceleration",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "name": "DeviceMotionEventRotationRate",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "alpha",
+        "beta",
+        "gamma"
+      ]
+    },
+    {
+      "name": "DeviceOrientationEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "alpha",
+        "beta",
+        "gamma",
+        "absolute"
+      ]
+    },
+    {
+      "name": "FederatedCredential",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "provider",
+        "protocol",
+        "name",
+        "iconURL"
+      ]
+    },
+    {
+      "name": "GravitySensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "Gyroscope",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "name": "IdleDetector",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "userState",
+        "screenState",
+        "onchange",
+        "start"
+      ]
+    },
+    {
+      "name": "LinearAccelerationSensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "NavigationPreloadManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "disable",
+        "enable",
+        "getState",
+        "setHeaderValue"
+      ]
+    },
+    {
+      "name": "OrientationSensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "quaternion",
+        "populateMatrix"
+      ]
+    },
+    {
+      "name": "PasswordCredential",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "password",
+        "name",
+        "iconURL"
+      ]
+    },
+    {
+      "name": "ProtectedAudience",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "queryFeatureSupport"
+      ]
+    },
+    {
+      "name": "RelativeOrientationSensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "Sensor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "activated",
+        "hasReading",
+        "timestamp",
+        "onerror",
+        "onreading",
+        "onactivate",
+        "start",
+        "stop"
+      ]
+    },
+    {
+      "name": "SensorErrorEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "error"
+      ]
+    },
+    {
+      "name": "SubtleCrypto",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "decrypt",
+        "deriveBits",
+        "deriveKey",
+        "digest",
+        "encrypt",
+        "exportKey",
+        "generateKey",
+        "importKey",
+        "sign",
+        "unwrapKey",
+        "verify",
+        "wrapKey"
+      ]
+    },
+    {
+      "name": "VideoDecoder",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "decodeQueueSize",
+        "ondequeue",
+        "state",
+        "close",
+        "configure",
+        "decode",
+        "flush",
+        "reset"
+      ]
+    },
+    {
+      "name": "VideoEncoder",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "encodeQueueSize",
+        "ondequeue",
+        "state",
+        "close",
+        "configure",
+        "encode",
+        "flush",
+        "reset"
+      ]
+    },
+    {
+      "name": "VirtualKeyboard",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "boundingRect",
+        "overlaysContent",
+        "ongeometrychange",
+        "hide",
+        "show"
+      ]
+    },
+    {
+      "name": "WGSLLanguageFeatures",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "size",
+        "entries",
+        "forEach",
+        "has",
+        "keys",
+        "values"
+      ]
+    },
+    {
+      "name": "Worklet",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "addModule"
+      ]
+    },
+    {
+      "name": "XRDOMOverlayState",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "type"
+      ]
+    },
+    {
+      "name": "XRLayer",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "XRWebGLBinding",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "getCameraImage",
+        "getDepthInformation",
+        "getReflectionCubeMap"
+      ]
+    },
+    {
+      "name": "AuthenticatorAssertionResponse",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "authenticatorData",
+        "signature",
+        "userHandle"
+      ]
+    },
+    {
+      "name": "AuthenticatorAttestationResponse",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "attestationObject",
+        "getAuthenticatorData",
+        "getPublicKey",
+        "getPublicKeyAlgorithm",
+        "getTransports"
+      ]
+    },
+    {
+      "name": "AuthenticatorResponse",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "clientDataJSON"
+      ]
+    },
+    {
+      "name": "PublicKeyCredential",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "rawId",
+        "response",
+        "authenticatorAttachment",
+        "getClientExtensionResults",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "Bluetooth",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getAvailability",
+        "requestDevice"
+      ]
+    },
+    {
+      "name": "BluetoothCharacteristicProperties",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "broadcast",
+        "read",
+        "writeWithoutResponse",
+        "write",
+        "notify",
+        "indicate",
+        "authenticatedSignedWrites",
+        "reliableWrite",
+        "writableAuxiliaries"
+      ]
+    },
+    {
+      "name": "BluetoothDevice",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "id",
+        "name",
+        "gatt",
+        "ongattserverdisconnected"
+      ]
+    },
+    {
+      "name": "BluetoothRemoteGATTCharacteristic",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "service",
+        "uuid",
+        "properties",
+        "value",
+        "oncharacteristicvaluechanged",
+        "getDescriptor",
+        "getDescriptors",
+        "readValue",
+        "startNotifications",
+        "stopNotifications",
+        "writeValue",
+        "writeValueWithResponse",
+        "writeValueWithoutResponse"
+      ]
+    },
+    {
+      "name": "BluetoothRemoteGATTDescriptor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "characteristic",
+        "uuid",
+        "value",
+        "readValue",
+        "writeValue"
+      ]
+    },
+    {
+      "name": "BluetoothRemoteGATTServer",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "device",
+        "connected",
+        "connect",
+        "disconnect",
+        "getPrimaryService",
+        "getPrimaryServices"
+      ]
+    },
+    {
+      "name": "BluetoothRemoteGATTService",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "device",
+        "uuid",
+        "isPrimary",
+        "getCharacteristic",
+        "getCharacteristics"
+      ]
+    },
+    {
+      "name": "CaptureController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "setFocusBehavior",
+        "zoomLevel",
+        "onzoomlevelchange",
+        "decreaseZoomLevel",
+        "forwardWheel",
+        "getSupportedZoomLevels",
+        "increaseZoomLevel",
+        "resetZoomLevel"
+      ]
+    },
+    {
+      "name": "CrashReportContext",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "delete",
+        "initialize",
+        "set"
+      ]
+    },
+    {
+      "name": "DevicePosture",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "type",
+        "onchange"
+      ]
+    },
+    {
+      "name": "DigitalCredential",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "protocol",
+        "data",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "DocumentPictureInPicture",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "window",
+        "onenter",
+        "requestWindow"
+      ]
+    },
+    {
+      "name": "EyeDropper",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "open"
+      ]
+    },
+    {
+      "name": "FetchLaterResult",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "activated"
+      ]
+    },
+    {
+      "name": "FragmentDirective",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "HID",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onconnect",
+        "ondisconnect",
+        "getDevices",
+        "requestDevice"
+      ]
+    },
+    {
+      "name": "HIDConnectionEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "device"
+      ]
+    },
+    {
+      "name": "HIDDevice",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "oninputreport",
+        "opened",
+        "vendorId",
+        "productId",
+        "productName",
+        "collections",
+        "close",
+        "forget",
+        "open",
+        "receiveFeatureReport",
+        "sendFeatureReport",
+        "sendReport"
+      ]
+    },
+    {
+      "name": "HIDInputReportEvent",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "device",
+        "reportId",
+        "data"
+      ]
+    },
+    {
+      "name": "IdentityCredential",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "token",
+        "isAutoSelected",
+        "configURL"
+      ]
+    },
+    {
+      "name": "IdentityCredentialError",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "code",
+        "url",
+        "error"
+      ]
+    },
+    {
+      "name": "IdentityProvider",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "LanguageDetector",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "expectedInputLanguages",
+        "inputQuota",
+        "destroy",
+        "detect",
+        "measureInputUsage"
+      ]
+    },
+    {
+      "name": "NotRestoredReasonDetails",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "reason",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "NotRestoredReasons",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "src",
+        "id",
+        "name",
+        "url",
+        "reasons",
+        "children",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "OTPCredential",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "code"
+      ]
+    },
+    {
+      "name": "PressureObserver",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "disconnect",
+        "observe",
+        "takeRecords",
+        "unobserve"
+      ]
+    },
+    {
+      "name": "PressureRecord",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "source",
+        "state",
+        "time",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "Serial",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onconnect",
+        "ondisconnect",
+        "getPorts",
+        "requestPort"
+      ]
+    },
+    {
+      "name": "SerialPort",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onconnect",
+        "ondisconnect",
+        "readable",
+        "writable",
+        "close",
+        "forget",
+        "getInfo",
+        "getSignals",
+        "open",
+        "setSignals",
+        "connected"
+      ]
+    },
+    {
+      "name": "Summarizer",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "sharedContext",
+        "type",
+        "format",
+        "length",
+        "expectedInputLanguages",
+        "expectedContextLanguages",
+        "outputLanguage",
+        "inputQuota",
+        "destroy",
+        "measureInputUsage",
+        "summarize",
+        "summarizeStreaming"
+      ]
+    },
+    {
+      "name": "Translator",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "inputQuota",
+        "sourceLanguage",
+        "targetLanguage",
+        "destroy",
+        "measureInputUsage",
+        "translate",
+        "translateStreaming"
+      ]
+    },
+    {
+      "name": "USB",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onconnect",
+        "ondisconnect",
+        "getDevices",
+        "requestDevice"
+      ]
+    },
+    {
+      "name": "USBAlternateInterface",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "alternateSetting",
+        "interfaceClass",
+        "interfaceSubclass",
+        "interfaceProtocol",
+        "interfaceName",
+        "endpoints"
+      ]
+    },
+    {
+      "name": "USBConfiguration",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "configurationValue",
+        "configurationName",
+        "interfaces"
+      ]
+    },
+    {
+      "name": "USBConnectionEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "device"
+      ]
+    },
+    {
+      "name": "USBDevice",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "usbVersionMajor",
+        "usbVersionMinor",
+        "usbVersionSubminor",
+        "deviceClass",
+        "deviceSubclass",
+        "deviceProtocol",
+        "vendorId",
+        "productId",
+        "deviceVersionMajor",
+        "deviceVersionMinor",
+        "deviceVersionSubminor",
+        "manufacturerName",
+        "productName",
+        "serialNumber",
+        "configuration"
+      ]
+    },
+    {
+      "name": "USBEndpoint",
+      "type": "function",
+      "fn_length": 3,
+      "proto_methods": [
+        "endpointNumber",
+        "direction",
+        "type",
+        "packetSize"
+      ]
+    },
+    {
+      "name": "USBInTransferResult",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "data",
+        "status"
+      ]
+    },
+    {
+      "name": "USBInterface",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "interfaceNumber",
+        "alternate",
+        "alternates",
+        "claimed"
+      ]
+    },
+    {
+      "name": "USBIsochronousInTransferPacket",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "status",
+        "data"
+      ]
+    },
+    {
+      "name": "USBIsochronousInTransferResult",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "data",
+        "packets"
+      ]
+    },
+    {
+      "name": "USBIsochronousOutTransferPacket",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "bytesWritten",
+        "status"
+      ]
+    },
+    {
+      "name": "USBIsochronousOutTransferResult",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "packets"
+      ]
+    },
+    {
+      "name": "USBOutTransferResult",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "bytesWritten",
+        "status"
+      ]
+    },
+    {
+      "name": "WakeLock",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "request"
+      ]
+    },
+    {
+      "name": "WakeLockSentinel",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onrelease",
+        "released",
+        "type",
+        "release"
+      ]
+    },
+    {
+      "name": "XRAnchor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "anchorSpace",
+        "delete"
+      ]
+    },
+    {
+      "name": "XRAnchorSet",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "size",
+        "entries",
+        "forEach",
+        "has",
+        "keys",
+        "values"
+      ]
+    },
+    {
+      "name": "XRBoundedReferenceSpace",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "boundsGeometry"
+      ]
+    },
+    {
+      "name": "XRCPUDepthInformation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "data",
+        "getDepthInMeters"
+      ]
+    },
+    {
+      "name": "XRCamera",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "width",
+        "height"
+      ]
+    },
+    {
+      "name": "XRDepthInformation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "width",
+        "height",
+        "normDepthBufferFromNormView",
+        "rawValueToMeters",
+        "projectionMatrix",
+        "transform"
+      ]
+    },
+    {
+      "name": "XRFrame",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "session",
+        "getPose",
+        "getViewerPose",
+        "trackedAnchors",
+        "createAnchor",
+        "fillJointRadii",
+        "fillPoses",
+        "getDepthInformation",
+        "getHitTestResults",
+        "getHitTestResultsForTransientInput",
+        "getJointPose",
+        "getLightEstimate"
+      ]
+    },
+    {
+      "name": "XRHand",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "size",
+        "get",
+        "entries",
+        "forEach",
+        "keys",
+        "values"
+      ]
+    },
+    {
+      "name": "XRHitTestResult",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getPose",
+        "createAnchor"
+      ]
+    },
+    {
+      "name": "XRHitTestSource",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "cancel"
+      ]
+    },
+    {
+      "name": "XRInputSource",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "handedness",
+        "targetRayMode",
+        "targetRaySpace",
+        "gripSpace",
+        "gamepad",
+        "hand",
+        "profiles"
+      ]
+    },
+    {
+      "name": "XRInputSourceArray",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "entries",
+        "keys",
+        "values",
+        "forEach",
+        "length"
+      ]
+    },
+    {
+      "name": "XRInputSourceEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "frame",
+        "inputSource"
+      ]
+    },
+    {
+      "name": "XRInputSourcesChangeEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "session",
+        "added",
+        "removed"
+      ]
+    },
+    {
+      "name": "XRJointPose",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "radius"
+      ]
+    },
+    {
+      "name": "XRJointSpace",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "jointName"
+      ]
+    },
+    {
+      "name": "XRLightEstimate",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "sphericalHarmonicsCoefficients",
+        "primaryLightDirection",
+        "primaryLightIntensity"
+      ]
+    },
+    {
+      "name": "XRLightProbe",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "probeSpace",
+        "onreflectionchange"
+      ]
+    },
+    {
+      "name": "XRPose",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "transform",
+        "emulatedPosition"
+      ]
+    },
+    {
+      "name": "XRRay",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "origin",
+        "direction",
+        "matrix"
+      ]
+    },
+    {
+      "name": "XRReferenceSpace",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "onreset",
+        "getOffsetReferenceSpace"
+      ]
+    },
+    {
+      "name": "XRReferenceSpaceEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "referenceSpace",
+        "transform"
+      ]
+    },
+    {
+      "name": "XRRenderState",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "depthNear",
+        "depthFar",
+        "inlineVerticalFieldOfView",
+        "baseLayer"
+      ]
+    },
+    {
+      "name": "XRRigidTransform",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "position",
+        "orientation",
+        "matrix",
+        "inverse"
+      ]
+    },
+    {
+      "name": "XRSession",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "environmentBlendMode",
+        "interactionMode",
+        "visibilityState",
+        "renderState",
+        "inputSources",
+        "domOverlayState",
+        "preferredReflectionFormat",
+        "onend",
+        "onselect",
+        "oninputsourceschange",
+        "onselectstart",
+        "onselectend",
+        "onvisibilitychange",
+        "onsqueeze",
+        "onsqueezestart"
+      ]
+    },
+    {
+      "name": "XRSessionEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "session"
+      ]
+    },
+    {
+      "name": "XRSpace",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "XRSystem",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "ondevicechange",
+        "isSessionSupported",
+        "requestSession"
+      ]
+    },
+    {
+      "name": "XRTransientInputHitTestResult",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "inputSource",
+        "results"
+      ]
+    },
+    {
+      "name": "XRTransientInputHitTestSource",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "cancel"
+      ]
+    },
+    {
+      "name": "XRView",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "eye",
+        "recommendedViewportScale",
+        "isFirstPersonObserver",
+        "camera",
+        "requestViewportScale",
+        "index",
+        "projectionMatrix",
+        "transform"
+      ]
+    },
+    {
+      "name": "XRViewerPose",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "views"
+      ]
+    },
+    {
+      "name": "XRViewport",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    {
+      "name": "XRWebGLDepthInformation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "texture"
+      ]
+    },
+    {
+      "name": "XRWebGLLayer",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "antialias",
+        "ignoreDepthValues",
+        "framebufferWidth",
+        "framebufferHeight",
+        "framebuffer",
+        "getViewport"
+      ]
+    },
+    {
+      "name": "XRVisibilityMaskChangeEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "session",
+        "eye",
+        "index",
+        "vertices",
+        "indices"
+      ]
+    },
+    {
+      "name": "fetchLater",
+      "type": "function",
+      "fn_length": 1
+    },
+    {
+      "name": "getScreenDetails",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "queryLocalFonts",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "showDirectoryPicker",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "showOpenFilePicker",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "showSaveFilePicker",
+      "type": "function",
+      "fn_length": 0
+    },
+    {
+      "name": "originAgentCluster",
+      "type": "boolean"
+    },
+    {
+      "name": "viewport",
+      "type": "object",
+      "constructor": "Viewport",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "Viewport"
+    },
+    {
+      "name": "credentialless",
+      "type": "boolean"
+    },
+    {
+      "name": "fence",
+      "type": "null"
+    },
+    {
+      "name": "launchQueue",
+      "type": "object",
+      "constructor": "LaunchQueue",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "LaunchQueue"
+    },
+    {
+      "name": "speechSynthesis",
+      "type": "object",
+      "constructor": "SpeechSynthesis",
+      "key_count": 0,
+      "keys": [],
+      "proto_name": "SpeechSynthesis"
+    },
+    {
+      "name": "BackgroundFetchManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "fetch",
+        "get",
+        "getIds"
+      ]
+    },
+    {
+      "name": "BackgroundFetchRecord",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "request",
+        "responseReady"
+      ]
+    },
+    {
+      "name": "BackgroundFetchRegistration",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "id",
+        "uploadTotal",
+        "uploaded",
+        "downloadTotal",
+        "downloaded",
+        "result",
+        "failureReason",
+        "recordsAvailable",
+        "onprogress",
+        "abort",
+        "match",
+        "matchAll"
+      ]
+    },
+    {
+      "name": "BluetoothUUID",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "ChapterInformation",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "title",
+        "startTime",
+        "artwork"
+      ]
+    },
+    {
+      "name": "CropTarget",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "DocumentPictureInPictureEvent",
+      "type": "function",
+      "fn_length": 2,
+      "proto_methods": [
+        "window"
+      ]
+    },
+    {
+      "name": "Fence",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getNestedConfigs",
+        "reportEvent",
+        "setReportEventDataForAutomaticBeacons"
+      ]
+    },
+    {
+      "name": "FencedFrameConfig",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "setSharedStorageContext"
+      ]
+    },
+    {
+      "name": "IntegrityViolationReportBody",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "documentURL",
+        "blockedURL",
+        "destination",
+        "reportOnly",
+        "toJSON"
+      ]
+    },
+    {
+      "name": "InterestEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "source"
+      ]
+    },
+    {
+      "name": "LaunchParams",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "targetURL",
+        "files"
+      ]
+    },
+    {
+      "name": "LaunchQueue",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "setConsumer"
+      ]
+    },
+    {
+      "name": "NavigationPrecommitController",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "redirect"
+      ]
+    },
+    {
+      "name": "Origin",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "opaque",
+        "isSameOrigin",
+        "isSameSite"
+      ]
+    },
+    {
+      "name": "PageRevealEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "viewTransition"
+      ]
+    },
+    {
+      "name": "PageSwapEvent",
+      "type": "function",
+      "fn_length": 1,
+      "proto_methods": [
+        "viewTransition",
+        "activation"
+      ]
+    },
+    {
+      "name": "PeriodicSyncManager",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "getTags",
+        "register",
+        "unregister"
+      ]
+    },
+    {
+      "name": "QuotaExceededError",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "quota",
+        "requested"
+      ]
+    },
+    {
+      "name": "RemotePlayback",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "state",
+        "onconnecting",
+        "onconnect",
+        "ondisconnect",
+        "cancelWatchAvailability",
+        "prompt",
+        "watchAvailability"
+      ]
+    },
+    {
+      "name": "RestrictionTarget",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": []
+    },
+    {
+      "name": "SnapEvent",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "snapTargetBlock",
+        "snapTargetInline"
+      ]
+    },
+    {
+      "name": "Viewport",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "segments"
+      ]
+    },
+    {
+      "name": "XSLTProcessor",
+      "type": "function",
+      "fn_length": 0,
+      "proto_methods": [
+        "clearParameters",
+        "getParameter",
+        "importStylesheet",
+        "removeParameter",
+        "reset",
+        "setParameter",
+        "transformToDocument",
+        "transformToFragment"
+      ]
+    }
+  ],
+  "map_name_globals": [
+    {
+      "name": "WeakMap",
+      "type": "function"
+    },
+    {
+      "name": "StylePropertyMapReadOnly",
+      "type": "function"
+    },
+    {
+      "name": "StylePropertyMap",
+      "type": "function"
+    },
+    {
+      "name": "SVGFEDisplacementMapElement",
+      "type": "function"
+    },
+    {
+      "name": "NamedNodeMap",
+      "type": "function"
+    },
+    {
+      "name": "ImageBitmapRenderingContext",
+      "type": "function"
+    },
+    {
+      "name": "ImageBitmap",
+      "type": "function"
+    },
+    {
+      "name": "HTMLMapElement",
+      "type": "function"
+    },
+    {
+      "name": "DOMStringMap",
+      "type": "function"
+    },
+    {
+      "name": "AudioParamMap",
+      "type": "function"
+    },
+    {
+      "name": "createImageBitmap",
+      "type": "function"
+    },
+    {
+      "name": "GPUMapMode",
+      "type": "object",
+      "constructor": "Object",
+      "methods": [
+        "constructor",
+        "__defineGetter__",
+        "__defineSetter__",
+        "hasOwnProperty",
+        "__lookupGetter__",
+        "__lookupSetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "toString",
+        "valueOf",
+        "toLocaleString"
+      ],
+      "has_setView": false,
+      "has_jumpTo": false,
+      "has_panTo": false
+    },
+    {
+      "name": "KeyboardLayoutMap",
+      "type": "function"
+    },
+    {
+      "name": "MIDIInputMap",
+      "type": "function"
+    },
+    {
+      "name": "MIDIOutputMap",
+      "type": "function"
+    },
+    {
+      "name": "MediaKeyStatusMap",
+      "type": "function"
+    }
+  ],
+  "symbol_scan": [],
+  "non_enumerable_scan": [],
+  "framework_bindings": [],
+  "event_listeners": [],
+  "leaflet_dom": [],
+  "mapbox_dom": [],
+  "leaflet_container_scan": [
+    {
+      "tag": "DIV",
+      "id": "map_canvas",
+      "className": "map_area leaflet-container leaflet-touch leaflet-fade-anim leaflet-grab leaflet-touch-drag leaflet-touch-zoom",
+      "all_custom_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "dataset": {},
+      "computed_styles": {
+        "position": "relative",
+        "width": "1872px",
+        "height": "1080px",
+        "overflow": "hidden"
+      }
+    }
+  ],
+  "dom_subtree": [
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-map-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-tile-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-layer "
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-tile-container leaflet-zoom-animated"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-overlay-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-shadow-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-marker-pane"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-marker-icon leaflet-zoom-animated leaflet-interactive"
+    },
+    {
+      "tag": "IMG",
+      "id": null,
+      "className": "leaflet-marker-icon leaflet-zoom-animated leaflet-interactive"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-tooltip-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-popup-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-proxy leaflet-zoom-animated"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-mtPhotos-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-track-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-mapLayers-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-events-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-layer "
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-tile-container leaflet-zoom-animated"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-mtPhotos-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-track-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-mapLayers-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-customAreaPolygon-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-customAreaMarker-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-pane leaflet-asset-pane"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-layer "
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-tile-container leaflet-zoom-animated"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-layer "
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-tile-container leaflet-zoom-animated"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "CANVAS",
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-container"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-top leaflet-left"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-top leaflet-right leaflet-mouse-position-control"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-bottom leaflet-left"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-scale leaflet-control"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-scale-line"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-scale-line"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-bottom leaflet-right"
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-zoom leaflet-bar leaflet-control"
+    },
+    {
+      "tag": "A",
+      "id": null,
+      "className": "leaflet-control-zoom-in"
+    },
+    {
+      "tag": "SPAN",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-zoom-text"
+    },
+    {
+      "tag": "A",
+      "id": null,
+      "className": "leaflet-control-zoom-out"
+    },
+    {
+      "tag": "SPAN",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-mouseposition leaflet-control"
+    },
+    {
+      "tag": "BR",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "BR",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "DIV",
+      "id": null,
+      "className": "leaflet-control-attribution leaflet-control"
+    },
+    {
+      "tag": "A",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "svg",
+      "id": null,
+      "className": "[object SVGAnimatedString]"
+    },
+    {
+      "tag": "path",
+      "id": null,
+      "className": "[object SVGAnimatedString]"
+    },
+    {
+      "tag": "path",
+      "id": null,
+      "className": "[object SVGAnimatedString]"
+    },
+    {
+      "tag": "path",
+      "id": null,
+      "className": "[object SVGAnimatedString]"
+    },
+    {
+      "tag": "SPAN",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "A",
+      "id": null,
+      "className": ""
+    },
+    {
+      "tag": "A",
+      "id": null,
+      "className": ""
+    }
+  ],
+  "canvas_scan": [
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    },
+    {
+      "id": null,
+      "className": "leaflet-tile leaflet-tile-loaded",
+      "width": 512,
+      "height": 512,
+      "parentId": null,
+      "parentClass": "leaflet-tile-container leaflet-zoom-animated",
+      "own_props": [],
+      "symbol_count": 0,
+      "symbols": [],
+      "context_2d": true,
+      "context_webgl": false
+    }
+  ],
+  "deep_walk_hits": [],
+  "script_urls": [
+    "https://public.profitwell.com/js/profitwell.js?auth=29900a51cda2471fae711e717e4f19cd",
+    "https://cmp.inmobi.com/tcfv2/53/cmp2.js?referer=www.marinetraffic.com",
+    "https://ajax.googleapis.com/ajax/libs/webfont/1.6.26/webfont.js",
+    "https://cmp.inmobi.com/choice/smCuZPCQp3QUX/www.marinetraffic.com/choice.js?tag_version=V3",
+    "https://www.marinetraffic.com/js/d73042c80cc537648cd9.mtapp.v1119-22859729327.js",
+    "https://www.marinetraffic.com/js/0e20b997ab40f5b3bfdf.mtapp.v1119-22859729327.js",
+    "https://unpkg.com/es6-promise@4.0.5/dist/es6-promise.min.js",
+    "https://cmp.inmobi.com/tcfv2/53/cmp2ui-en.js",
+    "https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015",
+    {
+      "type": "inline",
+      "preview": "(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML=\"window.__CF$cv$params={r"
+    },
+    {
+      "type": "inline",
+      "preview": "(function(i,s,o,g,r,a,m){i[o]=i[o]||function(){(i[o].q=i[o].q||[]).push(arguments)};\n    a=s.createElement(g);m=s.getElementsByTagName(g)[0];a.async=1"
+    }
+  ],
+  "performance_summary": {
+    "total_resources": 162,
+    "by_type": {
+      "js": {
+        "count": 79,
+        "total_ms": 10536
+      },
+      "js/vcd15cbe7772f49c399c6a5babf22c1241717689176015": {
+        "count": 1,
+        "total_ms": 259
+      },
+      "io/api/features/sdk-mwcd41pq5kckdlg": {
+        "count": 1,
+        "total_ms": 97
+      },
+      "com/cdn-cgi/rum": {
+        "count": 1,
+        "total_ms": 53
+      },
+      "ico": {
+        "count": 3,
+        "total_ms": 117
+      },
+      "com/en/ajax_user_settings/get_csrf_token": {
+        "count": 1,
+        "total_ms": 127
+      },
+      "com/en/ajax_user_settings/get_user_settings": {
+        "count": 1,
+        "total_ms": 117
+      },
+      "com/en/ajax_user_settings/get_user_data": {
+        "count": 1,
+        "total_ms": 127
+      },
+      "com/en/ajax_app_settings/get_app_settings/": {
+        "count": 1,
+        "total_ms": 84
+      },
+      "css": {
+        "count": 1,
+        "total_ms": 48
+      },
+      "com/css": {
+        "count": 1,
+        "total_ms": 130
+      },
+      "com/geoip": {
+        "count": 2,
+        "total_ms": 144
+      },
+      "svg": {
+        "count": 20,
+        "total_ms": 2219
+      },
+      "png": {
+        "count": 4,
+        "total_ms": 375
+      },
+      "com/en/translations": {
+        "count": 4,
+        "total_ms": 302
+      },
+      "json": {
+        "count": 3,
+        "total_ms": 183
+      },
+      "com/getdata/get_total_ships": {
+        "count": 1,
+        "total_ms": 53
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2412/1667@2x": {
+        "count": 1,
+        "total_ms": 143
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2413/1667@2x": {
+        "count": 1,
+        "total_ms": 138
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2412/1666@2x": {
+        "count": 1,
+        "total_ms": 142
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2413/1666@2x": {
+        "count": 1,
+        "total_ms": 142
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2412/1668@2x": {
+        "count": 1,
+        "total_ms": 144
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2413/1668@2x": {
+        "count": 1,
+        "total_ms": 144
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2411/1667@2x": {
+        "count": 1,
+        "total_ms": 145
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2411/1666@2x": {
+        "count": 1,
+        "total_ms": 146
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2414/1667@2x": {
+        "count": 1,
+        "total_ms": 151
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2414/1666@2x": {
+        "count": 1,
+        "total_ms": 146
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2411/1668@2x": {
+        "count": 1,
+        "total_ms": 145
+      },
+      "com/styles/v1/mapbox-official/clmoxc5z401zg01quhmvh97xj/tiles/12/2414/1668@2x": {
+        "count": 1,
+        "total_ms": 145
+      },
+      "com/getdata/get_data_json_4/z:13/x:2412/y:1667/station:0": {
+        "count": 1,
+        "total_ms": 182
+      },
+      "com/getdata/get_data_json_4/z:13/x:2413/y:1667/station:0": {
+        "count": 1,
+        "total_ms": 79
+      },
+      "com/getdata/get_data_json_4/z:13/x:2412/y:1666/station:0": {
+        "count": 1,
+        "total_ms": 130
+      },
+      "com/getdata/get_data_json_4/z:13/x:2413/y:1666/station:0": {
+        "count": 1,
+        "total_ms": 111
+      },
+      "com/getdata/get_data_json_4/z:13/x:2412/y:1668/station:0": {
+        "count": 1,
+        "total_ms": 130
+      },
+      "com/getdata/get_data_json_4/z:13/x:2413/y:1668/station:0": {
+        "count": 1,
+        "total_ms": 121
+      },
+      "com/getdata/get_data_json_4/z:13/x:2411/y:1667/station:0": {
+        "count": 1,
+        "total_ms": 128
+      },
+      "com/getdata/get_data_json_4/z:13/x:2414/y:1667/station:0": {
+        "count": 1,
+        "total_ms": 132
+      },
+      "com/getdata/get_data_json_4/z:13/x:2411/y:1666/station:0": {
+        "count": 1,
+        "total_ms": 136
+      },
+      "com/getdata/get_data_json_4/z:13/x:2414/y:1666/station:0": {
+        "count": 1,
+        "total_ms": 142
+      },
+      "com/getdata/get_data_json_4/z:13/x:2411/y:1668/station:0": {
+        "count": 1,
+        "total_ms": 176
+      },
+      "com/getdata/get_data_json_4/z:13/x:2414/y:1668/station:0": {
+        "count": 1,
+        "total_ms": 130
+      },
+      "com/": {
+        "count": 1,
+        "total_ms": 129
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2412/y:1667/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 46
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2413/y:1667/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 48
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2412/y:1666/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 45
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2413/y:1666/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 47
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2412/y:1668/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 61
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2413/y:1668/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 58
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2411/y:1667/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 51
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2414/y:1667/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 52
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2411/y:1666/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 56
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2414/y:1666/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 59
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2411/y:1668/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 58
+      },
+      "com/map/getstaticassetsjson_v3/z:13/x:2414/y:1668/port:0/marina:0/lights:0/bd:1": {
+        "count": 1,
+        "total_ms": 58
+      }
+    },
+    "navigation_timing": {
+      "dom_complete": 1246,
+      "dom_interactive": 366,
+      "load_complete": 1247
+    }
+  },
+  "tile_urls": []
+}

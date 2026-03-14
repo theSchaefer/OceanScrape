@@ -1,0 +1,11 @@
+camoufox[geoip]
+schedule
+python-dotenv
+Pillow
+opencv-python
+numpy
+undetected-chromedriver
+selenium
+selenium-wire
+patchright
+requests
