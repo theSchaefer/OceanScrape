@@ -33,6 +33,7 @@ from patchright.sync_api import sync_playwright
 
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y
+from regions import REGIONS
 
 load_dotenv()
 
@@ -41,7 +42,7 @@ load_dotenv()
 DEFAULT_ZOOM_LEVEL = int(os.getenv("ZOOM_LEVEL", "13"))
 VIEWPORT_WIDTH = int(os.getenv("VIEWPORT_WIDTH", "7680"))
 VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "4320"))
-CAPTURES_DIR = os.getenv("CAPTURES_DIR_PATCHRIGHT_PAN", "./captures_patchright_pan")
+CAPTURES_DIR = os.getenv("CAPTURES_DIR_PATCHRIGHT_PAN", "./data/captures")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60"))
 JITTER_SECONDS = int(os.getenv("JITTER_SECONDS", "300"))
 
@@ -54,315 +55,6 @@ SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.arg
 # Screenshot format: jpeg is ~5x smaller and ~2x faster to encode than png
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
 SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "85"))
-
-
-def _parse_polygon(env_key, default):
-    """Parse 'lat,lon;lat,lon;...' into list of (lat, lon) tuples."""
-    raw = os.getenv(env_key)
-    if not raw:
-        return default
-    points = []
-    for pair in raw.split(";"):
-        lat_s, lon_s = pair.strip().split(",")
-        points.append((float(lat_s), float(lon_s)))
-    return points
-
-
-# ---------------------------------------------------------------------------
-# Region definitions — per-region zoom, polygon, and human-readable name.
-#
-# Zoom strategy:
-#   13 = narrow canals / extremely dense straits (individual ships must be
-#         distinguishable — e.g. Malacca, Suez, Panama, Bosporus)
-#   12 = dense chokepoints where markers may overlap at lower zoom
-#   11 = wide straits with moderate traffic
-#   10 = regional corridors (large areas, moderate density)
-#    9 = open ocean shipping lanes (sparse traffic, huge coverage per tile)
-# ---------------------------------------------------------------------------
-
-REGIONS = {
-    # ── Zoom 13: Narrow / extremely dense ────────────────────────────────
-    "N": {
-        "polygon": _parse_polygon("NORTH_POLYGON", [
-            (31.575, 31.91), (31.77435, 32.27517),
-            (31.31, 32.27036), (31.517, 32.5445),
-        ]),
-        "zoom": 13,
-        "name": "Suez Canal North",
-    },
-    "S": {
-        "polygon": _parse_polygon("SOUTH_POLYGON", [
-            (29.865656, 32.481079), (29.900187, 32.598495),
-            (29.657029, 32.57515), (29.702964, 32.715225),
-        ]),
-        "zoom": 13,
-        "name": "Suez Canal South",
-    },
-    "P": {
-        "polygon": _parse_polygon("PANAMA_POLYGON", [
-            (9.45, -79.95), (9.45, -79.50),
-            (8.85, -79.50), (8.85, -79.95),
-        ]),
-        "zoom": 13,
-        "name": "Panama Canal",
-    },
-    "M": {
-        "polygon": _parse_polygon("MALACCA_POLYGON", [
-            (1.60, 103.30), (1.60, 104.10),
-            (1.05, 104.10), (1.05, 103.30),
-        ]),
-        "zoom": 13,
-        "name": "Strait of Malacca",
-    },
-    "BO": {
-        "polygon": _parse_polygon("BOSPORUS_POLYGON", [
-            (41.25, 28.90), (41.25, 29.20),
-            (40.95, 29.20), (40.95, 28.90),
-        ]),
-        "zoom": 13,
-        "name": "Bosporus",
-    },
-
-    # ── Zoom 12: Dense chokepoints ───────────────────────────────────────
-    "H": {
-        "polygon": _parse_polygon("HORMUZ_POLYGON", [
-            (26.410, 56.250), (26.110, 57.100),
-            (24.210, 56.300), (25.240, 57.300),
-        ]),
-        "zoom": 12,
-        "name": "Strait of Hormuz",
-    },
-    "B": {
-        "polygon": _parse_polygon("BAB_AL_MANDAB_POLYGON", [
-            (12.80, 43.10), (12.80, 43.60),
-            (12.35, 43.60), (12.35, 43.10),
-        ]),
-        "zoom": 12,
-        "name": "Bab al-Mandab",
-    },
-    "G": {
-        "polygon": _parse_polygon("GIBRALTAR_POLYGON", [
-            (36.20, -5.60), (36.20, -5.20),
-            (35.85, -5.20), (35.85, -5.60),
-        ]),
-        "zoom": 12,
-        "name": "Strait of Gibraltar",
-    },
-    "E": {
-        "polygon": _parse_polygon("ENGLISH_CHANNEL_POLYGON", [
-            (51.15, 1.15), (51.15, 1.65),
-            (50.85, 1.65), (50.85, 1.15),
-        ]),
-        "zoom": 12,
-        "name": "Dover Strait",
-    },
-    "SU": {
-        "polygon": _parse_polygon("SUNDA_POLYGON", [
-            (-5.80, 105.65), (-5.80, 106.20),
-            (-6.20, 106.20), (-6.20, 105.65),
-        ]),
-        "zoom": 12,
-        "name": "Sunda Strait",
-    },
-    "LO": {
-        "polygon": _parse_polygon("LOMBOK_POLYGON", [
-            (-8.25, 115.35), (-8.25, 115.90),
-            (-8.85, 115.90), (-8.85, 115.35),
-        ]),
-        "zoom": 12,
-        "name": "Lombok Strait",
-    },
-    "SG": {
-        "polygon": _parse_polygon("SINGAPORE_POLYGON", [
-            (1.50, 103.50), (1.50, 104.25),
-            (1.00, 104.25), (1.00, 103.50),
-        ]),
-        "zoom": 12,
-        "name": "Singapore Strait",
-    },
-
-    # ── Zoom 11: Wide straits ────────────────────────────────────────────
-    "TW": {
-        "polygon": _parse_polygon("TAIWAN_POLYGON", [
-            (25.50, 118.00), (25.50, 120.50),
-            (23.50, 120.50), (23.50, 118.00),
-        ]),
-        "zoom": 11,
-        "name": "Taiwan Strait",
-    },
-    "KO": {
-        "polygon": _parse_polygon("KOREA_POLYGON", [
-            (35.00, 128.50), (35.00, 130.50),
-            (33.50, 130.50), (33.50, 128.50),
-        ]),
-        "zoom": 11,
-        "name": "Korean Strait",
-    },
-    "DA": {
-        "polygon": _parse_polygon("DANISH_POLYGON", [
-            (58.00, 9.50), (58.00, 13.00),
-            (55.00, 13.00), (55.00, 9.50),
-        ]),
-        "zoom": 11,
-        "name": "Danish Straits",
-    },
-    "SC": {
-        "polygon": _parse_polygon("SICILY_POLYGON", [
-            (38.00, 10.00), (38.00, 13.00),
-            (35.50, 13.00), (35.50, 10.00),
-        ]),
-        "zoom": 11,
-        "name": "Sicilian Channel",
-    },
-    "YU": {
-        "polygon": _parse_polygon("YUCATAN_POLYGON", [
-            (22.50, -87.50), (22.50, -85.50),
-            (20.50, -85.50), (20.50, -87.50),
-        ]),
-        "zoom": 11,
-        "name": "Yucatan Channel",
-    },
-
-    # ── Zoom 10: Regional corridors ──────────────────────────────────────
-    "SCS": {
-        "polygon": _parse_polygon("S_CHINA_SEA_POLYGON", [
-            (22.00, 108.00), (22.00, 118.00),
-            (10.00, 118.00), (10.00, 108.00),
-        ]),
-        "zoom": 10,
-        "name": "South China Sea",
-    },
-    "RS": {
-        "polygon": _parse_polygon("RED_SEA_POLYGON", [
-            (28.00, 32.50), (28.00, 42.00),
-            (20.00, 42.00), (20.00, 32.50),
-        ]),
-        "zoom": 10,
-        "name": "Red Sea",
-    },
-    "PG": {
-        "polygon": _parse_polygon("PERSIAN_GULF_POLYGON", [
-            (30.50, 47.00), (30.50, 57.00),
-            (23.50, 57.00), (23.50, 47.00),
-        ]),
-        "zoom": 10,
-        "name": "Persian Gulf",
-    },
-    "GA": {
-        "polygon": _parse_polygon("GULF_OF_ADEN_POLYGON", [
-            (15.50, 43.00), (15.50, 51.50),
-            (11.00, 51.50), (11.00, 43.00),
-        ]),
-        "zoom": 10,
-        "name": "Gulf of Aden",
-    },
-    "ECS": {
-        "polygon": _parse_polygon("E_CHINA_SEA_POLYGON", [
-            (34.00, 120.00), (34.00, 130.00),
-            (26.00, 130.00), (26.00, 120.00),
-        ]),
-        "zoom": 10,
-        "name": "East China Sea",
-    },
-    "MZ": {
-        "polygon": _parse_polygon("MOZAMBIQUE_POLYGON", [
-            (-12.00, 35.00), (-12.00, 45.00),
-            (-25.00, 45.00), (-25.00, 35.00),
-        ]),
-        "zoom": 10,
-        "name": "Mozambique Channel",
-    },
-    "CG": {
-        "polygon": _parse_polygon("CAPE_POLYGON", [
-            (-33.00, 15.00), (-33.00, 22.00),
-            (-36.00, 22.00), (-36.00, 15.00),
-        ]),
-        "zoom": 10,
-        "name": "Cape of Good Hope",
-    },
-    "JV": {
-        "polygon": _parse_polygon("JAVA_SEA_POLYGON", [
-            (-3.00, 105.00), (-3.00, 115.00),
-            (-8.00, 115.00), (-8.00, 105.00),
-        ]),
-        "zoom": 10,
-        "name": "Java Sea",
-    },
-    "YS": {
-        "polygon": _parse_polygon("YELLOW_SEA_POLYGON", [
-            (39.00, 119.00), (39.00, 127.00),
-            (33.00, 127.00), (33.00, 119.00),
-        ]),
-        "zoom": 10,
-        "name": "Yellow Sea",
-    },
-
-    # ── Zoom 9: Open ocean shipping lanes ────────────────────────────────
-    "NAE": {
-        "polygon": _parse_polygon("N_ATLANTIC_E_POLYGON", [
-            (55.00, -30.00), (55.00, -10.00),
-            (40.00, -10.00), (40.00, -30.00),
-        ]),
-        "zoom": 9,
-        "name": "North Atlantic East",
-    },
-    "NAW": {
-        "polygon": _parse_polygon("N_ATLANTIC_W_POLYGON", [
-            (45.00, -75.00), (45.00, -50.00),
-            (30.00, -50.00), (30.00, -75.00),
-        ]),
-        "zoom": 9,
-        "name": "North Atlantic West",
-    },
-    "MEW": {
-        "polygon": _parse_polygon("MED_WEST_POLYGON", [
-            (43.00, -5.00), (43.00, 15.00),
-            (33.00, 15.00), (33.00, -5.00),
-        ]),
-        "zoom": 9,
-        "name": "Mediterranean West",
-    },
-    "MEE": {
-        "polygon": _parse_polygon("MED_EAST_POLYGON", [
-            (40.00, 15.00), (40.00, 36.00),
-            (30.00, 36.00), (30.00, 15.00),
-        ]),
-        "zoom": 9,
-        "name": "Mediterranean East",
-    },
-    "ARS": {
-        "polygon": _parse_polygon("ARABIAN_SEA_POLYGON", [
-            (24.00, 55.00), (24.00, 72.00),
-            (10.00, 72.00), (10.00, 55.00),
-        ]),
-        "zoom": 9,
-        "name": "Arabian Sea",
-    },
-    "BOB": {
-        "polygon": _parse_polygon("BAY_OF_BENGAL_POLYGON", [
-            (20.00, 80.00), (20.00, 95.00),
-            (5.00, 95.00), (5.00, 80.00),
-        ]),
-        "zoom": 9,
-        "name": "Bay of Bengal",
-    },
-    "WP": {
-        "polygon": _parse_polygon("W_PACIFIC_POLYGON", [
-            (40.00, 125.00), (40.00, 145.00),
-            (25.00, 145.00), (25.00, 125.00),
-        ]),
-        "zoom": 9,
-        "name": "Western Pacific",
-    },
-    "IO": {
-        "polygon": _parse_polygon("INDIAN_OCEAN_POLYGON", [
-            (0.00, 55.00), (0.00, 80.00),
-            (-15.00, 80.00), (-15.00, 55.00),
-        ]),
-        "zoom": 9,
-        "name": "Indian Ocean",
-    },
-}
 
 
 # --- Logging ------------------------------------------------------------------
@@ -800,6 +492,206 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     return True
 
 
+# --- Vessel data interception ------------------------------------------------
+
+
+def _setup_vessel_intercept(page):
+    """Listen for MarineTraffic vessel data responses.
+
+    MarineTraffic loads vessel positions via per-tile JSON requests:
+        /getdata/get_data_json_4/z:{z}/x:{x}/y:{y}/station:0
+
+    Playwright's page.on("response") passively captures these responses
+    as the browser makes them during normal map panning — no extra HTTP
+    calls, same authenticated session that already passed Cloudflare.
+
+    IMPORTANT: The callback only stores response references.  Reading
+    the response body inside a sync-API callback can deadlock because
+    body() blocks the event loop that is already running the callback.
+    Bodies are read later via drain_vessel_buffer().
+
+    Returns a list of pending Response objects (not parsed vessels).
+    """
+    pending_responses = []
+
+    def on_response(response):
+        if "/getdata/get_data_json_4/" not in response.url:
+            return
+        if response.status != 200:
+            logger.warning("Vessel data returned status %d for %s",
+                           response.status, response.url)
+            return
+        pending_responses.append(response)
+
+    page.on("response", on_response)
+    return pending_responses
+
+
+def _drain_vessel_buffer(pending_responses):
+    """Read response bodies and parse vessel data from buffered responses.
+
+    Called OUTSIDE the response callback to avoid sync-API deadlocks.
+    The first successful response is saved to ./data/vessel_response_sample.json
+    for format discovery.
+    """
+    vessels = []
+    discovery_done = False
+
+    for response in pending_responses:
+        try:
+            raw = response.body()
+            body = json.loads(raw)
+        except Exception as e:
+            logger.warning("Failed to read vessel response body from %s: %s",
+                           response.url, e)
+            continue
+
+        # Discovery: log the first raw response to inspect the format
+        if not discovery_done:
+            discovery_done = True
+            try:
+                sample_path = Path("./data") / "vessel_response_sample.json"
+                Path("./data").mkdir(parents=True, exist_ok=True)
+                with open(sample_path, "w") as f:
+                    json.dump({"url": response.url, "body": body}, f, indent=2)
+                logger.info("Vessel data sample saved to %s", sample_path)
+            except Exception as e:
+                logger.warning("Failed to save vessel sample: %s", e)
+
+        parsed = _parse_vessel_response(body, response.url)
+        vessels.extend(parsed)
+
+    pending_responses.clear()
+    return _dedup_vessels(vessels)
+
+
+def _parse_vessel_response(body, url):
+    """Parse vessel data from a get_data_json_4 response.
+
+    The exact response schema is discovered at runtime — the first response
+    is logged to ./data/vessel_response_sample.json for inspection.
+
+    Known MarineTraffic patterns use either:
+      - A dict with a "data" key containing a "rows" list of vessel dicts
+      - A direct list of vessel arrays/dicts
+      - A dict with numeric keys mapping to vessel arrays
+
+    Each vessel record typically includes MMSI, SHIPNAME, LAT, LON, SPEED,
+    COURSE, FLAG, DESTINATION, SHIPTYPE, etc.
+    """
+    vessels = []
+
+    # Determine the iterable of raw vessel records
+    rows = None
+    if isinstance(body, dict):
+        # Pattern: {"type": N, "data": {"rows": [...]}}
+        data = body.get("data")
+        if isinstance(data, dict):
+            rows = data.get("rows", [])
+        elif isinstance(data, list):
+            rows = data
+        # Pattern: direct list under a generic key
+        if rows is None:
+            for key in ("rows", "vessels", "ships", "features"):
+                if key in body and isinstance(body[key], list):
+                    rows = body[key]
+                    break
+        # Pattern: body itself is the list wrapper
+        if rows is None and isinstance(body.get("type"), int):
+            # Try all list-valued keys
+            for v in body.values():
+                if isinstance(v, list) and len(v) > 0:
+                    rows = v
+                    break
+    elif isinstance(body, list):
+        rows = body
+
+    if not rows:
+        return vessels
+
+    for row in rows:
+        vessel = _extract_vessel_fields(row)
+        if vessel and vessel.get("mmsi"):
+            vessels.append(vessel)
+
+    return vessels
+
+
+def _extract_vessel_fields(row):
+    """Extract vessel fields from a single record (dict or list).
+
+    Handles both dict-style ({"MMSI": ..., "SHIPNAME": ...}) and
+    array-style ([mmsi, lat, lon, ...]) records.
+    """
+    if isinstance(row, dict):
+        # Try common MarineTraffic field names (case-insensitive lookup)
+        def g(keys, default=None):
+            for k in keys:
+                if k in row:
+                    return row[k]
+                if k.upper() in row:
+                    return row[k.upper()]
+                if k.lower() in row:
+                    return row[k.lower()]
+            return default
+
+        mmsi = g(["MMSI", "mmsi"])
+        if not mmsi:
+            return None
+
+        return {
+            "mmsi": int(mmsi) if mmsi else None,
+            "ship_name": g(["SHIPNAME", "shipname", "ship_name", "name"]),
+            "lat": _to_float(g(["LAT", "lat", "latitude"])),
+            "lon": _to_float(g(["LON", "lon", "longitude", "LNG", "lng"])),
+            "speed": _to_float(g(["SPEED", "speed", "sog"])),
+            "course": _to_float(g(["COURSE", "course", "cog"])),
+            "heading": _to_int(g(["HEADING", "heading", "hdg"])),
+            "flag": g(["FLAG", "flag", "country"]),
+            "destination": g(["DESTINATION", "destination", "dest"]),
+            "ship_type": _to_int(g(["SHIPTYPE", "shiptype", "ship_type", "type_and_cargo"])),
+            "length": _to_int(g(["LENGTH", "length", "l"])),
+            "width": _to_int(g(["WIDTH", "width", "w"])),
+        }
+
+    elif isinstance(row, list) and len(row) >= 3:
+        # Array format — positions vary, log and skip for now until format is known
+        logger.debug("Vessel record in array format (len=%d), skipping until format known", len(row))
+        return None
+
+    return None
+
+
+def _to_float(v):
+    """Safely convert to float."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_int(v):
+    """Safely convert to int."""
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def _dedup_vessels(vessels):
+    """Deduplicate vessels by MMSI, keeping the last occurrence."""
+    seen = {}
+    for v in vessels:
+        mmsi = v.get("mmsi")
+        if mmsi:
+            seen[mmsi] = v
+    return list(seen.values())
+
+
 def _wait_for_tiles_after_pan(page, timeout_ms=5000):
     """Wait for map tiles to re-render after a pan."""
     deadline = time.time() + (timeout_ms / 1000)
@@ -879,7 +771,8 @@ def _discover_leaflet_map(page):
 # --- Core capture (single region, given a page) ------------------------------
 
 
-def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
+def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
+                          vessel_buffer=None):
     """Capture all tiles for a region using an already-setup page.
 
     Returns dict with capture results: tankers, cargos, markers, file paths.
@@ -1013,6 +906,13 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         saved_path = str(output_path)
         logger.info("Region %s: saved %s (%.1f KB)", region_name, filename, file_size_kb)
 
+    # --- Drain vessel buffer — reads response bodies outside the callback -----
+    region_vessels = []
+    if vessel_buffer is not None:
+        region_vessels = _drain_vessel_buffer(vessel_buffer)
+        logger.info("Region %s: %d unique vessels intercepted",
+                    region_name, len(region_vessels))
+
     # --- Log results ----------------------------------------------------------
     _log_json(
         timestamp_str, region_name, saved_path,
@@ -1021,6 +921,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         moving_tankers=total_moving_tankers,
         moving_cargos=total_moving_cargos,
         markers=all_markers,
+        vessels=region_vessels,
     )
 
     logger.info("Region %s: %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
@@ -1091,11 +992,13 @@ def capture_batch(region_batch, timestamp_str):
 
             # Phase 1: Open all tabs and start loading in parallel
             tabs = {}
+            vessel_buffers = {}
             for name in region_batch:
                 config = REGIONS[name]
                 page = context.new_page()
                 _inject_stealth_scripts(page, geo)
                 _inject_map_hooks(page)
+                vessel_buffers[name] = _setup_vessel_intercept(page)
 
                 center_lat, center_lon = _polygon_center(config["polygon"])
                 url = build_url(center_lat, center_lon, config["zoom"])
@@ -1132,7 +1035,8 @@ def capture_batch(region_batch, timestamp_str):
             for name, (page, map_dims) in ready_tabs.items():
                 try:
                     result = _capture_region_tiles(
-                        name, REGIONS[name], timestamp_str, page, map_dims
+                        name, REGIONS[name], timestamp_str, page, map_dims,
+                        vessel_buffer=vessel_buffers.get(name),
                     )
                     results[name] = result
                 except Exception as e:
@@ -1160,9 +1064,9 @@ def capture_region(region_name, config, timestamp_str):
 
 def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
               tankers=0, cargos=0, zoom=None, detections=None,
-              moving_tankers=0, moving_cargos=0, markers=None):
-    json_path = Path(CAPTURES_DIR) / "captures_log.json"
-    Path(CAPTURES_DIR).mkdir(parents=True, exist_ok=True)
+              moving_tankers=0, moving_cargos=0, markers=None, vessels=None):
+    json_path = Path("./data") / "captures_log.json"
+    Path("./data").mkdir(parents=True, exist_ok=True)
 
     if json_path.exists():
         with open(json_path, "r") as f:
@@ -1190,6 +1094,7 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
         "status": status,
         "markers": markers or [],
         "detections": detections or [],
+        "vessels": vessels or [],
     })
 
     with open(json_path, "w") as f:

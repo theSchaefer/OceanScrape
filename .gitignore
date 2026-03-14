@@ -1,8 +1,7 @@
 .venv/
-/data
+data/
 *.log
 .env
 *.db
 __pycache__/
 *.pyc
-captures/

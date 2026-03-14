@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marine Traffic Monitor</title>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+<script src="https://api.mapbox.com/mapbox-gl-js/plugins/v2.4.0/mapbox-gl-draw.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/plugins/v2.4.0/mapbox-gl-draw.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
+<style>
+/* ── Reset & Theme ──────────────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;
+  --text:#c9d1d9;--text-dim:#8b949e;--accent:#58a6ff;--accent2:#3fb950;
+  --tanker:#d29922;--cargo:#58a6ff;--danger:#f85149;--success:#3fb950;
+}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:13px;color:var(--text);background:var(--bg);overflow:hidden}
+button{cursor:pointer;font:inherit;color:var(--text);background:var(--surface2);
+  border:1px solid var(--border);border-radius:4px;padding:4px 10px}
+button:hover{border-color:var(--accent);background:var(--surface)}
+select,input[type="datetime-local"]{font:inherit;color:var(--text);background:var(--surface2);
+  border:1px solid var(--border);border-radius:4px;padding:3px 6px}
+input[type="range"]{accent-color:var(--accent)}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+#app{display:grid;grid-template-columns:280px 1fr;grid-template-rows:1fr auto;height:100vh;width:100vw}
+#sidebar{grid-row:1/3;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;z-index:10}
+#map-wrap{position:relative;overflow:hidden}
+#map{width:100%;height:100%}
+#timeline{grid-column:2;background:var(--surface);border-top:1px solid var(--border);
+  padding:8px 16px;display:flex;align-items:center;gap:12px;height:56px;flex-shrink:0}
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+.sb-section{padding:12px;border-bottom:1px solid var(--border)}
+.sb-title{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);margin-bottom:8px}
+.sb-label{font-size:11px;color:var(--text-dim);margin-bottom:3px}
+
+/* Status */
+.status-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px}
+.status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.status-dot.green{background:var(--success)}.status-dot.yellow{background:var(--tanker)}.status-dot.red{background:var(--danger)}
+
+/* Filters */
+.filter-group{display:flex;gap:6px;margin-bottom:6px}
+.filter-group select{flex:1;font-size:12px}
+
+/* Region list */
+#region-list{flex:1;overflow-y:auto;padding:4px 0}
+.region-item{display:flex;align-items:center;padding:6px 12px;cursor:pointer;
+  border-left:3px solid transparent;transition:background .15s}
+.region-item:hover{background:var(--surface2)}
+.region-item.active{border-left-color:var(--accent);background:var(--surface2)}
+.region-item .r-name{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.region-item .r-count{font-size:11px;color:var(--text-dim);margin-left:6px;min-width:28px;text-align:right}
+.region-item .r-alert{width:6px;height:6px;border-radius:50%;background:var(--danger);margin-left:4px;display:none}
+.region-item .r-alert.show{display:block}
+.region-item .r-delete{display:none;margin-left:4px;font-size:10px;color:var(--danger);background:none;border:none;padding:2px}
+.region-item:hover .r-delete{display:block}
+.region-type-badge{font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px;
+  background:var(--border);color:var(--text-dim)}
+
+/* ── Map overlays ───────────────────────────────────────────────────── */
+#map-controls{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:5}
+#map-controls button{background:var(--surface);border:1px solid var(--border);font-size:12px;
+  padding:6px 10px;backdrop-filter:blur(4px)}
+#map-controls button.active{border-color:var(--accent);color:var(--accent)}
+#last-updated{position:absolute;bottom:8px;right:12px;z-index:5;font-size:11px;
+  color:var(--text-dim);background:rgba(13,17,23,.8);padding:3px 8px;border-radius:4px}
+
+/* ── Timeline ───────────────────────────────────────────────────────── */
+#timeline .tl-slider{flex:1}
+#timeline input[type="range"]{width:100%}
+#timeline .tl-label{font-size:11px;color:var(--text-dim);white-space:nowrap}
+.tl-presets{display:flex;gap:3px}
+.tl-presets button{font-size:10px;padding:2px 6px}
+.tl-presets button.active{color:var(--accent);border-color:var(--accent)}
+#tl-play{font-size:14px;width:32px;text-align:center}
+#tl-speed{width:48px;font-size:11px}
+#tl-granularity{font-size:11px}
+
+/* ── Analytics Panel ────────────────────────────────────────────────── */
+#analytics{position:absolute;top:0;right:0;width:420px;height:100%;background:var(--surface);
+  border-left:1px solid var(--border);z-index:20;transform:translateX(100%);
+  transition:transform .25s ease;display:flex;flex-direction:column;overflow:hidden}
+#analytics.open{transform:translateX(0)}
+#analytics-header{padding:12px;border-bottom:1px solid var(--border);display:flex;align-items:center}
+#analytics-header h3{flex:1;font-size:14px;font-weight:600}
+#analytics-close{background:none;border:none;font-size:18px;color:var(--text-dim)}
+#analytics-body{flex:1;overflow-y:auto;padding:12px}
+#chart-wrap{position:relative;height:220px;margin-bottom:12px}
+.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.kpi-card{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center}
+.kpi-value{font-size:18px;font-weight:700;color:var(--accent)}
+.kpi-label{font-size:10px;color:var(--text-dim);margin-top:2px}
+#alert-log-title{font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.alert-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px}
+.alert-item .a-msg{flex:1;line-height:1.3}
+.alert-item .a-time{font-size:10px;color:var(--text-dim);white-space:nowrap}
+.alert-item button{font-size:10px;padding:2px 6px;flex-shrink:0}
+#csv-export{margin-top:8px;width:100%}
+
+/* ── Custom Region Dialog ───────────────────────────────────────────── */
+#region-dialog-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;
+  align-items:center;justify-content:center}
+#region-dialog-overlay.show{display:flex}
+#region-dialog{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:20px;width:340px}
+#region-dialog h3{margin-bottom:12px;font-size:15px}
+#region-dialog label{display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px}
+#region-dialog input,#region-dialog textarea{width:100%;font:inherit;color:var(--text);
+  background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px 8px}
+#region-dialog textarea{height:60px;resize:vertical}
+.dialog-row{display:flex;gap:8px}
+.dialog-row > div{flex:1}
+.dialog-btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+.dialog-btns .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ── Toasts ─────────────────────────────────────────────────────────── */
+#toasts{position:fixed;top:12px;right:12px;z-index:200;display:flex;flex-direction:column;gap:6px}
+.toast{padding:8px 14px;border-radius:6px;font-size:12px;color:#fff;opacity:0;
+  transform:translateX(30px);transition:all .3s ease;max-width:300px}
+.toast.show{opacity:1;transform:translateX(0)}
+.toast.success{background:#238636}.toast.error{background:#da3633}.toast.info{background:#1f6feb}
+
+/* ── Keyboard hint ──────────────────────────────────────────────────── */
+#kb-hint{position:absolute;bottom:8px;left:12px;z-index:5;font-size:10px;color:var(--text-dim);
+  background:rgba(13,17,23,.8);padding:3px 8px;border-radius:4px}
+kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
+  padding:0 3px;font-size:10px;font-family:inherit}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+<div id="sidebar">
+  <div class="sb-section">
+    <div class="sb-title">Pipeline Status</div>
+    <div class="status-row"><span class="status-dot" id="status-dot"></span><span id="status-text">Loading...</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Last scrape:</span> <span id="status-last">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Next run:</span> <span id="status-next">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Ships detected:</span> <span id="status-ships">--</span></div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">Filters</div>
+    <div class="sb-label">Vessel Type</div>
+    <div class="filter-group">
+      <select id="filter-type"><option value="">Both</option><option value="cargo">Cargo</option><option value="tanker">Oil Tanker</option></select>
+    </div>
+    <div class="sb-label">Movement</div>
+    <div class="filter-group">
+      <select id="filter-motion"><option value="">Both</option><option value="moving">Moving</option><option value="stationary">Stationary</option></select>
+    </div>
+  </div>
+  <div class="sb-section" style="padding-bottom:4px">
+    <div class="sb-title">Regions</div>
+  </div>
+  <div id="region-list"></div>
+</div>
+
+<!-- ── Map ──────────────────────────────────────────────────────────── -->
+<div id="map-wrap">
+  <div id="map"></div>
+  <div id="map-controls">
+    <button id="btn-refresh" title="Refresh data (R)">Refresh</button>
+    <button id="btn-draw" title="Draw region (D)">Draw Region</button>
+    <button id="btn-lanes" title="Toggle shipping lanes (L)">Lanes</button>
+  </div>
+  <div id="last-updated"></div>
+  <div id="kb-hint"><kbd>R</kbd> Refresh &nbsp; <kbd>D</kbd> Draw &nbsp; <kbd>L</kbd> Lanes &nbsp; <kbd>Esc</kbd> Close</div>
+
+  <!-- Analytics slide-in -->
+  <div id="analytics">
+    <div id="analytics-header">
+      <h3 id="analytics-title">Region Analytics</h3>
+      <button id="csv-export" style="width:auto;margin-right:8px;font-size:11px">CSV</button>
+      <button id="analytics-close">&times;</button>
+    </div>
+    <div id="analytics-body">
+      <div id="chart-wrap"><canvas id="analytics-chart"></canvas></div>
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-value" id="kpi-avg">--</div><div class="kpi-label">Avg Ships</div></div>
+        <div class="kpi-card"><div class="kpi-value" id="kpi-peak">--</div><div class="kpi-label">Peak Hour</div></div>
+        <div class="kpi-card"><div class="kpi-value" id="kpi-ratio">--</div><div class="kpi-label">Cargo / Tanker</div></div>
+      </div>
+      <div id="alert-log-title">Alerts <span id="alert-badge" style="font-size:10px;background:var(--danger);color:#fff;border-radius:8px;padding:0 5px;display:none"></span></div>
+      <div id="alert-log"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Timeline ────────────────────────────────────────────────────── -->
+<div id="timeline">
+  <button id="tl-play" title="Play/Pause">&#9654;</button>
+  <select id="tl-speed"><option value="1000">1x</option><option value="500">2x</option><option value="200">5x</option><option value="100">10x</option></select>
+  <div class="tl-slider"><input type="range" id="tl-slider" min="0" max="0" value="0"></div>
+  <span class="tl-label" id="tl-timestamp">--</span>
+  <input type="datetime-local" id="tl-start" title="Start">
+  <input type="datetime-local" id="tl-end" title="End">
+  <select id="tl-granularity"><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
+  <div class="tl-presets">
+    <button data-hours="24">24h</button>
+    <button data-hours="168">7d</button>
+    <button data-hours="720">30d</button>
+  </div>
+</div>
+</div>
+
+<!-- ── Custom Region Dialog ────────────────────────────────────────── -->
+<div id="region-dialog-overlay">
+  <div id="region-dialog">
+    <h3>Save Custom Region</h3>
+    <label>Name</label><input id="rd-name" placeholder="e.g. Port of Rotterdam">
+    <label>Description</label><textarea id="rd-desc" placeholder="Optional notes..."></textarea>
+    <div class="dialog-row">
+      <div><label>High threshold</label><input id="rd-high" type="number" placeholder="e.g. 50"></div>
+      <div><label>Low threshold</label><input id="rd-low" type="number" placeholder="e.g. 5"></div>
+    </div>
+    <div class="dialog-btns">
+      <button id="rd-cancel">Cancel</button>
+      <button id="rd-save" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toasts ──────────────────────────────────────────────────────── -->
+<div id="toasts"></div>
+
+<script>
+(function(){
+'use strict';
+
+/* ━━ Config ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const API = '';
+
+/* ━━ State ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const S = {
+  mapboxToken: '',
+  regions: [],
+  vessels: [],
+  selectedRegion: null,
+  snapshots: [],
+  playing: false,
+  playTimer: null,
+  drawMode: false,
+  lanesVisible: false,
+  analyticsChart: null,
+  analyticsData: null,
+};
+
+/* ━━ DOM refs ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+/* ━━ Toast ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 4000);
+}
+
+/* ━━ API Client ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+async function api(path, opts={}) {
+  try {
+    const r = await fetch(API + path, {
+      headers: {'Content-Type':'application/json'},
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({detail: r.statusText}));
+      throw new Error(e.detail || r.statusText);
+    }
+    return r.json();
+  } catch(e) {
+    toast(e.message, 'error');
+    throw e;
+  }
+}
+
+/* ━━ Map ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+let map, draw;
+
+function initMap(token) {
+  mapboxgl.accessToken = token;
+  map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/dark-v11',
+    center: [45, 20],
+    zoom: 2.5,
+    attributionControl: false,
+  });
+  map.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
+
+  // Draw plugin for custom regions
+  draw = new MapboxDraw({
+    displayControlsDefault: false,
+    defaultMode: 'simple_select',
+    styles: [
+      {id:'gl-draw-polygon-fill',type:'fill',filter:['all',['==','$type','Polygon']],
+       paint:{'fill-color':'#00e5ff','fill-opacity':0.15}},
+      {id:'gl-draw-polygon-stroke',type:'line',filter:['all',['==','$type','Polygon']],
+       paint:{'line-color':'#00e5ff','line-width':2}},
+      {id:'gl-draw-line',type:'line',filter:['all',['==','$type','LineString']],
+       paint:{'line-color':'#00e5ff','line-width':2,'line-dasharray':[2,2]}},
+      {id:'gl-draw-point',type:'circle',filter:['all',['==','$type','Point'],['==','meta','vertex']],
+       paint:{'circle-radius':5,'circle-color':'#00e5ff'}},
+    ],
+  });
+  map.addControl(draw);
+
+  map.on('draw.create', onDrawCreate);
+
+  map.on('load', () => {
+    addMapSources();
+    addMapLayers();
+    loadAll();
+  });
+}
+
+function addMapSources() {
+  // Vessels GeoJSON
+  map.addSource('vessels', {
+    type: 'geojson',
+    data: {type:'FeatureCollection', features:[]},
+    cluster: true,
+    clusterMaxZoom: 10,
+    clusterRadius: 50,
+    clusterProperties: {
+      tankerCount: ['+', ['case', ['==', ['get','vtype'], 'tanker'], 1, 0]],
+      cargoCount: ['+', ['case', ['==', ['get','vtype'], 'cargo'], 1, 0]],
+    },
+  });
+
+  // Regions (predefined)
+  map.addSource('regions', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+  // Custom regions
+  map.addSource('custom-regions', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+  // Region labels
+  map.addSource('region-labels', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+  // Shipping lanes
+  map.addSource('lanes', {type:'geojson', data:{type:'FeatureCollection',features:buildLanesGeoJSON()}});
+}
+
+function addMapLayers() {
+  // ── Heatmap (low zoom) ──
+  map.addLayer({
+    id: 'vessels-heat',
+    type: 'heatmap',
+    source: 'vessels',
+    maxzoom: 7,
+    filter: ['!', ['has', 'point_count']],
+    paint: {
+      'heatmap-weight': 1,
+      'heatmap-intensity': ['interpolate',['linear'],['zoom'],0,0.5,7,2],
+      'heatmap-radius': ['interpolate',['linear'],['zoom'],0,8,7,25],
+      'heatmap-color': [
+        'interpolate',['linear'],['heatmap-density'],
+        0,'rgba(0,0,0,0)', 0.2,'rgba(30,60,150,0.4)',
+        0.4,'rgba(60,130,200,0.6)', 0.6,'rgba(210,153,34,0.7)',
+        0.8,'rgba(240,120,30,0.85)', 1,'rgba(255,70,30,1)'
+      ],
+      'heatmap-opacity': ['interpolate',['linear'],['zoom'],6,1,7,0],
+    },
+  });
+
+  // ── Clusters (mid zoom) ──
+  map.addLayer({
+    id: 'vessel-clusters',
+    type: 'circle',
+    source: 'vessels',
+    filter: ['has', 'point_count'],
+    paint: {
+      'circle-color': [
+        'case',
+        ['>', ['get','tankerCount'], ['get','cargoCount']], '#d29922',
+        '#58a6ff'
+      ],
+      'circle-radius': ['step',['get','point_count'],14,20,20,50,26,100,32],
+      'circle-opacity': 0.8,
+      'circle-stroke-width': 2,
+      'circle-stroke-color': 'rgba(255,255,255,0.3)',
+    },
+  });
+  map.addLayer({
+    id: 'cluster-count',
+    type: 'symbol',
+    source: 'vessels',
+    filter: ['has', 'point_count'],
+    layout: {
+      'text-field': '{point_count_abbreviated}',
+      'text-size': 11,
+    },
+    paint: {'text-color': '#fff'},
+  });
+
+  // ── Individual vessels (high zoom) ──
+  map.addLayer({
+    id: 'vessel-points',
+    type: 'circle',
+    source: 'vessels',
+    filter: ['!', ['has', 'point_count']],
+    minzoom: 7,
+    paint: {
+      'circle-radius': ['interpolate',['linear'],['zoom'],7,3,14,7],
+      'circle-color': ['case',['==',['get','vtype'],'tanker'],'#d29922','#58a6ff'],
+      'circle-opacity': ['case',['==',['get','motion'],'stationary'],0.5,0.9],
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': ['case',['==',['get','motion'],'moving'],'#fff','rgba(255,255,255,0.3)'],
+    },
+  });
+
+  // ── Region polygons ──
+  map.addLayer({
+    id: 'region-fill', type: 'fill', source: 'regions',
+    paint: {'fill-color':'#58a6ff','fill-opacity':0.06},
+  });
+  map.addLayer({
+    id: 'region-line', type: 'line', source: 'regions',
+    paint: {'line-color':'#58a6ff','line-width':1.5,'line-opacity':0.5},
+  });
+  // Custom regions (cyan)
+  map.addLayer({
+    id: 'custom-region-fill', type: 'fill', source: 'custom-regions',
+    paint: {'fill-color':'#00e5ff','fill-opacity':0.08},
+  });
+  map.addLayer({
+    id: 'custom-region-line', type: 'line', source: 'custom-regions',
+    paint: {'line-color':'#00e5ff','line-width':2,'line-opacity':0.7,'line-dasharray':[4,2]},
+  });
+  // Labels
+  map.addLayer({
+    id: 'region-labels-layer', type: 'symbol', source: 'region-labels',
+    layout: {
+      'text-field': ['get','name'],
+      'text-size': 11,
+      'text-anchor': 'center',
+      'text-allow-overlap': false,
+    },
+    paint: {'text-color':'rgba(201,209,217,0.7)','text-halo-color':'rgba(13,17,23,0.8)','text-halo-width':1},
+  });
+
+  // ── Shipping lanes ──
+  map.addLayer({
+    id: 'lanes-layer', type: 'line', source: 'lanes',
+    layout: {'visibility':'none'},
+    paint: {'line-color':'rgba(255,255,255,0.15)','line-width':1.5,'line-dasharray':[6,4]},
+  });
+
+  // ── Click handlers ──
+  map.on('click', 'vessel-points', (e) => {
+    const f = e.features[0];
+    const p = f.properties;
+    new mapboxgl.Popup({closeButton:true, maxWidth:'240px'})
+      .setLngLat(f.geometry.coordinates)
+      .setHTML(`
+        <div style="font-size:12px;color:#c9d1d9">
+          <b style="color:${p.vtype==='tanker'?'#d29922':'#58a6ff'}">${p.vtype==='tanker'?'Oil Tanker':'Cargo'}</b>
+          <span style="color:#8b949e;margin-left:4px">${p.motion}</span><br>
+          <span style="color:#8b949e">Lat:</span> ${Number(f.geometry.coordinates[1]).toFixed(4)}
+          <span style="color:#8b949e;margin-left:6px">Lon:</span> ${Number(f.geometry.coordinates[0]).toFixed(4)}<br>
+          <span style="color:#8b949e">Region:</span> ${p.region || ''}
+        </div>`)
+      .addTo(map);
+  });
+  map.on('mouseenter', 'vessel-points', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'vessel-points', () => map.getCanvas().style.cursor = '');
+
+  // Region click
+  map.on('click', 'region-fill', (e) => {
+    const code = e.features[0].properties.code;
+    selectRegion(code);
+  });
+  map.on('click', 'custom-region-fill', (e) => {
+    const code = e.features[0].properties.code;
+    selectRegion(code);
+  });
+
+  // Cluster click → zoom in
+  map.on('click', 'vessel-clusters', (e) => {
+    const f = e.features[0];
+    map.getSource('vessels').getClusterExpansionZoom(f.properties.cluster_id, (err, zoom) => {
+      if (err) return;
+      map.easeTo({center: f.geometry.coordinates, zoom: zoom});
+    });
+  });
+}
+
+/* ━━ Data Loading ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+async function loadAll() {
+  await Promise.all([loadStatus(), loadRegions(), loadVessels(), loadTimeline()]);
+  toast('Data loaded', 'success');
+}
+
+async function refresh() {
+  await Promise.all([loadStatus(), loadRegions(), loadVessels()]);
+  $('#last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  toast('Data refreshed', 'success');
+}
+
+async function loadStatus() {
+  try {
+    const d = await api('/api/status');
+    const dot = $('#status-dot');
+    const last = d.last_scrape ? new Date(d.last_scrape) : null;
+    const ageMin = last ? (Date.now() - last.getTime()) / 60000 : Infinity;
+    dot.className = 'status-dot ' + (ageMin < d.interval_minutes * 1.5 ? 'green' : ageMin < d.interval_minutes * 3 ? 'yellow' : 'red');
+    $('#status-text').textContent = ageMin < d.interval_minutes * 1.5 ? 'Healthy' : 'Delayed';
+    $('#status-last').textContent = last ? last.toLocaleString() : '--';
+    $('#status-next').textContent = d.next_scheduled ? new Date(d.next_scheduled).toLocaleString() : '--';
+    const ships = d.last_run_stats ? d.last_run_stats.total_ships : 0;
+    $('#status-ships').textContent = ships != null ? ships.toLocaleString() : '--';
+  } catch(e) {}
+}
+
+async function loadRegions() {
+  try {
+    const d = await api('/api/regions');
+    S.regions = d.regions;
+    renderRegionList();
+    updateRegionLayers();
+  } catch(e) {}
+}
+
+async function loadVessels(timestamp) {
+  try {
+    const params = new URLSearchParams();
+    const ft = $('#filter-type').value;
+    const fm = $('#filter-motion').value;
+    if (ft) params.set('type', ft);
+    if (fm) params.set('motion', fm);
+    if (timestamp) params.set('timestamp', timestamp);
+    const d = await api('/api/vessels?' + params);
+    S.vessels = d.vessels;
+    updateVesselLayer();
+    if (d.timestamp) {
+      $('#last-updated').textContent = 'Data: ' + new Date(d.timestamp).toLocaleString();
+    }
+  } catch(e) {}
+}
+
+async function loadTimeline() {
+  try {
+    const d = await api('/api/timeline');
+    S.snapshots = (d.snapshots || []).reverse(); // chronological
+    const slider = $('#tl-slider');
+    slider.max = Math.max(0, S.snapshots.length - 1);
+    slider.value = slider.max;
+    if (d.earliest) {
+      $('#tl-start').value = d.earliest.slice(0,16);
+    }
+    if (d.latest) {
+      $('#tl-end').value = d.latest.slice(0,16);
+    }
+    updateTimelineLabel();
+  } catch(e) {}
+}
+
+/* ━━ Map Data Updates ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function updateVesselLayer() {
+  const features = S.vessels.map(v => ({
+    type: 'Feature',
+    geometry: {type:'Point', coordinates:[v.lon, v.lat]},
+    properties: {vtype: v.type, motion: v.motion, region: v.region||''},
+  }));
+  map.getSource('vessels').setData({type:'FeatureCollection', features});
+}
+
+function updateRegionLayers() {
+  const predefined = [], custom = [], labels = [];
+  for (const r of S.regions) {
+    // Convert polygon [[lat,lon],...] to GeoJSON [[lon,lat],...]
+    const coords = r.polygon.map(p => [p[1], p[0]]);
+    coords.push(coords[0]); // close ring
+    const feature = {
+      type:'Feature',
+      geometry:{type:'Polygon', coordinates:[coords]},
+      properties:{code:r.code, name:r.name},
+    };
+    if (r.type === 'custom') custom.push(feature);
+    else predefined.push(feature);
+
+    labels.push({
+      type:'Feature',
+      geometry:{type:'Point', coordinates:[r.centroid[1], r.centroid[0]]},
+      properties:{name: r.name},
+    });
+  }
+  map.getSource('regions').setData({type:'FeatureCollection', features:predefined});
+  map.getSource('custom-regions').setData({type:'FeatureCollection', features:custom});
+  map.getSource('region-labels').setData({type:'FeatureCollection', features:labels});
+}
+
+/* ━━ Shipping Lanes (static) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function buildLanesGeoJSON() {
+  const routes = [
+    {name:'Suez-Mediterranean',coords:[[32.5,31.3],[30,33],[15,36],[3,36],[-5.4,36]]},
+    {name:'Suez-Bab el-Mandab',coords:[[32.6,29.9],[35,27],[40,20],[43.3,12.5]]},
+    {name:'Bab el-Mandab-Hormuz',coords:[[43.3,12.5],[48,13],[56.5,25.5]]},
+    {name:'Hormuz-India',coords:[[56.5,25.5],[60,22],[68,18],[72,18.9]]},
+    {name:'India-Malacca',coords:[[80,10],[90,8],[95,5],[100,3],[103.7,1.3]]},
+    {name:'Malacca-South China Sea',coords:[[103.7,1.3],[105,2],[110,5],[115,10],[117,15]]},
+    {name:'South China Sea-Taiwan',coords:[[117,15],[118,18],[119,23],[119.5,25]]},
+    {name:'Taiwan-Korea-Japan',coords:[[119.5,25],[125,30],[129.5,34],[135,35]]},
+    {name:'Gibraltar-Atlantic',coords:[[-5.4,36],[-10,37],[-20,40],[-30,42],[-50,40]]},
+    {name:'Atlantic-US East Coast',coords:[[-50,40],[-60,38],[-70,36],[-74,40]]},
+    {name:'Cape of Good Hope',coords:[[40,-10],[35,-20],[22,-34],[18,-34.5],[15,-33]]},
+    {name:'Panama approach-Atlantic',coords:[[-79.6,9.1],[-78,11],[-75,13],[-70,18],[-65,25]]},
+    {name:'Panama approach-Pacific',coords:[[-79.9,8.9],[-82,8],[-90,10],[-100,15]]},
+    {name:'Singapore-Indonesia',coords:[[104,1.2],[106,-5],[110,-7],[115,-8.5]]},
+    {name:'Indian Ocean crossroad',coords:[[55,-5],[65,-3],[75,2],[80,6]]},
+  ];
+  return routes.map(r => ({
+    type:'Feature',
+    geometry:{type:'LineString', coordinates:r.coords},
+    properties:{name:r.name},
+  }));
+}
+
+/* ━━ Sidebar ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function renderRegionList() {
+  const list = $('#region-list');
+  list.innerHTML = '';
+  for (const r of S.regions) {
+    const el = document.createElement('div');
+    el.className = 'region-item' + (S.selectedRegion === r.code ? ' active' : '');
+    const count = r.latest ? r.latest.total_ships : '--';
+    const alertCls = r.unacked_alerts > 0 ? ' show' : '';
+    let deleteBtn = '';
+    if (r.type === 'custom') {
+      deleteBtn = `<button class="r-delete" data-id="${r.id}" title="Delete region">&times;</button>`;
+    }
+    el.innerHTML = `
+      <span class="r-name">${r.name}</span>
+      ${r.type==='custom'?'<span class="region-type-badge">custom</span>':''}
+      <span class="r-count">${count}</span>
+      <span class="r-alert${alertCls}"></span>
+      ${deleteBtn}`;
+    el.addEventListener('click', (e) => {
+      if (e.target.classList.contains('r-delete')) {
+        deleteCustomRegion(parseInt(e.target.dataset.id), r.name);
+        return;
+      }
+      selectRegion(r.code);
+    });
+    list.appendChild(el);
+  }
+}
+
+function selectRegion(code) {
+  S.selectedRegion = code;
+  renderRegionList();
+  const r = S.regions.find(x => x.code === code);
+  if (r) {
+    map.fitBounds(
+      [[r.bbox[0], r.bbox[1]], [r.bbox[2], r.bbox[3]]],
+      {padding:60, maxZoom:r.zoom + 1, duration:800}
+    );
+    openAnalytics(code, r.name);
+  }
+}
+
+/* ━━ Analytics Panel ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+async function openAnalytics(code, name) {
+  $('#analytics-title').textContent = name || code;
+  $('#analytics').classList.add('open');
+
+  const gran = $('#tl-granularity').value;
+  const start = $('#tl-start').value ? new Date($('#tl-start').value).toISOString() : '';
+  const end = $('#tl-end').value ? new Date($('#tl-end').value).toISOString() : '';
+
+  let url = `/api/regions/${code}/analytics?granularity=${gran}`;
+  if (start) url += `&start=${start}`;
+  if (end) url += `&end=${end}`;
+
+  try {
+    const d = await api(url);
+    S.analyticsData = d;
+    renderChart(d);
+    renderKPIs(d.kpis);
+    loadAlerts(code);
+  } catch(e) {}
+}
+
+function renderChart(d) {
+  const ctx = $('#analytics-chart');
+  if (S.analyticsChart) S.analyticsChart.destroy();
+
+  const labels = d.series.map(s => s.timestamp);
+  S.analyticsChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Total Ships',
+          type: 'line',
+          data: d.series.map(s => s.total_ships),
+          borderColor: '#c9d1d9',
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.3,
+          yAxisID: 'y',
+          order: 0,
+        },
+        {
+          label: 'Cargo',
+          data: d.series.map(s => s.cargos + s.moving_cargos),
+          backgroundColor: 'rgba(88,166,255,0.6)',
+          yAxisID: 'y1',
+          order: 1,
+        },
+        {
+          label: 'Tankers',
+          data: d.series.map(s => s.tankers + s.moving_tankers),
+          backgroundColor: 'rgba(210,153,34,0.6)',
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {mode:'index', intersect:false},
+      plugins: {
+        legend: {labels:{color:'#8b949e',boxWidth:12,font:{size:11}}},
+        tooltip: {
+          callbacks: {
+            afterBody(items) {
+              const idx = items[0].dataIndex;
+              const s = d.series[idx];
+              return [
+                `Density: ${s.density} ships/km\u00b2`,
+                `Moving: ${s.moving_tankers + s.moving_cargos}`,
+                `Stationary: ${s.tankers + s.cargos}`,
+              ];
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          ticks:{color:'#8b949e',font:{size:10},maxTicksLimit:10},
+          grid:{color:'rgba(48,54,61,0.5)'},
+        },
+        y: {
+          position:'left',
+          ticks:{color:'#c9d1d9',font:{size:10}},
+          grid:{color:'rgba(48,54,61,0.5)'},
+          title:{display:true,text:'Total',color:'#8b949e',font:{size:10}},
+        },
+        y1: {
+          position:'right',
+          ticks:{color:'#8b949e',font:{size:10}},
+          grid:{drawOnChartArea:false},
+          title:{display:true,text:'By Type',color:'#8b949e',font:{size:10}},
+        },
+      },
+    },
+  });
+}
+
+function renderKPIs(kpis) {
+  $('#kpi-avg').textContent = kpis.avg_total || '--';
+  $('#kpi-peak').textContent = kpis.peak_hour != null ? `${kpis.peak_hour}:00` : '--';
+  // Cargo/tanker ratio from the latest series point
+  const d = S.analyticsData;
+  if (d && d.series.length > 0) {
+    const last = d.series[d.series.length - 1];
+    const cargo = last.cargos + last.moving_cargos;
+    const tanker = last.tankers + last.moving_tankers;
+    $('#kpi-ratio').textContent = tanker > 0 ? (cargo/tanker).toFixed(1) + ':1' : cargo + ':0';
+  }
+}
+
+async function loadAlerts(code) {
+  try {
+    const d = await api(`/api/alerts/${code}`);
+    const log = $('#alert-log');
+    log.innerHTML = '';
+    const badge = $('#alert-badge');
+    const unacked = d.alerts.filter(a => !a.acknowledged_at);
+    if (unacked.length > 0) {
+      badge.textContent = unacked.length;
+      badge.style.display = 'inline';
+    } else {
+      badge.style.display = 'none';
+    }
+    for (const a of d.alerts) {
+      const el = document.createElement('div');
+      el.className = 'alert-item';
+      el.innerHTML = `
+        <div class="a-msg">${a.message}</div>
+        <div class="a-time">${new Date(a.created_at).toLocaleString()}</div>
+        ${!a.acknowledged_at ? `<button onclick="ackAlert(${a.id})">Ack</button>` : '<span style="color:var(--success);font-size:10px">&#10003;</span>'}`;
+      log.appendChild(el);
+    }
+  } catch(e) {}
+}
+
+window.ackAlert = async function(id) {
+  try {
+    await api(`/api/alerts/${id}/acknowledge`, {method:'POST'});
+    toast('Alert acknowledged', 'success');
+    if (S.selectedRegion) loadAlerts(S.selectedRegion);
+    loadRegions(); // refresh badge counts
+  } catch(e) {}
+};
+
+function closeAnalytics() {
+  $('#analytics').classList.remove('open');
+  S.selectedRegion = null;
+  renderRegionList();
+}
+
+/* ━━ CSV Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function exportCSV() {
+  if (!S.analyticsData || !S.analyticsData.series.length) {
+    toast('No data to export', 'error');
+    return;
+  }
+  const rows = [['timestamp','total_ships','tankers','cargos','moving_tankers','moving_cargos','density']];
+  for (const s of S.analyticsData.series) {
+    rows.push([s.timestamp, s.total_ships, s.tankers, s.cargos, s.moving_tankers, s.moving_cargos, s.density]);
+  }
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${S.selectedRegion || 'region'}_analytics.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('CSV downloaded', 'success');
+}
+
+/* ━━ Custom Regions ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+let pendingPolygon = null;
+
+function toggleDrawMode() {
+  S.drawMode = !S.drawMode;
+  $('#btn-draw').classList.toggle('active', S.drawMode);
+  if (S.drawMode) {
+    draw.changeMode('draw_polygon');
+    toast('Click to place vertices, double-click to finish', 'info');
+  } else {
+    draw.changeMode('simple_select');
+    draw.deleteAll();
+  }
+}
+
+function onDrawCreate(e) {
+  const feature = e.features[0];
+  if (!feature || feature.geometry.type !== 'Polygon') return;
+  // Convert GeoJSON coords [lon,lat] to our format [lat,lon]
+  const coords = feature.geometry.coordinates[0].slice(0, -1); // remove closing point
+  pendingPolygon = coords.map(c => [c[1], c[0]]);
+  draw.deleteAll();
+  S.drawMode = false;
+  $('#btn-draw').classList.remove('active');
+  // Show dialog
+  $('#rd-name').value = '';
+  $('#rd-desc').value = '';
+  $('#rd-high').value = '';
+  $('#rd-low').value = '';
+  $('#region-dialog-overlay').classList.add('show');
+}
+
+async function saveCustomRegion() {
+  const name = $('#rd-name').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  const code = 'C_' + name.replace(/[^a-zA-Z0-9]/g,'').slice(0,12).toUpperCase();
+  const body = {
+    code,
+    name,
+    description: $('#rd-desc').value.trim(),
+    polygon: pendingPolygon,
+    high_threshold: $('#rd-high').value ? parseInt($('#rd-high').value) : null,
+    low_threshold: $('#rd-low').value ? parseInt($('#rd-low').value) : null,
+  };
+  try {
+    await api('/api/regions/custom', {method:'POST', body});
+    toast('Region saved', 'success');
+    $('#region-dialog-overlay').classList.remove('show');
+    pendingPolygon = null;
+    await loadRegions();
+  } catch(e) {}
+}
+
+async function deleteCustomRegion(id, name) {
+  if (!confirm(`Delete region "${name}"?`)) return;
+  try {
+    await api(`/api/regions/custom/${id}`, {method:'DELETE'});
+    toast('Region deleted', 'success');
+    if (S.selectedRegion) closeAnalytics();
+    await loadRegions();
+  } catch(e) {}
+}
+
+/* ━━ Timeline ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function updateTimelineLabel() {
+  const idx = parseInt($('#tl-slider').value);
+  const ts = S.snapshots[idx];
+  $('#tl-timestamp').textContent = ts ? new Date(ts).toLocaleString() : '--';
+}
+
+function onSliderChange() {
+  updateTimelineLabel();
+  const idx = parseInt($('#tl-slider').value);
+  const ts = S.snapshots[idx];
+  if (ts) loadVessels(ts);
+}
+
+function togglePlay() {
+  S.playing = !S.playing;
+  $('#tl-play').innerHTML = S.playing ? '&#9646;&#9646;' : '&#9654;';
+  if (S.playing) {
+    const speed = parseInt($('#tl-speed').value);
+    S.playTimer = setInterval(() => {
+      const slider = $('#tl-slider');
+      let v = parseInt(slider.value) + 1;
+      if (v > parseInt(slider.max)) {
+        v = 0; // loop
+      }
+      slider.value = v;
+      onSliderChange();
+    }, speed);
+  } else {
+    clearInterval(S.playTimer);
+    S.playTimer = null;
+  }
+}
+
+/* ━━ Lanes Toggle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function toggleLanes() {
+  S.lanesVisible = !S.lanesVisible;
+  map.setLayoutProperty('lanes-layer', 'visibility', S.lanesVisible ? 'visible' : 'none');
+  $('#btn-lanes').classList.toggle('active', S.lanesVisible);
+}
+
+/* ━━ Event Wiring ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+$('#btn-refresh').addEventListener('click', refresh);
+$('#btn-draw').addEventListener('click', toggleDrawMode);
+$('#btn-lanes').addEventListener('click', toggleLanes);
+$('#filter-type').addEventListener('change', () => loadVessels());
+$('#filter-motion').addEventListener('change', () => loadVessels());
+$('#analytics-close').addEventListener('click', closeAnalytics);
+$('#csv-export').addEventListener('click', exportCSV);
+$('#tl-slider').addEventListener('input', onSliderChange);
+$('#tl-play').addEventListener('click', togglePlay);
+$('#rd-save').addEventListener('click', saveCustomRegion);
+$('#rd-cancel').addEventListener('click', () => {
+  $('#region-dialog-overlay').classList.remove('show');
+  pendingPolygon = null;
+});
+
+// Timeline presets
+$$('.tl-presets button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const hours = parseInt(btn.dataset.hours);
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600000);
+    $('#tl-start').value = start.toISOString().slice(0,16);
+    $('#tl-end').value = end.toISOString().slice(0,16);
+    // Reload analytics if open
+    if (S.selectedRegion) {
+      openAnalytics(S.selectedRegion, S.regions.find(r=>r.code===S.selectedRegion)?.name);
+    }
+  });
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  switch(e.key.toUpperCase()) {
+    case 'R': e.preventDefault(); refresh(); break;
+    case 'D': e.preventDefault(); toggleDrawMode(); break;
+    case 'L': e.preventDefault(); toggleLanes(); break;
+    case 'ESCAPE':
+      e.preventDefault();
+      if ($('#region-dialog-overlay').classList.contains('show')) {
+        $('#region-dialog-overlay').classList.remove('show');
+        pendingPolygon = null;
+      } else if ($('#analytics').classList.contains('open')) {
+        closeAnalytics();
+      } else if (S.drawMode) {
+        toggleDrawMode();
+      }
+      break;
+  }
+});
+
+/* ━━ Init ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+async function init() {
+  try {
+    const cfg = await api('/api/config');
+    S.mapboxToken = cfg.mapbox_token;
+    if (!S.mapboxToken) {
+      toast('MAPBOX_TOKEN not configured in .env', 'error');
+      return;
+    }
+    initMap(S.mapboxToken);
+  } catch(e) {
+    toast('Failed to load config', 'error');
+  }
+}
+
+init();
+
+})();
+</script>
+</body>
+</html>

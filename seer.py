@@ -21,22 +21,25 @@ import numpy as np
 ########
 # Define color ranges
 # Red (in HSV, red wraps around 0 and 180)
-lower_red1 = np.array([0, 100, 100])
+lower_red1 = np.array([0, 120, 100])
 upper_red1 = np.array([10, 255, 255])
-lower_red2 = np.array([160, 100, 100])
+lower_red2 = np.array([160, 120, 100])
 upper_red2 = np.array([179, 255, 255])
 
-# Green
-lower_green = np.array([40, 50, 50])
+# Green — moderate tightening: S≥80 filters teal/olive while surviving JPEG compression
+lower_green = np.array([40, 80, 80])
 upper_green = np.array([90, 255, 255])
 
-# Contour area bounds (in pixels²) — filters out noise and oversized blobs
-MIN_MARKER_AREA = 10
-MAX_MARKER_AREA = 15000
+# Contour area bounds (in pixels²) — 30 filters sub-pixel noise, 10000 filters UI blobs
+MIN_MARKER_AREA = 30
+MAX_MARKER_AREA = 10000
 
 # Shape classification thresholds
 CIRCULARITY_THRESHOLD = 0.55   # 4π·area/perimeter² above this → circle
 POLY_EPSILON_FACTOR = 0.04     # approxPolyDP epsilon as fraction of arc length
+
+# Morphological kernel for noise removal (opening = erosion → dilation)
+_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
 
 ########
@@ -64,6 +67,7 @@ def detect_markers(mask, original_img=None, color_name=""):
             continue
 
         approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
+        n_vertices = len(approx)
         circularity = 4 * math.pi * area / (perimeter * perimeter)
 
         if circularity < CIRCULARITY_THRESHOLD:
@@ -98,12 +102,19 @@ def detect_markers(mask, original_img=None, color_name=""):
 # Convenience wrappers
 
 def _build_masks(image_hsv):
-    """Build red (tanker) and green (cargo) binary masks from an HSV image."""
+    """Build red (tanker) and green (cargo) binary masks from an HSV image.
+
+    Applies morphological opening (erosion → dilation) to each mask to
+    remove small noise blobs, JPEG artifacts, and anti-aliasing debris
+    while preserving the shape of real ship markers.
+    """
     mask_red1 = cv2.inRange(image_hsv, lower_red1, upper_red1)
     mask_red2 = cv2.inRange(image_hsv, lower_red2, upper_red2)
     mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, _MORPH_KERNEL)
 
     mask_green = cv2.inRange(image_hsv, lower_green, upper_green)
+    mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, _MORPH_KERNEL)
 
     return mask_red, mask_green
 
