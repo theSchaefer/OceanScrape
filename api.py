@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from regions import REGIONS
+from update_database import _SCHEMA_SQL
 
 load_dotenv()
 
@@ -109,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_unacked
 def _startup():
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute(_SCHEMA_SQL)
             cur.execute(_EXTRA_SCHEMA)
 
 
