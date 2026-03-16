@@ -34,6 +34,7 @@ from patchright.sync_api import sync_playwright
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y
 from regions import REGIONS
+from update_database import process_log
 
 load_dotenv()
 
@@ -806,6 +807,21 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
     current_lat, current_lon = center_lat, center_lon
     map_locator = page.locator('#map_canvas')
 
+    # Verify map canvas is present before capturing tiles
+    canvas_state = page.evaluate("""
+    () => {
+        const mc = document.getElementById('map_canvas');
+        if (!mc) return 'canvas_missing';
+        const rect = mc.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return 'canvas_zero_size';
+        const overlay = document.querySelector('.leaflet-overlay-pane');
+        if (!overlay) return 'overlay_pane_missing';
+        return 'ok';
+    }
+    """)
+    if canvas_state != "ok":
+        logger.warning("Region %s: map not ready — %s", region_name, canvas_state)
+
     # Navigate to first tile
     first_row, first_col, first_lat, first_lon = tiles[0]
     _pan_map(page, center_lat, center_lon, first_lat, first_lon, zoom,
@@ -826,9 +842,13 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
             img_bytes = map_locator.screenshot(**screenshot_args)
 
             # Inline ship detection + geo-coordinate extraction
+            logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
+                         row, col, len(img_bytes))
             det, tile_markers = _detect_ships_inline(
                 img_bytes, lat, lon, zoom, map_width, map_height
             )
+            logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
+                         row, col, det, len(tile_markers))
             st = det["stationary_tankers"]
             mt = det["moving_tankers"]
             sc = det["stationary_cargos"]
@@ -1041,6 +1061,9 @@ def capture_batch(region_batch, timestamp_str):
                     results[name] = result
                 except Exception as e:
                     logger.error("Region %s capture failed: %s", name, e)
+                    _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
+                              REGIONS[name]["zoom"], [],
+                              vessels=[])
 
             context.close()
             browser.close()
@@ -1074,7 +1097,14 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
     else:
         entries = []
 
-    status = "success" if failed == 0 else ("partial" if ok > 0 else "error")
+    if total == 0 and ok == 0:
+        status = "error"
+    elif failed == 0:
+        status = "success"
+    elif ok > 0:
+        status = "partial"
+    else:
+        status = "error"
 
     entries.append({
         "region": region,
@@ -1099,6 +1129,11 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
 
     with open(json_path, "w") as f:
         json.dump(entries, f, indent=2)
+
+    logger.info("_log_json: region=%s status=%s tankers=%d cargos=%d "
+                "moving_t=%d moving_c=%d tiles=%d/%d vessels=%d",
+                region, status, tankers, cargos, moving_tankers, moving_cargos,
+                ok, total, len(vessels or []))
 
 
 # --- Orchestration ------------------------------------------------------------
@@ -1167,6 +1202,14 @@ def capture_all_regions(region_filter=None):
         elapsed, total_tiles, per_tile,
         grand_tankers, grand_mov_t, grand_cargos, grand_mov_c,
     )
+
+    # Flush captures_log.json into PostgreSQL
+    try:
+        logger.info("Ingesting captures log into database...")
+        process_log()
+        logger.info("Database ingestion complete")
+    except Exception as e:
+        logger.error("Database ingestion failed: %s (data preserved in captures_log.json)", e)
 
     return all_results
 

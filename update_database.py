@@ -299,17 +299,27 @@ def process_log(log_path=None):
         total_vessels = 0
         with conn.cursor() as cur:
             for entry in entries:
+                region = entry.get("region", "?")
                 row = _entry_to_row(entry)
+                logger.debug("Inserting capture: region=%s status=%s tankers=%d cargos=%d",
+                             region, entry.get("status"), entry.get("tankers", 0),
+                             entry.get("cargos", 0))
                 cur.execute(_INSERT_SQL + " RETURNING id", row)
                 result = cur.fetchone()
                 if result:
                     capture_id = result[0]
                     inserted += 1
                     vessels = entry.get("vessels", [])
-                    total_vessels += _insert_vessels(cur, capture_id, vessels)
+                    v_count = _insert_vessels(cur, capture_id, vessels)
+                    total_vessels += v_count
+                    logger.info("Inserted capture id=%d region=%s (%d vessels)",
+                                capture_id, region, v_count)
                 else:
                     skipped += 1
+                    logger.debug("Skipped duplicate: region=%s ts=%s",
+                                 region, entry.get("date_time"))
         conn.commit()
+        logger.info("Committed %d captures to database", inserted)
         logger.info(
             "Processed %d entries from captures log: %d inserted, %d duplicates skipped, %d vessels",
             len(entries), inserted, skipped, total_vessels,
