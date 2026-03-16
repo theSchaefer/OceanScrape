@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # --- Proxies ------------------------------------------------------------------
 
 proxies = []
-for i in range(10011, 10025):
+for i in range(10026, 10096):
     proxy = {
         "server": f"http://isp.decodo.com:{i}",
         "username": "sp9r12fuvq",
