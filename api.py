@@ -157,6 +157,60 @@ def _polygon_bbox(polygon):
     return [min(lons), min(lats), max(lons), max(lats)]
 
 
+def _point_in_polygon(lat, lon, polygon):
+    """Ray-casting point-in-polygon test. Polygon is list of (lat, lon)."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]
+        yj, xj = polygon[j]
+        if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _custom_region_stats_from_vp(cur, polygon, capture_ids):
+    """Count vessels inside a polygon from vessel_positions for given capture_ids.
+    Returns dict with tankers, cargos, moving_tankers, moving_cargos counts.
+    """
+    if not capture_ids:
+        return None
+    # Use bounding box for initial SQL filter, then refine with point-in-polygon
+    bbox = _polygon_bbox(polygon)  # [min_lon, min_lat, max_lon, max_lat]
+    placeholders = ",".join(["%s"] * len(capture_ids))
+    cur.execute(f"""
+        SELECT vp.lat, vp.lon, vp.ship_type, vp.motion, c.captured_at
+        FROM vessel_positions vp
+        JOIN captures c ON c.id = vp.capture_id
+        WHERE vp.capture_id IN ({placeholders})
+              AND vp.lat BETWEEN %s AND %s
+              AND vp.lon BETWEEN %s AND %s
+    """, capture_ids + [bbox[1], bbox[3], bbox[0], bbox[2]])
+    rows = cur.fetchall()
+
+    tankers = cargos = moving_tankers = moving_cargos = 0
+    for r in rows:
+        if not _point_in_polygon(r["lat"], r["lon"], polygon):
+            continue
+        is_tanker = r["ship_type"] == "tanker"
+        is_moving = r["motion"] == "moving"
+        if is_tanker and is_moving:
+            moving_tankers += 1
+        elif is_tanker:
+            tankers += 1
+        elif is_moving:
+            moving_cargos += 1
+        else:
+            cargos += 1
+    return {
+        "tankers": tankers, "cargos": cargos,
+        "moving_tankers": moving_tankers, "moving_cargos": moving_cargos,
+        "total_ships": tankers + cargos + moving_tankers + moving_cargos,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -294,24 +348,32 @@ def get_regions():
             "unacked_alerts": alert_counts.get(code, 0),
         })
 
+    # For custom regions, compute latest stats from vessel_positions within polygon
     for cr in custom_rows:
         polygon = cr["polygon"]  # already JSONB list
         area = _polygon_area_km2(polygon)
-        latest = latest_map.get(cr["code"])
-        total = 0
         latest_data = None
-        if latest:
-            total = (latest["tankers"] + latest["cargos"]
-                     + latest["moving_tankers"] + latest["moving_cargos"])
-            latest_data = {
-                "captured_at": latest["captured_at"].isoformat(),
-                "tankers": latest["tankers"],
-                "cargos": latest["cargos"],
-                "moving_tankers": latest["moving_tankers"],
-                "moving_cargos": latest["moving_cargos"],
-                "total_ships": total,
-                "density": round(total / area, 2) if area > 0 else 0,
-            }
+
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Get the most recent capture IDs (one per predefined region)
+                cur.execute("""
+                    SELECT DISTINCT ON (region) id, captured_at
+                    FROM captures
+                    ORDER BY region, captured_at DESC
+                """)
+                latest_captures = cur.fetchall()
+                if latest_captures:
+                    capture_ids = [c["id"] for c in latest_captures]
+                    most_recent_ts = max(c["captured_at"] for c in latest_captures)
+                    stats = _custom_region_stats_from_vp(cur, polygon, capture_ids)
+                    if stats and stats["total_ships"] > 0:
+                        latest_data = {
+                            "captured_at": most_recent_ts.isoformat(),
+                            **stats,
+                            "density": round(stats["total_ships"] / area, 2) if area > 0 else 0,
+                        }
+
         regions_out.append({
             "code": cr["code"],
             "name": cr["name"],
@@ -397,9 +459,13 @@ def get_region_analytics(
     region_def = REGIONS.get(code)
     area = 0.0
     region_name = code
+    polygon = None
+    is_custom = False
+
     if region_def:
         area = _polygon_area_km2(region_def["polygon"])
         region_name = region_def["name"]
+        polygon = region_def["polygon"]
     else:
         # Check custom regions
         with get_conn() as conn:
@@ -409,7 +475,14 @@ def get_region_analytics(
                 if cr:
                     area = _polygon_area_km2(cr["polygon"])
                     region_name = cr["name"]
+                    polygon = cr["polygon"]
+                    is_custom = True
 
+    if is_custom and polygon:
+        return _custom_region_analytics(code, region_name, polygon, area,
+                                        start_dt, end_dt, trunc, granularity)
+
+    # Predefined region: query captures table directly
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(f"""
@@ -419,8 +492,6 @@ def get_region_analytics(
                        AVG(moving_tankers)::int AS moving_tankers,
                        AVG(moving_cargos)::int AS moving_cargos,
                        AVG(tankers + cargos + moving_tankers + moving_cargos)::int AS total_ships,
-                       MAX(tankers + cargos + moving_tankers + moving_cargos) AS max_ships,
-                       MIN(tankers + cargos + moving_tankers + moving_cargos) AS min_ships,
                        COUNT(*) AS captures_in_bucket
                 FROM captures
                 WHERE region = %s
@@ -482,6 +553,89 @@ def get_region_analytics(
             "avg_density": round(avg_total / area, 2) if area > 0 else 0,
             "captures_count": kpi_row["captures_count"],
             "peak_hour": peak_row["hr"] if peak_row else None,
+        },
+    }
+
+
+def _custom_region_analytics(code, region_name, polygon, area,
+                             start_dt, end_dt, trunc, granularity):
+    """Compute analytics for a custom region by scanning vessel_positions."""
+    from collections import defaultdict
+
+    bbox = _polygon_bbox(polygon)
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get all vessel positions within the bbox and time range
+            cur.execute("""
+                SELECT vp.lat, vp.lon, vp.ship_type, vp.motion,
+                       date_trunc(%s, c.captured_at) AS bucket,
+                       c.captured_at
+                FROM vessel_positions vp
+                JOIN captures c ON c.id = vp.capture_id
+                WHERE c.captured_at >= %s AND c.captured_at <= %s
+                      AND vp.lat BETWEEN %s AND %s
+                      AND vp.lon BETWEEN %s AND %s
+            """, (trunc, start_dt, end_dt, bbox[1], bbox[3], bbox[0], bbox[2]))
+            rows = cur.fetchall()
+
+    # Group by time bucket, filter by polygon
+    buckets = defaultdict(lambda: {"tankers": 0, "cargos": 0,
+                                   "moving_tankers": 0, "moving_cargos": 0})
+    for r in rows:
+        if not _point_in_polygon(r["lat"], r["lon"], polygon):
+            continue
+        b = r["bucket"]
+        is_tanker = r["ship_type"] == "tanker"
+        is_moving = r["motion"] == "moving"
+        if is_tanker and is_moving:
+            buckets[b]["moving_tankers"] += 1
+        elif is_tanker:
+            buckets[b]["tankers"] += 1
+        elif is_moving:
+            buckets[b]["moving_cargos"] += 1
+        else:
+            buckets[b]["cargos"] += 1
+
+    series = []
+    for bucket in sorted(buckets.keys()):
+        d = buckets[bucket]
+        total = d["tankers"] + d["cargos"] + d["moving_tankers"] + d["moving_cargos"]
+        series.append({
+            "timestamp": bucket.isoformat(),
+            **d,
+            "total_ships": total,
+            "density": round(total / area, 2) if area > 0 else 0,
+        })
+
+    # KPIs
+    totals = [s["total_ships"] for s in series]
+    avg_total = int(sum(totals) / len(totals)) if totals else 0
+    max_total = max(totals) if totals else 0
+    min_total = min(totals) if totals else 0
+
+    # Peak hour: aggregate by hour-of-day
+    from collections import Counter
+    hour_sums = defaultdict(list)
+    for r in rows:
+        if not _point_in_polygon(r["lat"], r["lon"], polygon):
+            continue
+        hour_sums[r["captured_at"].hour].append(1)
+    peak_hour = None
+    if hour_sums:
+        peak_hour = max(hour_sums, key=lambda h: len(hour_sums[h]))
+
+    return {
+        "region": code,
+        "region_name": region_name,
+        "granularity": granularity,
+        "series": series,
+        "kpis": {
+            "avg_total": avg_total,
+            "max_total": max_total,
+            "min_total": min_total,
+            "avg_density": round(avg_total / area, 2) if area > 0 else 0,
+            "captures_count": len(series),
+            "peak_hour": peak_hour,
         },
     }
 

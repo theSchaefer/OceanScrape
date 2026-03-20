@@ -337,8 +337,8 @@ function addMapSources() {
     type: 'geojson',
     data: {type:'FeatureCollection', features:[]},
     cluster: true,
-    clusterMaxZoom: 10,
-    clusterRadius: 50,
+    clusterMaxZoom: 8,
+    clusterRadius: 30,
     clusterProperties: {
       tankerCount: ['+', ['case', ['==', ['get','vtype'], 'tanker'], 1, 0]],
       cargoCount: ['+', ['case', ['==', ['get','vtype'], 'cargo'], 1, 0]],
@@ -356,28 +356,7 @@ function addMapSources() {
 }
 
 function addMapLayers() {
-  // ── Heatmap (low zoom) ──
-  map.addLayer({
-    id: 'vessels-heat',
-    type: 'heatmap',
-    source: 'vessels',
-    maxzoom: 7,
-    filter: ['!', ['has', 'point_count']],
-    paint: {
-      'heatmap-weight': 1,
-      'heatmap-intensity': ['interpolate',['linear'],['zoom'],0,0.5,7,2],
-      'heatmap-radius': ['interpolate',['linear'],['zoom'],0,8,7,25],
-      'heatmap-color': [
-        'interpolate',['linear'],['heatmap-density'],
-        0,'rgba(0,0,0,0)', 0.2,'rgba(30,60,150,0.4)',
-        0.4,'rgba(60,130,200,0.6)', 0.6,'rgba(210,153,34,0.7)',
-        0.8,'rgba(240,120,30,0.85)', 1,'rgba(255,70,30,1)'
-      ],
-      'heatmap-opacity': ['interpolate',['linear'],['zoom'],6,1,7,0],
-    },
-  });
-
-  // ── Clusters (mid zoom) ──
+  // ── Clusters (low-mid zoom, disappear at zoom 9+) ──
   map.addLayer({
     id: 'vessel-clusters',
     type: 'circle',
@@ -389,9 +368,9 @@ function addMapLayers() {
         ['>', ['get','tankerCount'], ['get','cargoCount']], '#d29922',
         '#58a6ff'
       ],
-      'circle-radius': ['step',['get','point_count'],14,20,20,50,26,100,32],
+      'circle-radius': ['step',['get','point_count'],10,20,14,50,18,100,22],
       'circle-opacity': 0.8,
-      'circle-stroke-width': 2,
+      'circle-stroke-width': 1.5,
       'circle-stroke-color': 'rgba(255,255,255,0.3)',
     },
   });
@@ -402,20 +381,19 @@ function addMapLayers() {
     filter: ['has', 'point_count'],
     layout: {
       'text-field': '{point_count_abbreviated}',
-      'text-size': 11,
+      'text-size': 10,
     },
     paint: {'text-color': '#fff'},
   });
 
-  // ── Individual vessels (high zoom) ──
+  // ── Individual vessels (visible at all zoom levels when not clustered) ──
   map.addLayer({
     id: 'vessel-points',
     type: 'circle',
     source: 'vessels',
     filter: ['!', ['has', 'point_count']],
-    minzoom: 7,
     paint: {
-      'circle-radius': ['interpolate',['linear'],['zoom'],7,3,14,7],
+      'circle-radius': ['interpolate',['linear'],['zoom'],2,2,8,4,14,7],
       'circle-color': ['case',['==',['get','vtype'],'tanker'],'#d29922','#58a6ff'],
       'circle-opacity': ['case',['==',['get','motion'],'stationary'],0.5,0.9],
       'circle-stroke-width': 1.5,
@@ -462,6 +440,8 @@ function addMapLayers() {
 
   // ── Click handlers ──
   map.on('click', 'vessel-points', (e) => {
+    e.originalEvent.stopPropagation();
+    e._stopped = true; // flag to prevent region-fill handler
     const f = e.features[0];
     const p = f.properties;
     new mapboxgl.Popup({closeButton:true, maxWidth:'240px'})
@@ -479,12 +459,14 @@ function addMapLayers() {
   map.on('mouseenter', 'vessel-points', () => map.getCanvas().style.cursor = 'pointer');
   map.on('mouseleave', 'vessel-points', () => map.getCanvas().style.cursor = '');
 
-  // Region click
+  // Region click (skip if vessel click already handled)
   map.on('click', 'region-fill', (e) => {
+    if (e._stopped) return;
     const code = e.features[0].properties.code;
     selectRegion(code);
   });
   map.on('click', 'custom-region-fill', (e) => {
+    if (e._stopped) return;
     const code = e.features[0].properties.code;
     selectRegion(code);
   });
@@ -555,18 +537,45 @@ async function loadVessels(timestamp) {
 async function loadTimeline() {
   try {
     const d = await api('/api/timeline');
-    S.snapshots = (d.snapshots || []).reverse(); // chronological
-    const slider = $('#tl-slider');
-    slider.max = Math.max(0, S.snapshots.length - 1);
-    slider.value = slider.max;
+    S.rawSnapshots = (d.snapshots || []).reverse(); // chronological
     if (d.earliest) {
       $('#tl-start').value = d.earliest.slice(0,16);
     }
     if (d.latest) {
       $('#tl-end').value = d.latest.slice(0,16);
     }
-    updateTimelineLabel();
+    rebuildTimelineSteps();
   } catch(e) {}
+}
+
+function rebuildTimelineSteps() {
+  const gran = $('#tl-granularity').value;
+  const startVal = $('#tl-start').value;
+  const endVal = $('#tl-end').value;
+
+  if (gran === 'hourly' || !startVal || !endVal) {
+    // Use raw snapshots directly
+    S.snapshots = S.rawSnapshots || [];
+  } else {
+    // Generate synthetic date/week steps between start and end
+    const start = new Date(startVal);
+    const end = new Date(endVal);
+    const stepMs = gran === 'daily' ? 86400000 : 604800000;
+    const steps = [];
+    for (let t = start.getTime(); t <= end.getTime(); t += stepMs) {
+      steps.push(new Date(t).toISOString());
+    }
+    // Ensure we have at least the start and end
+    if (steps.length === 0 && S.rawSnapshots.length > 0) {
+      steps.push(S.rawSnapshots[0]);
+    }
+    S.snapshots = steps;
+  }
+
+  const slider = $('#tl-slider');
+  slider.max = Math.max(0, S.snapshots.length - 1);
+  slider.value = slider.max;
+  updateTimelineLabel();
 }
 
 /* ━━ Map Data Updates ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -735,6 +744,7 @@ function renderChart(d) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       interaction: {mode:'index', intersect:false},
       plugins: {
         legend: {labels:{color:'#8b949e',boxWidth:12,font:{size:11}}},
@@ -922,7 +932,22 @@ function onSliderChange() {
   updateTimelineLabel();
   const idx = parseInt($('#tl-slider').value);
   const ts = S.snapshots[idx];
-  if (ts) loadVessels(ts);
+  if (!ts) return;
+
+  // For daily/weekly mode, find the nearest real snapshot
+  const gran = $('#tl-granularity').value;
+  if (gran !== 'hourly' && S.rawSnapshots && S.rawSnapshots.length > 0) {
+    const target = new Date(ts).getTime();
+    let best = S.rawSnapshots[0];
+    let bestDist = Math.abs(new Date(best).getTime() - target);
+    for (const snap of S.rawSnapshots) {
+      const dist = Math.abs(new Date(snap).getTime() - target);
+      if (dist < bestDist) { bestDist = dist; best = snap; }
+    }
+    loadVessels(best);
+  } else {
+    loadVessels(ts);
+  }
 }
 
 function togglePlay() {
@@ -962,6 +987,9 @@ $('#analytics-close').addEventListener('click', closeAnalytics);
 $('#csv-export').addEventListener('click', exportCSV);
 $('#tl-slider').addEventListener('input', onSliderChange);
 $('#tl-play').addEventListener('click', togglePlay);
+$('#tl-granularity').addEventListener('change', rebuildTimelineSteps);
+$('#tl-start').addEventListener('change', rebuildTimelineSteps);
+$('#tl-end').addEventListener('change', rebuildTimelineSteps);
 $('#rd-save').addEventListener('click', saveCustomRegion);
 $('#rd-cancel').addEventListener('click', () => {
   $('#region-dialog-overlay').classList.remove('show');
