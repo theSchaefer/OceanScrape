@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**MarineScraper** — Scrapes MarineTraffic.com using anti-detection browser automation across 34 ocean regions, counts ships via OpenCV inline, and stores results in PostgreSQL. Covers major shipping chokepoints across 5 zoom tiers (z9–z13).
+**MarineScraper** — Scrapes MarineTraffic.com using anti-detection browser automation across 57 ocean regions, counts ships via OpenCV inline, and stores results in PostgreSQL. Covers major shipping chokepoints and trade corridors across 5 zoom tiers (z9–z13), spanning ~30% of ocean surface.
 
 ## Key Commands
 
@@ -17,7 +17,7 @@ pip install -r requirements.txt
 python run.py
 
 # Run the scraper directly
-python scraper_global.py                   # All 34 regions
+python scraper_global.py                   # All 57 regions
 python scraper_global.py --save-images     # Also save tile images to disk
 python scraper_global.py --regions N,S,P   # Specific regions only (single-letter codes)
 python scraper_global.py --list-regions    # Print all region codes and names
@@ -67,7 +67,7 @@ Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-p
 ## Notes
 
 - `data/` directory is gitignored; it holds `captures_log.json` and saved images. The database is external (PostgreSQL).
-- At 8K viewport, most regions fit in a single tile (57 total tiles across 34 regions).
+- At 8K viewport, most regions fit in a single tile across 57 regions.
 
 ## Learning & Discovery
 

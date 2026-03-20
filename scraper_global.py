@@ -56,7 +56,22 @@ MAX_BROWSERS = int(os.getenv("MAX_BROWSERS", "4"))
 SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.argv
 # Screenshot format: jpeg is ~5x smaller and ~2x faster to encode than png
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
-SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "85"))
+SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
+
+# --- Tile grid cache ----------------------------------------------------------
+# Polygons, zoom levels, and viewport dims are constant across scrape cycles,
+# so tile grids only need to be computed once per region.
+
+_tile_grid_cache = {}
+
+
+def _get_tile_grid(region_name, config):
+    """Return (tiles, grid_info) for a region, computing only on first call."""
+    if region_name not in _tile_grid_cache:
+        _tile_grid_cache[region_name] = get_tile_centers(
+            config["polygon"], config["zoom"], VIEWPORT_WIDTH, VIEWPORT_HEIGHT
+        )
+    return _tile_grid_cache[region_name]
 
 
 # --- Logging ------------------------------------------------------------------
@@ -575,11 +590,9 @@ def _detect_ships_inline(img_bytes, center_lat, center_lon, zoom,
                  "stationary_cargos": int, "moving_cargos": int}
       - markers: [{"lat": float, "lon": float, "type": str, "motion": str}, ...]
     """
-    from seer import count_ships_from_bytes, extract_marker_coords
-    counts = count_ships_from_bytes(img_bytes)
-    markers = extract_marker_coords(img_bytes, center_lat, center_lon, zoom,
-                                    viewport_w, viewport_h)
-    return counts, markers
+    from seer import detect_ships_from_bytes
+    return detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
+                                   viewport_w, viewport_h)
 
 
 # --- Leaflet map discovery ----------------------------------------------------
@@ -627,7 +640,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     map_cx = int(map_dims["x"]) + map_width // 2
     map_cy = int(map_dims["y"]) + map_height // 2
 
-    tiles, grid_info = get_tile_centers(polygon, zoom, map_width, map_height)
+    tiles, grid_info = _get_tile_grid(region_name, config)
     n_rows = grid_info["n_rows"]
     n_cols = grid_info["n_cols"]
     logger.info("Region %s (%s): %d tiles (%dx%d), zoom %d",
@@ -996,9 +1009,7 @@ def capture_all_regions(region_filter=None):
     total_tiles = 0
     for name in names:
         config = REGIONS[name]
-        tiles, info = get_tile_centers(
-            config["polygon"], config["zoom"], VIEWPORT_WIDTH, VIEWPORT_HEIGHT
-        )
+        tiles, info = _get_tile_grid(name, config)
         total_tiles += len(tiles)
         logger.info("  %s (%s): %d tiles, zoom %d",
                     name, config.get("name", name), len(tiles), config["zoom"])
@@ -1102,9 +1113,7 @@ def main():
         if name not in REGIONS:
             continue
         config = REGIONS[name]
-        tiles, info = get_tile_centers(
-            config["polygon"], config["zoom"], VIEWPORT_WIDTH, VIEWPORT_HEIGHT
-        )
+        tiles, info = _get_tile_grid(name, config)
         total_tiles += len(tiles)
 
     active_count = len(region_filter) if region_filter else len(REGIONS)

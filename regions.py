@@ -133,6 +133,14 @@ REGIONS = {
     },
 
     # ── Zoom 11: Wide straits ────────────────────────────────────────────
+    "MKS": {
+        "polygon": _parse_polygon("MAKASSAR_POLYGON", [
+            (-1.00, 117.00), (-1.00, 120.00),
+            (-5.00, 120.00), (-5.00, 117.00),
+        ]),
+        "zoom": 11,
+        "name": "Makassar Strait",
+    },
     "TW": {
         "polygon": _parse_polygon("TAIWAN_POLYGON", [
             (25.50, 118.00), (25.50, 120.50),
@@ -175,6 +183,38 @@ REGIONS = {
     },
 
     # ── Zoom 10: Regional corridors ──────────────────────────────────────
+    "NS": {
+        "polygon": _parse_polygon("NORTH_SEA_POLYGON", [
+            (61.00, -4.00), (61.00, 9.00),
+            (51.00, 9.00), (51.00, -4.00),
+        ]),
+        "zoom": 10,
+        "name": "North Sea",
+    },
+    "BLK": {
+        "polygon": _parse_polygon("BLACK_SEA_POLYGON", [
+            (47.00, 28.00), (47.00, 42.00),
+            (41.00, 42.00), (41.00, 28.00),
+        ]),
+        "zoom": 10,
+        "name": "Black Sea",
+    },
+    "GOT": {
+        "polygon": _parse_polygon("GULF_OF_THAILAND_POLYGON", [
+            (14.00, 97.00), (14.00, 107.00),
+            (5.00, 107.00), (5.00, 97.00),
+        ]),
+        "zoom": 10,
+        "name": "Gulf of Thailand",
+    },
+    "RLP": {
+        "polygon": _parse_polygon("RIO_DE_LA_PLATA_POLYGON", [
+            (-34.00, -58.00), (-34.00, -52.00),
+            (-37.00, -52.00), (-37.00, -58.00),
+        ]),
+        "zoom": 10,
+        "name": "Rio de la Plata",
+    },
     "SCS": {
         "polygon": _parse_polygon("S_CHINA_SEA_POLYGON", [
             (22.00, 108.00), (22.00, 118.00),
@@ -249,6 +289,150 @@ REGIONS = {
     },
 
     # ── Zoom 9: Open ocean shipping lanes ────────────────────────────────
+    "GOM": {
+        "polygon": _parse_polygon("GULF_OF_MEXICO_POLYGON", [
+            (30.00, -98.00), (30.00, -82.00),
+            (18.00, -82.00), (18.00, -98.00),
+        ]),
+        "zoom": 9,
+        "name": "Gulf of Mexico",
+    },
+    "CAR": {
+        "polygon": _parse_polygon("CARIBBEAN_POLYGON", [
+            (20.00, -85.00), (20.00, -60.00),
+            (10.00, -60.00), (10.00, -85.00),
+        ]),
+        "zoom": 9,
+        "name": "Caribbean Sea",
+    },
+    "USE": {
+        "polygon": _parse_polygon("US_EAST_COAST_POLYGON", [
+            (40.00, -80.00), (40.00, -65.00),
+            (25.00, -65.00), (25.00, -80.00),
+        ]),
+        "zoom": 9,
+        "name": "US East Coast",
+    },
+    "USW": {
+        "polygon": _parse_polygon("US_WEST_COAST_POLYGON", [
+            (50.00, -135.00), (50.00, -117.00),
+            (30.00, -117.00), (30.00, -135.00),
+        ]),
+        "zoom": 9,
+        "name": "US/Canada West Coast",
+    },
+    "BS": {
+        "polygon": _parse_polygon("BALTIC_SEA_POLYGON", [
+            (66.00, 10.00), (66.00, 30.00),
+            (54.00, 30.00), (54.00, 10.00),
+        ]),
+        "zoom": 9,
+        "name": "Baltic Sea",
+    },
+    "GG": {
+        "polygon": _parse_polygon("GULF_OF_GUINEA_POLYGON", [
+            (6.00, -10.00), (6.00, 10.00),
+            (-6.00, 10.00), (-6.00, -10.00),
+        ]),
+        "zoom": 9,
+        "name": "Gulf of Guinea",
+    },
+    "SAW": {
+        "polygon": _parse_polygon("S_ATLANTIC_W_POLYGON", [
+            (-5.00, -50.00), (-5.00, -25.00),
+            (-35.00, -25.00), (-35.00, -50.00),
+        ]),
+        "zoom": 9,
+        "name": "South Atlantic West",
+    },
+    "SAE": {
+        "polygon": _parse_polygon("S_ATLANTIC_E_POLYGON", [
+            (-5.00, 0.00), (-5.00, 15.00),
+            (-30.00, 15.00), (-30.00, 0.00),
+        ]),
+        "zoom": 9,
+        "name": "South Atlantic East",
+    },
+    "PHI": {
+        "polygon": _parse_polygon("PHILIPPINE_SEA_POLYGON", [
+            (20.00, 120.00), (20.00, 135.00),
+            (5.00, 135.00), (5.00, 120.00),
+        ]),
+        "zoom": 9,
+        "name": "Philippine Sea",
+    },
+    "NWP": {
+        "polygon": _parse_polygon("N_PACIFIC_POLYGON", [
+            (50.00, 155.00), (50.00, -175.00),
+            (30.00, -175.00), (30.00, 155.00),
+        ]),
+        "zoom": 9,
+        "name": "North Pacific",
+    },
+    "NOR": {
+        "polygon": _parse_polygon("NORWEGIAN_SEA_POLYGON", [
+            (72.00, -10.00), (72.00, 15.00),
+            (62.00, 15.00), (62.00, -10.00),
+        ]),
+        "zoom": 9,
+        "name": "Norwegian Sea",
+    },
+    "COR": {
+        "polygon": _parse_polygon("CORAL_SEA_POLYGON", [
+            (-10.00, 145.00), (-10.00, 175.00),
+            (-35.00, 175.00), (-35.00, 145.00),
+        ]),
+        "zoom": 9,
+        "name": "Coral Sea / Tasman",
+    },
+    "SIO": {
+        "polygon": _parse_polygon("S_INDIAN_OCEAN_POLYGON", [
+            (-15.00, 40.00), (-15.00, 80.00),
+            (-40.00, 80.00), (-40.00, 40.00),
+        ]),
+        "zoom": 9,
+        "name": "South Indian Ocean",
+    },
+    "NAM": {
+        "polygon": _parse_polygon("N_ATLANTIC_M_POLYGON", [
+            (45.00, -50.00), (45.00, -25.00),
+            (30.00, -25.00), (30.00, -50.00),
+        ]),
+        "zoom": 9,
+        "name": "North Atlantic Mid",
+    },
+    "SEP": {
+        "polygon": _parse_polygon("SE_PACIFIC_POLYGON", [
+            (-5.00, -90.00), (-5.00, -70.00),
+            (-35.00, -70.00), (-35.00, -90.00),
+        ]),
+        "zoom": 9,
+        "name": "Southeast Pacific",
+    },
+    "CEP": {
+        "polygon": _parse_polygon("C_E_PACIFIC_POLYGON", [
+            (30.00, -150.00), (30.00, -120.00),
+            (5.00, -120.00), (5.00, -150.00),
+        ]),
+        "zoom": 9,
+        "name": "Central East Pacific",
+    },
+    "SPO": {
+        "polygon": _parse_polygon("S_PACIFIC_POLYGON", [
+            (-15.00, 175.00), (-15.00, -140.00),
+            (-40.00, -140.00), (-40.00, 175.00),
+        ]),
+        "zoom": 9,
+        "name": "South Pacific",
+    },
+    "SOA": {
+        "polygon": _parse_polygon("S_ATLANTIC_C_POLYGON", [
+            (-10.00, -25.00), (-10.00, 0.00),
+            (-35.00, 0.00), (-35.00, -25.00),
+        ]),
+        "zoom": 9,
+        "name": "South Atlantic Central",
+    },
     "NAE": {
         "polygon": _parse_polygon("N_ATLANTIC_E_POLYGON", [
             (55.00, -30.00), (55.00, -10.00),

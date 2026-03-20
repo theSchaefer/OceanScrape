@@ -164,6 +164,7 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
   </div>
   <div class="sb-section" style="padding-bottom:4px">
     <div class="sb-title">Regions</div>
+    <input type="text" id="region-search" placeholder="Search regions..." style="width:100%;font-size:12px;margin-bottom:4px">
   </div>
   <div id="region-list"></div>
 </div>
@@ -337,8 +338,8 @@ function addMapSources() {
     type: 'geojson',
     data: {type:'FeatureCollection', features:[]},
     cluster: true,
-    clusterMaxZoom: 8,
-    clusterRadius: 30,
+    clusterMaxZoom: 6,
+    clusterRadius: 18,
     clusterProperties: {
       tankerCount: ['+', ['case', ['==', ['get','vtype'], 'tanker'], 1, 0]],
       cargoCount: ['+', ['case', ['==', ['get','vtype'], 'cargo'], 1, 0]],
@@ -368,7 +369,7 @@ function addMapLayers() {
         ['>', ['get','tankerCount'], ['get','cargoCount']], '#d29922',
         '#58a6ff'
       ],
-      'circle-radius': ['step',['get','point_count'],10,20,14,50,18,100,22],
+      'circle-radius': ['step',['get','point_count'],8,10,10,30,13,80,16],
       'circle-opacity': 0.8,
       'circle-stroke-width': 1.5,
       'circle-stroke-color': 'rgba(255,255,255,0.3)',
@@ -459,14 +460,14 @@ function addMapLayers() {
   map.on('mouseenter', 'vessel-points', () => map.getCanvas().style.cursor = 'pointer');
   map.on('mouseleave', 'vessel-points', () => map.getCanvas().style.cursor = '');
 
-  // Region click (skip if vessel click already handled)
+  // Region click (skip if vessel click already handled or in draw mode)
   map.on('click', 'region-fill', (e) => {
-    if (e._stopped) return;
+    if (e._stopped || S.drawMode) return;
     const code = e.features[0].properties.code;
     selectRegion(code);
   });
   map.on('click', 'custom-region-fill', (e) => {
-    if (e._stopped) return;
+    if (e._stopped || S.drawMode) return;
     const code = e.features[0].properties.code;
     selectRegion(code);
   });
@@ -594,11 +595,13 @@ function updateRegionLayers() {
     // Convert polygon [[lat,lon],...] to GeoJSON [[lon,lat],...]
     const coords = r.polygon.map(p => [p[1], p[0]]);
     coords.push(coords[0]); // close ring
-    const feature = {
+    let feature = {
       type:'Feature',
       geometry:{type:'Polygon', coordinates:[coords]},
       properties:{code:r.code, name:r.name},
     };
+    // Enforce correct winding order (CCW exterior) for proper rendering
+    feature = turf.rewind(feature, {reverse: false});
     if (r.type === 'custom') custom.push(feature);
     else predefined.push(feature);
 
@@ -640,10 +643,60 @@ function buildLanesGeoJSON() {
 }
 
 /* ━━ Sidebar ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+// Aliases and keywords for fuzzy region search
+const REGION_ALIASES = {
+  'suez': ['suez canal north','suez canal south'],
+  'canal': ['suez canal north','suez canal south','panama canal','sicilian channel','mozambique channel','yucatan channel'],
+  'strait': ['strait of hormuz','strait of malacca','strait of gibraltar','dover strait','sunda strait','lombok strait','singapore strait','taiwan strait','korean strait','danish straits','bosporus'],
+  'chokepoint': ['strait of hormuz','bab al-mandab','strait of gibraltar','strait of malacca','dover strait','bosporus','panama canal','suez canal north','suez canal south'],
+  'gulf': ['persian gulf','gulf of aden'],
+  'sea': ['south china sea','east china sea','red sea','java sea','yellow sea','arabian sea'],
+  'ocean': ['indian ocean','north atlantic east','north atlantic west','western pacific'],
+  'atlantic': ['north atlantic east','north atlantic west'],
+  'pacific': ['western pacific'],
+  'mediterranean': ['mediterranean west','mediterranean east'],
+  'med': ['mediterranean west','mediterranean east'],
+  'africa': ['cape of good hope','mozambique channel','bab al-mandab','red sea','gulf of aden'],
+  'europe': ['dover strait','strait of gibraltar','bosporus','danish straits','sicilian channel','mediterranean west','mediterranean east'],
+  'asia': ['strait of malacca','singapore strait','sunda strait','lombok strait','south china sea','east china sea','taiwan strait','korean strait','yellow sea','java sea','bay of bengal','western pacific'],
+  'middle east': ['strait of hormuz','persian gulf','red sea','bab al-mandab','gulf of aden','suez canal north','suez canal south','arabian sea'],
+  'china': ['south china sea','east china sea','taiwan strait','yellow sea'],
+  'india': ['bay of bengal','arabian sea','indian ocean'],
+  'indonesia': ['strait of malacca','sunda strait','lombok strait','singapore strait','java sea'],
+  'oil': ['strait of hormuz','persian gulf','bab al-mandab'],
+  'cape': ['cape of good hope'],
+  'panama': ['panama canal'],
+  'singapore': ['singapore strait'],
+  'turkey': ['bosporus'],
+  'egypt': ['suez canal north','suez canal south'],
+  'yemen': ['bab al-mandab','gulf of aden'],
+  'dense': ['strait of hormuz','bab al-mandab','strait of gibraltar','dover strait','singapore strait','strait of malacca'],
+};
+
+function matchRegionSearch(query, regionName) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  const name = regionName.toLowerCase();
+  // Direct substring match
+  if (name.includes(q)) return true;
+  // Check aliases: if query matches an alias key, check if region name is in its list
+  for (const [alias, names] of Object.entries(REGION_ALIASES)) {
+    if (alias.includes(q) || q.includes(alias)) {
+      if (names.some(n => n === name)) return true;
+    }
+  }
+  // Fuzzy: check if all words in query appear somewhere in the name
+  const words = q.split(/\s+/);
+  if (words.length > 1 && words.every(w => name.includes(w))) return true;
+  return false;
+}
+
 function renderRegionList() {
   const list = $('#region-list');
   list.innerHTML = '';
+  const query = ($('#region-search').value || '').trim();
   for (const r of S.regions) {
+    if (!matchRegionSearch(query, r.name)) continue;
     const el = document.createElement('div');
     el.className = 'region-item' + (S.selectedRegion === r.code ? ' active' : '');
     const count = r.latest ? r.latest.total_ships : '--';
@@ -988,6 +1041,7 @@ $('#csv-export').addEventListener('click', exportCSV);
 $('#tl-slider').addEventListener('input', onSliderChange);
 $('#tl-play').addEventListener('click', togglePlay);
 $('#tl-granularity').addEventListener('change', rebuildTimelineSteps);
+$('#region-search').addEventListener('input', renderRegionList);
 $('#tl-start').addEventListener('change', rebuildTimelineSteps);
 $('#tl-end').addEventListener('change', rebuildTimelineSteps);
 $('#rd-save').addEventListener('click', saveCustomRegion);

@@ -244,6 +244,119 @@ def extract_marker_coords(img_bytes, center_lat, center_lon, zoom,
     return markers
 
 
+# --- Unified detection (single-pass, with optional downscale) ----------------
+
+# Downscale factor for detection — 0.75× reduces pixel count by ~44% while
+# keeping markers well above MIN_MARKER_AREA.  Coordinates are projected
+# using the *original* viewport dimensions so geo-accuracy is preserved.
+_DETECT_SCALE = 0.75
+_DETECT_SCALE_SQ = _DETECT_SCALE * _DETECT_SCALE   # area scales as square
+
+
+def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
+                            viewport_w, viewport_h):
+    """Detect ships in one pass: counts + geo-coordinates.
+
+    Combines the work of count_ships_from_bytes() and extract_marker_coords()
+    into a single decode → HSV → mask → contour pipeline, avoiding duplicate
+    processing.  The image is downscaled by _DETECT_SCALE before detection
+    to reduce CPU load; marker pixel positions are projected against the
+    original viewport size so lat/lon accuracy is unaffected.
+
+    Returns (counts_dict, markers_list):
+      - counts: {"stationary_tankers", "moving_tankers",
+                 "stationary_cargos", "moving_cargos"}
+      - markers: [{"lat", "lon", "type", "motion"}, ...]
+    """
+    empty_counts = {
+        "stationary_tankers": 0, "moving_tankers": 0,
+        "stationary_cargos": 0, "moving_cargos": 0,
+    }
+
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return empty_counts, []
+
+    # Downscale for cheaper detection
+    image = cv2.resize(image, None, fx=_DETECT_SCALE, fy=_DETECT_SCALE,
+                       interpolation=cv2.INTER_AREA)
+
+    image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, w = image.shape[:2]
+    mask_red, mask_green = _build_masks(image_hsv)
+
+    # Adjusted area thresholds for the smaller image
+    min_area = MIN_MARKER_AREA * _DETECT_SCALE_SQ
+    max_area = MAX_MARKER_AREA * _DETECT_SCALE_SQ
+
+    # Mercator projection setup (uses original viewport dims, not scaled)
+    total_px = 256 * (2 ** zoom)
+    cx_px = (center_lon + 180) / 360.0 * total_px
+    lat_rad = math.radians(center_lat)
+    cy_px = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
+             / math.pi) / 2.0 * total_px
+
+    def _pixel_to_latlon(px_x, px_y):
+        # Scale pixel coords back to original viewport before projecting
+        orig_x = px_x / _DETECT_SCALE
+        orig_y = px_y / _DETECT_SCALE
+        gx = cx_px + (orig_x - viewport_w / 2)
+        gy = cy_px + (orig_y - viewport_h / 2)
+        lon = gx / total_px * 360.0 - 180.0
+        merc_y = gy / total_px
+        lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
+        return round(lat, 5), round(lon, 5)
+
+    def _process_mask(mask, ship_type):
+        """Count + geolocate markers on one color mask in a single pass."""
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        stationary = 0
+        moving = 0
+        markers = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_area or area > max_area:
+                continue
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter == 0:
+                continue
+
+            approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
+            circularity = 4 * math.pi * area / (perimeter * perimeter)
+
+            if circularity < CIRCULARITY_THRESHOLD:
+                motion = "moving"
+                moving += 1
+            else:
+                motion = "stationary"
+                stationary += 1
+
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            mx = int(M["m10"] / M["m00"])
+            my = int(M["m01"] / M["m00"])
+            lat, lon = _pixel_to_latlon(mx, my)
+            markers.append({
+                "lat": lat, "lon": lon,
+                "type": ship_type, "motion": motion,
+            })
+        return stationary, moving, markers
+
+    stat_red, mov_red, markers_red = _process_mask(mask_red, "tanker")
+    stat_green, mov_green, markers_green = _process_mask(mask_green, "cargo")
+
+    counts = {
+        "stationary_tankers": stat_red,
+        "moving_tankers": mov_red,
+        "stationary_cargos": stat_green,
+        "moving_cargos": mov_green,
+    }
+    return counts, markers_red + markers_green
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("SEER -- detect stationary and moving tankers/cargo ships on a picture")
