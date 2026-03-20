@@ -200,9 +200,6 @@ def get_status():
             cur.execute("SELECT COUNT(*) AS total FROM captures")
             total_captures = cur.fetchone()["total"]
 
-            cur.execute("SELECT COUNT(*) AS total FROM vessel_positions")
-            total_vessels = cur.fetchone()["total"]
-
             cur.execute("SELECT COUNT(DISTINCT region) AS cnt FROM captures")
             regions_active = cur.fetchone()["cnt"]
 
@@ -226,7 +223,6 @@ def get_status():
         "next_scheduled": next_scheduled,
         "interval_minutes": SCRAPE_INTERVAL_MINUTES,
         "total_captures": total_captures,
-        "total_vessels": total_vessels,
         "regions_active": regions_active,
         "last_run_stats": last_run_stats,
     }

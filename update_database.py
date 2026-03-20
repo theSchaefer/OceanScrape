@@ -72,34 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_captures_region
 
 CREATE INDEX IF NOT EXISTS idx_captures_region_time
     ON captures (region, captured_at DESC);
-
-CREATE TABLE IF NOT EXISTS vessel_positions (
-    id          BIGSERIAL PRIMARY KEY,
-    capture_id  BIGINT REFERENCES captures(id) ON DELETE CASCADE,
-
-    -- Vessel identity
-    mmsi        INTEGER      NOT NULL,
-    ship_name   VARCHAR(255),
-    flag        VARCHAR(8),
-    ship_type   SMALLINT,
-
-    -- Position & navigation
-    lat         DOUBLE PRECISION NOT NULL,
-    lon         DOUBLE PRECISION NOT NULL,
-    speed       REAL,
-    course      REAL,
-    heading     SMALLINT,
-
-    -- Vessel details
-    destination VARCHAR(255),
-    length      SMALLINT,
-    width       SMALLINT,
-
-    CONSTRAINT uq_vessel_capture UNIQUE (capture_id, mmsi)
-);
-
-CREATE INDEX IF NOT EXISTS idx_vp_mmsi ON vessel_positions (mmsi);
-CREATE INDEX IF NOT EXISTS idx_vp_capture ON vessel_positions (capture_id);
 """
 
 _INSERT_SQL = """
@@ -117,19 +89,6 @@ INSERT INTO captures (
     %s, %s
 )
 ON CONFLICT (region, captured_at) DO NOTHING
-"""
-
-_INSERT_VESSEL_SQL = """
-INSERT INTO vessel_positions (
-    capture_id, mmsi, ship_name, flag, ship_type,
-    lat, lon, speed, course, heading,
-    destination, length, width
-) VALUES (
-    %s, %s, %s, %s, %s,
-    %s, %s, %s, %s, %s,
-    %s, %s, %s
-)
-ON CONFLICT (capture_id, mmsi) DO NOTHING
 """
 
 DEFAULT_LOG_PATH = Path("./data") / "captures_log.json"
@@ -197,37 +156,6 @@ def _entry_to_row(entry):
     )
 
 
-def _insert_vessels(cur, capture_id, vessels):
-    """Batch-insert vessel position records for a given capture."""
-    if not vessels:
-        return 0
-    inserted = 0
-    for v in vessels:
-        mmsi = v.get("mmsi")
-        lat = v.get("lat")
-        lon = v.get("lon")
-        if not mmsi or lat is None or lon is None:
-            continue
-        row = (
-            capture_id,
-            int(mmsi),
-            v.get("ship_name"),
-            v.get("flag"),
-            v.get("ship_type"),
-            float(lat),
-            float(lon),
-            v.get("speed"),
-            v.get("course"),
-            v.get("heading"),
-            v.get("destination"),
-            v.get("length"),
-            v.get("width"),
-        )
-        cur.execute(_INSERT_VESSEL_SQL, row)
-        inserted += 1
-    return inserted
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -250,10 +178,8 @@ def insert_capture(data):
             result = cur.fetchone()
             row_id = result[0] if result else None
             if row_id:
-                vessels = data.get("vessels", [])
-                v_count = _insert_vessels(cur, row_id, vessels)
-                logger.info("Inserted capture id=%d for region=%s (%d vessels)",
-                            row_id, data.get("region", "?"), v_count)
+                logger.info("Inserted capture id=%d for region=%s",
+                            row_id, data.get("region", "?"))
             else:
                 logger.info("Skipped duplicate capture for region=%s", data.get("region", "?"))
         conn.commit()
@@ -296,7 +222,6 @@ def process_log(log_path=None):
         _ensure_schema(conn)
         inserted = 0
         skipped = 0
-        total_vessels = 0
         with conn.cursor() as cur:
             for entry in entries:
                 region = entry.get("region", "?")
@@ -307,22 +232,17 @@ def process_log(log_path=None):
                 cur.execute(_INSERT_SQL + " RETURNING id", row)
                 result = cur.fetchone()
                 if result:
-                    capture_id = result[0]
                     inserted += 1
-                    vessels = entry.get("vessels", [])
-                    v_count = _insert_vessels(cur, capture_id, vessels)
-                    total_vessels += v_count
-                    logger.info("Inserted capture id=%d region=%s (%d vessels)",
-                                capture_id, region, v_count)
+                    logger.info("Inserted capture id=%d region=%s",
+                                result[0], region)
                 else:
                     skipped += 1
                     logger.debug("Skipped duplicate: region=%s ts=%s",
                                  region, entry.get("date_time"))
         conn.commit()
-        logger.info("Committed %d captures to database", inserted)
         logger.info(
-            "Processed %d entries from captures log: %d inserted, %d duplicates skipped, %d vessels",
-            len(entries), inserted, skipped, total_vessels,
+            "Processed %d entries: %d inserted, %d duplicates skipped",
+            len(entries), inserted, skipped,
         )
     except Exception:
         conn.rollback()

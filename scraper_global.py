@@ -534,206 +534,6 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     return True
 
 
-# --- Vessel data interception ------------------------------------------------
-
-
-def _setup_vessel_intercept(page):
-    """Listen for MarineTraffic vessel data responses.
-
-    MarineTraffic loads vessel positions via per-tile JSON requests:
-        /getdata/get_data_json_4/z:{z}/x:{x}/y:{y}/station:0
-
-    Playwright's page.on("response") passively captures these responses
-    as the browser makes them during normal map panning — no extra HTTP
-    calls, same authenticated session that already passed Cloudflare.
-
-    IMPORTANT: The callback only stores response references.  Reading
-    the response body inside a sync-API callback can deadlock because
-    body() blocks the event loop that is already running the callback.
-    Bodies are read later via drain_vessel_buffer().
-
-    Returns a list of pending Response objects (not parsed vessels).
-    """
-    pending_responses = []
-
-    def on_response(response):
-        if "/getdata/get_data_json_4/" not in response.url:
-            return
-        if response.status != 200:
-            logger.warning("Vessel data returned status %d for %s",
-                           response.status, response.url)
-            return
-        pending_responses.append(response)
-
-    page.on("response", on_response)
-    return pending_responses
-
-
-def _drain_vessel_buffer(pending_responses):
-    """Read response bodies and parse vessel data from buffered responses.
-
-    Called OUTSIDE the response callback to avoid sync-API deadlocks.
-    The first successful response is saved to ./data/vessel_response_sample.json
-    for format discovery.
-    """
-    vessels = []
-    discovery_done = False
-
-    for response in pending_responses:
-        try:
-            raw = response.body()
-            body = json.loads(raw)
-        except Exception as e:
-            logger.warning("Failed to read vessel response body from %s: %s",
-                           response.url, e)
-            continue
-
-        # Discovery: log the first raw response to inspect the format
-        if not discovery_done:
-            discovery_done = True
-            try:
-                sample_path = Path("./data") / "vessel_response_sample.json"
-                Path("./data").mkdir(parents=True, exist_ok=True)
-                with open(sample_path, "w") as f:
-                    json.dump({"url": response.url, "body": body}, f, indent=2)
-                logger.info("Vessel data sample saved to %s", sample_path)
-            except Exception as e:
-                logger.warning("Failed to save vessel sample: %s", e)
-
-        parsed = _parse_vessel_response(body, response.url)
-        vessels.extend(parsed)
-
-    pending_responses.clear()
-    return _dedup_vessels(vessels)
-
-
-def _parse_vessel_response(body, url):
-    """Parse vessel data from a get_data_json_4 response.
-
-    The exact response schema is discovered at runtime — the first response
-    is logged to ./data/vessel_response_sample.json for inspection.
-
-    Known MarineTraffic patterns use either:
-      - A dict with a "data" key containing a "rows" list of vessel dicts
-      - A direct list of vessel arrays/dicts
-      - A dict with numeric keys mapping to vessel arrays
-
-    Each vessel record typically includes MMSI, SHIPNAME, LAT, LON, SPEED,
-    COURSE, FLAG, DESTINATION, SHIPTYPE, etc.
-    """
-    vessels = []
-
-    # Determine the iterable of raw vessel records
-    rows = None
-    if isinstance(body, dict):
-        # Pattern: {"type": N, "data": {"rows": [...]}}
-        data = body.get("data")
-        if isinstance(data, dict):
-            rows = data.get("rows", [])
-        elif isinstance(data, list):
-            rows = data
-        # Pattern: direct list under a generic key
-        if rows is None:
-            for key in ("rows", "vessels", "ships", "features"):
-                if key in body and isinstance(body[key], list):
-                    rows = body[key]
-                    break
-        # Pattern: body itself is the list wrapper
-        if rows is None and isinstance(body.get("type"), int):
-            # Try all list-valued keys
-            for v in body.values():
-                if isinstance(v, list) and len(v) > 0:
-                    rows = v
-                    break
-    elif isinstance(body, list):
-        rows = body
-
-    if not rows:
-        return vessels
-
-    for row in rows:
-        vessel = _extract_vessel_fields(row)
-        if vessel and vessel.get("mmsi"):
-            vessels.append(vessel)
-
-    return vessels
-
-
-def _extract_vessel_fields(row):
-    """Extract vessel fields from a single record (dict or list).
-
-    Handles both dict-style ({"MMSI": ..., "SHIPNAME": ...}) and
-    array-style ([mmsi, lat, lon, ...]) records.
-    """
-    if isinstance(row, dict):
-        # Try common MarineTraffic field names (case-insensitive lookup)
-        def g(keys, default=None):
-            for k in keys:
-                if k in row:
-                    return row[k]
-                if k.upper() in row:
-                    return row[k.upper()]
-                if k.lower() in row:
-                    return row[k.lower()]
-            return default
-
-        mmsi = g(["MMSI", "mmsi"])
-        if not mmsi:
-            return None
-
-        return {
-            "mmsi": int(mmsi) if mmsi else None,
-            "ship_name": g(["SHIPNAME", "shipname", "ship_name", "name"]),
-            "lat": _to_float(g(["LAT", "lat", "latitude"])),
-            "lon": _to_float(g(["LON", "lon", "longitude", "LNG", "lng"])),
-            "speed": _to_float(g(["SPEED", "speed", "sog"])),
-            "course": _to_float(g(["COURSE", "course", "cog"])),
-            "heading": _to_int(g(["HEADING", "heading", "hdg"])),
-            "flag": g(["FLAG", "flag", "country"]),
-            "destination": g(["DESTINATION", "destination", "dest"]),
-            "ship_type": _to_int(g(["SHIPTYPE", "shiptype", "ship_type", "type_and_cargo"])),
-            "length": _to_int(g(["LENGTH", "length", "l"])),
-            "width": _to_int(g(["WIDTH", "width", "w"])),
-        }
-
-    elif isinstance(row, list) and len(row) >= 3:
-        # Array format — positions vary, log and skip for now until format is known
-        logger.debug("Vessel record in array format (len=%d), skipping until format known", len(row))
-        return None
-
-    return None
-
-
-def _to_float(v):
-    """Safely convert to float."""
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
-
-
-def _to_int(v):
-    """Safely convert to int."""
-    if v is None:
-        return None
-    try:
-        return int(v)
-    except (ValueError, TypeError):
-        return None
-
-
-def _dedup_vessels(vessels):
-    """Deduplicate vessels by MMSI, keeping the last occurrence."""
-    seen = {}
-    for v in vessels:
-        mmsi = v.get("mmsi")
-        if mmsi:
-            seen[mmsi] = v
-    return list(seen.values())
-
-
 def _wait_for_tiles_after_pan(page, timeout_ms=5000):
     """Wait for map tiles to re-render after a pan."""
     deadline = time.time() + (timeout_ms / 1000)
@@ -813,8 +613,7 @@ def _discover_leaflet_map(page):
 # --- Core capture (single region, given a page) ------------------------------
 
 
-def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
-                          vessel_buffer=None):
+def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     """Capture all tiles for a region using an already-setup page.
 
     Returns dict with capture results: tankers, cargos, markers, file paths.
@@ -967,13 +766,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
         saved_path = str(output_path)
         logger.info("Region %s: saved %s (%.1f KB)", region_name, filename, file_size_kb)
 
-    # --- Drain vessel buffer — reads response bodies outside the callback -----
-    region_vessels = []
-    if vessel_buffer is not None:
-        region_vessels = _drain_vessel_buffer(vessel_buffer)
-        logger.info("Region %s: %d unique vessels intercepted",
-                    region_name, len(region_vessels))
-
     # --- Log results ----------------------------------------------------------
     _log_json(
         timestamp_str, region_name, saved_path,
@@ -982,7 +774,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
         moving_tankers=total_moving_tankers,
         moving_cargos=total_moving_cargos,
         markers=all_markers,
-        vessels=region_vessels,
     )
 
     logger.info("Region %s: %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
@@ -1064,13 +855,11 @@ def capture_batch(region_batch, timestamp_str):
 
             # Phase 1: Open all tabs and start loading in parallel
             tabs = {}
-            vessel_buffers = {}
             for name in region_batch:
                 config = REGIONS[name]
                 page = context.new_page()
                 _inject_stealth_scripts(page, geo)
                 _inject_map_hooks(page)
-                vessel_buffers[name] = _setup_vessel_intercept(page)
 
                 center_lat, center_lon = _polygon_center(config["polygon"])
                 url = build_url(center_lat, center_lon, config["zoom"])
@@ -1108,14 +897,12 @@ def capture_batch(region_batch, timestamp_str):
                 try:
                     result = _capture_region_tiles(
                         name, REGIONS[name], timestamp_str, page, map_dims,
-                        vessel_buffer=vessel_buffers.get(name),
                     )
                     results[name] = result
                 except Exception as e:
                     logger.error("Region %s capture failed: %s", name, e)
                     _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
-                              REGIONS[name]["zoom"], [],
-                              vessels=[])
+                              REGIONS[name]["zoom"], [])
 
             context.close()
             browser.close()
@@ -1139,7 +926,7 @@ def capture_region(region_name, config, timestamp_str):
 
 def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
               tankers=0, cargos=0, zoom=None, detections=None,
-              moving_tankers=0, moving_cargos=0, markers=None, vessels=None):
+              moving_tankers=0, moving_cargos=0, markers=None):
     json_path = Path("./data") / "captures_log.json"
     Path("./data").mkdir(parents=True, exist_ok=True)
 
@@ -1176,16 +963,15 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
         "status": status,
         "markers": markers or [],
         "detections": detections or [],
-        "vessels": vessels or [],
     })
 
     with open(json_path, "w") as f:
         json.dump(entries, f, indent=2)
 
     logger.info("_log_json: region=%s status=%s tankers=%d cargos=%d "
-                "moving_t=%d moving_c=%d tiles=%d/%d vessels=%d",
+                "moving_t=%d moving_c=%d tiles=%d/%d markers=%d",
                 region, status, tankers, cargos, moving_tankers, moving_cargos,
-                ok, total, len(vessels or []))
+                ok, total, len(markers or []))
 
 
 # --- Orchestration ------------------------------------------------------------
