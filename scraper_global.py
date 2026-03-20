@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import os
+import platform
 import random
 import string
 import sys
@@ -82,20 +83,35 @@ geo_profiles: dict[str, GeoProfile] = {}
 
 # --- User agents --------------------------------------------------------------
 
-CHROME_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-]
+# UA lists keyed by actual OS — must match navigator.platform to avoid
+# Cloudflare cross-check detection.  Versions should track recent stable
+# Chrome releases; outdated versions are a strong bot signal.
+_CHROME_UA_BY_OS = {
+    "windows": [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    ],
+    "linux": [
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    ],
+    "darwin": [
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    ],
+}
+
+# Detect host OS once at import time
+_HOST_OS = "linux" if platform.system() == "Linux" else (
+    "darwin" if platform.system() == "Darwin" else "windows"
+)
 
 
 def _random_user_agent() -> str:
-    return random.choice(CHROME_USER_AGENTS)
+    return random.choice(_CHROME_UA_BY_OS[_HOST_OS])
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -260,9 +276,21 @@ def _inject_stealth_scripts(page, geo: GeoProfile):
     locale = geo.locale
     language = locale.split("-")[0]
 
+    # navigator.platform must match the UA string's OS claim, otherwise
+    # Cloudflare's cross-check flags the mismatch as a bot.
+    plat_value = {
+        "windows": "Win32",
+        "linux": "Linux x86_64",
+        "darwin": "MacIntel",
+    }[_HOST_OS]
+
     page.add_init_script(f"""
     Object.defineProperty(navigator, 'languages', {{
         get: () => ['{locale}', '{language}', 'en'],
+    }});
+
+    Object.defineProperty(navigator, 'platform', {{
+        get: () => '{plat_value}',
     }});
 
     const _origQuery = window.navigator.permissions.query.bind(navigator.permissions);
@@ -271,8 +299,21 @@ def _inject_stealth_scripts(page, geo: GeoProfile):
             ? Promise.resolve({{ state: Notification.permission }})
             : _origQuery(params);
 
+    // Mimic a real Chrome plugin list — must be PluginArray-shaped, not raw ints.
+    // Real Chrome always has these two; returning integers trips any script that
+    // reads .name or .description.
     Object.defineProperty(navigator, 'plugins', {{
-        get: () => [1, 2, 3, 4, 5],
+        get: () => {{
+            const pdf = {{ name: 'PDF Viewer', description: 'Portable Document Format',
+                          filename: 'internal-pdf-viewer', length: 1 }};
+            const native = {{ name: 'Chrome PDF Viewer', description: '',
+                             filename: 'internal-pdf-viewer', length: 1 }};
+            const arr = [pdf, native];
+            arr.item = (i) => arr[i];
+            arr.namedItem = (n) => arr.find(p => p.name === n) || null;
+            arr.refresh = () => {{}};
+            return arr;
+        }}
     }});
     """)
 
@@ -982,16 +1023,27 @@ def capture_batch(region_batch, timestamp_str):
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=[
-                    "--headless=new",
+            # GPU flags differ by environment: on a headless Linux VPS without
+            # a real GPU, requesting GPU rasterization / ANGLE causes WebGL to
+            # report a SwiftShader or "Google Inc." renderer — a known bot
+            # signal.  We only enable GPU acceleration when a display is
+            # available (i.e. a desktop with a real GPU).
+            _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
+            chrome_args = [
+                "--headless=new",
+                "--disable-dev-shm-usage",
+            ]
+            if _has_display:
+                chrome_args += [
                     "--enable-gpu-rasterization",
                     "--enable-zero-copy",
                     "--use-angle=default",
-                    "--disable-dev-shm-usage",
-                ],
+                ]
+
+            browser = p.chromium.launch(
+                headless=False,
+                channel="chrome",
+                args=chrome_args,
             )
 
             context = browser.new_context(
