@@ -72,6 +72,23 @@ CREATE INDEX IF NOT EXISTS idx_captures_region
 
 CREATE INDEX IF NOT EXISTS idx_captures_region_time
     ON captures (region, captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS vessel_positions (
+    id          BIGSERIAL PRIMARY KEY,
+    capture_id  BIGINT REFERENCES captures(id) ON DELETE CASCADE,
+
+    -- Position (from pixel-based detection, converted via Web Mercator)
+    lat         DOUBLE PRECISION NOT NULL,
+    lon         DOUBLE PRECISION NOT NULL,
+
+    -- Classification
+    ship_type   VARCHAR(16)  NOT NULL,   -- 'tanker' or 'cargo'
+    motion      VARCHAR(16)  NOT NULL,   -- 'stationary' or 'moving'
+
+    CONSTRAINT uq_marker_capture UNIQUE (capture_id, lat, lon)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vp_capture ON vessel_positions (capture_id);
 """
 
 _INSERT_SQL = """
@@ -89,6 +106,12 @@ INSERT INTO captures (
     %s, %s
 )
 ON CONFLICT (region, captured_at) DO NOTHING
+"""
+
+_INSERT_MARKER_SQL = """
+INSERT INTO vessel_positions (capture_id, lat, lon, ship_type, motion)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (capture_id, lat, lon) DO NOTHING
 """
 
 DEFAULT_LOG_PATH = Path("./data") / "captures_log.json"
@@ -156,6 +179,27 @@ def _entry_to_row(entry):
     )
 
 
+def _insert_markers(cur, capture_id, markers):
+    """Batch-insert detected marker positions for a given capture."""
+    if not markers:
+        return 0
+    inserted = 0
+    for m in markers:
+        lat = m.get("lat")
+        lon = m.get("lon")
+        if lat is None or lon is None:
+            continue
+        cur.execute(_INSERT_MARKER_SQL, (
+            capture_id,
+            float(lat),
+            float(lon),
+            m.get("type", "unknown"),
+            m.get("motion", "unknown"),
+        ))
+        inserted += 1
+    return inserted
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -178,8 +222,9 @@ def insert_capture(data):
             result = cur.fetchone()
             row_id = result[0] if result else None
             if row_id:
-                logger.info("Inserted capture id=%d for region=%s",
-                            row_id, data.get("region", "?"))
+                m_count = _insert_markers(cur, row_id, data.get("markers", []))
+                logger.info("Inserted capture id=%d for region=%s (%d markers)",
+                            row_id, data.get("region", "?"), m_count)
             else:
                 logger.info("Skipped duplicate capture for region=%s", data.get("region", "?"))
         conn.commit()
@@ -222,6 +267,7 @@ def process_log(log_path=None):
         _ensure_schema(conn)
         inserted = 0
         skipped = 0
+        total_markers = 0
         with conn.cursor() as cur:
             for entry in entries:
                 region = entry.get("region", "?")
@@ -232,17 +278,20 @@ def process_log(log_path=None):
                 cur.execute(_INSERT_SQL + " RETURNING id", row)
                 result = cur.fetchone()
                 if result:
+                    capture_id = result[0]
                     inserted += 1
-                    logger.info("Inserted capture id=%d region=%s",
-                                result[0], region)
+                    m_count = _insert_markers(cur, capture_id, entry.get("markers", []))
+                    total_markers += m_count
+                    logger.info("Inserted capture id=%d region=%s (%d markers)",
+                                capture_id, region, m_count)
                 else:
                     skipped += 1
                     logger.debug("Skipped duplicate: region=%s ts=%s",
                                  region, entry.get("date_time"))
         conn.commit()
         logger.info(
-            "Processed %d entries: %d inserted, %d duplicates skipped",
-            len(entries), inserted, skipped,
+            "Processed %d entries: %d inserted, %d skipped, %d markers",
+            len(entries), inserted, skipped, total_markers,
         )
     except Exception:
         conn.rollback()

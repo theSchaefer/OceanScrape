@@ -39,7 +39,7 @@ scraper_global.py  →  seer.py (inline)  →  captures_log.json  →  update_da
 - **`grid.py`** — Web Mercator projection utilities. `get_tile_centers()` computes non-overlapping tile grids covering a polygon's bounding box. `generate_ocean_grid()` auto-tiles large bounding boxes. Snake/boustrophedon tile ordering.
 - **`geo_profile.py`** — Resolves proxy IP geolocation via ip-api.com. Maps country codes to locale/Accept-Language/timezone for browser fingerprinting. Requires `DECODO_USERNAME`/`DECODO_PASSWORD` in `.env`.
 - **`run.py`** — Orchestrator. Calls `scraper_global.py` as subprocess, then `update_database.process_log()`.
-- **`update_database.py`** — PostgreSQL database layer. Reads `captures_log.json`, batch-inserts capture records into a `captures` table using psycopg2. Ship counts, tile stats, and marker coordinates (with lat/lon) are stored per capture with JSONB for nested data. Auto-creates schema on first run. Idempotent via `ON CONFLICT`.
+- **`update_database.py`** — PostgreSQL database layer. Reads `captures_log.json`, batch-inserts capture records into a `captures` table and detected marker positions into `vessel_positions` using psycopg2. Ship counts, tile stats, and marker coordinates are stored per capture with JSONB in `captures`. Each marker's lat/lon, ship type, and motion state are also stored relationally in `vessel_positions` (FK to `captures`). Auto-creates schema on first run. Idempotent via `ON CONFLICT`.
 - **`discover_map.py`** — Dev/debug tool. Injects constructor hooks before page load to introspect how MarineTraffic stores its Leaflet map instance. Outputs to `map_discovery.json`.
 
 ## Region Codes
