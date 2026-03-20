@@ -53,11 +53,16 @@ REGION_TIERS = {
     "GOM": "1", "CAR": "1", "USE": "1", "USW": "1", "NS": "1", "BS": "1",
     "BLK": "1", "GG": "1", "SAW": "1", "SAE": "1", "MKS": "1", "PHI": "1",
     "NWP": "1",
+    "TSU": "1", "TSM": "1", "TOR": "1", "CHR": "1", "HOU": "1", "SHA": "1",
+    "BNF": "1",
     # Tier 2: Regionally critical
     "NOR": "2", "GOT": "2", "COR": "2", "SIO": "2", "NAM": "2", "SEP": "2",
     "RLP": "2",
+    "BAS": "2", "CK": "2", "WIN": "2", "MON": "2", "ORE": "2", "LUZ": "2",
+    "GSA": "2", "MAR": "2", "SAN": "2",
     # Tier 3: Coverage fill
     "CEP": "3", "SPO": "3", "SOA": "3",
+    "ARC": "3", "NNC": "3", "WAO": "3", "EAF": "3", "NEP": "3", "BFS": "3",
 }
 
 REGIONS = {
@@ -525,5 +530,193 @@ REGIONS = {
         ]),
         "zoom": 9,
         "name": "Indian Ocean",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Expansion regions — Tier 1 / 2 / 3
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── Zoom 12: Dense straits (expansion) ─────────────────────────────────
+    "TSU": {
+        "polygon": _parse_polygon("TSUGARU_POLYGON", [
+            (41.80, 139.80), (41.80, 141.00),
+            (41.20, 141.00), (41.20, 139.80),
+        ]),
+        "zoom": 12,
+        "name": "Strait of Tsugaru",
+    },
+    "TOR": {
+        "polygon": _parse_polygon("TORRES_POLYGON", [
+            (-9.50, 141.50), (-9.50, 143.50),
+            (-10.80, 143.50), (-10.80, 141.50),
+        ]),
+        "zoom": 12,
+        "name": "Torres Strait",
+    },
+    "SHA": {
+        "polygon": _parse_polygon("SHANGHAI_POLYGON", [
+            (31.80, 121.00), (31.80, 122.60),
+            (30.50, 122.60), (30.50, 121.00),
+        ]),
+        "zoom": 12,
+        "name": "Shanghai / Yangtze Approach",
+    },
+    "BNF": {
+        "polygon": _parse_polygon("BONIFACIO_POLYGON", [
+            (41.40, 8.60), (41.40, 9.50),
+            (40.90, 9.50), (40.90, 8.60),
+        ]),
+        "zoom": 12,
+        "name": "Strait of Bonifacio",
+    },
+    "CK": {
+        "polygon": _parse_polygon("COOK_POLYGON", [
+            (-41.00, 174.00), (-41.00, 175.00),
+            (-41.70, 175.00), (-41.70, 174.00),
+        ]),
+        "zoom": 12,
+        "name": "Cook Strait",
+    },
+    "ORE": {
+        "polygon": _parse_polygon("ORESUND_POLYGON", [
+            (56.10, 12.40), (56.10, 13.00),
+            (55.50, 13.00), (55.50, 12.40),
+        ]),
+        "zoom": 12,
+        "name": "Oresund",
+    },
+    "MAR": {
+        "polygon": _parse_polygon("MARMARA_POLYGON", [
+            (41.10, 27.40), (41.10, 29.40),
+            (40.30, 29.40), (40.30, 27.40),
+        ]),
+        "zoom": 12,
+        "name": "Sea of Marmara",
+    },
+
+    # ── Zoom 11: Wide straits (expansion) ──────────────────────────────────
+    "TSM": {
+        "polygon": _parse_polygon("TSUSHIMA_POLYGON", [
+            (35.00, 128.00), (35.00, 129.50),
+            (33.50, 129.50), (33.50, 128.00),
+        ]),
+        "zoom": 11,
+        "name": "Tsushima Strait",
+    },
+    "HOU": {
+        "polygon": _parse_polygon("HOUSTON_POLYGON", [
+            (30.00, -95.50), (30.00, -93.50),
+            (28.50, -93.50), (28.50, -95.50),
+        ]),
+        "zoom": 11,
+        "name": "Houston / Texas Coast",
+    },
+    "BAS": {
+        "polygon": _parse_polygon("BASS_POLYGON", [
+            (-38.00, 143.50), (-38.00, 148.50),
+            (-40.50, 148.50), (-40.50, 143.50),
+        ]),
+        "zoom": 11,
+        "name": "Bass Strait",
+    },
+    "WIN": {
+        "polygon": _parse_polygon("WINDWARD_POLYGON", [
+            (20.50, -74.50), (20.50, -72.50),
+            (18.50, -72.50), (18.50, -74.50),
+        ]),
+        "zoom": 11,
+        "name": "Windward Passage",
+    },
+    "MON": {
+        "polygon": _parse_polygon("MONA_POLYGON", [
+            (19.50, -68.50), (19.50, -66.50),
+            (17.50, -66.50), (17.50, -68.50),
+        ]),
+        "zoom": 11,
+        "name": "Mona Passage",
+    },
+    "LUZ": {
+        "polygon": _parse_polygon("LUZON_POLYGON", [
+            (22.00, 119.00), (22.00, 122.50),
+            (18.50, 122.50), (18.50, 119.00),
+        ]),
+        "zoom": 11,
+        "name": "Luzon Strait",
+    },
+    "GSA": {
+        "polygon": _parse_polygon("GULF_SUEZ_APPROACH_POLYGON", [
+            (29.80, 32.40), (29.80, 34.50),
+            (27.50, 34.50), (27.50, 32.40),
+        ]),
+        "zoom": 11,
+        "name": "Gulf of Suez Approach",
+    },
+    "SAN": {
+        "polygon": _parse_polygon("SANTOS_POLYGON", [
+            (-23.00, -46.80), (-23.00, -44.50),
+            (-25.00, -44.50), (-25.00, -46.80),
+        ]),
+        "zoom": 11,
+        "name": "Santos / SE Brazil Coast",
+    },
+
+    # ── Zoom 10: Regional corridors (expansion) ───────────────────────────
+    "CHR": {
+        "polygon": _parse_polygon("CAPE_HORN_POLYGON", [
+            (-54.00, -72.00), (-54.00, -63.00),
+            (-58.00, -63.00), (-58.00, -72.00),
+        ]),
+        "zoom": 10,
+        "name": "Cape Horn / Drake Passage",
+    },
+    "BFS": {
+        "polygon": _parse_polygon("BANDA_FLORES_POLYGON", [
+            (-5.00, 117.00), (-5.00, 128.00),
+            (-9.00, 128.00), (-9.00, 117.00),
+        ]),
+        "zoom": 10,
+        "name": "Banda Sea / Flores Sea",
+    },
+
+    # ── Zoom 9: Open ocean (expansion) ─────────────────────────────────────
+    "ARC": {
+        "polygon": _parse_polygon("ARCTIC_POLYGON", [
+            (78.00, 30.00), (78.00, 100.00),
+            (68.00, 100.00), (68.00, 30.00),
+        ]),
+        "zoom": 9,
+        "name": "Northern Sea Route / Arctic",
+    },
+    "NNC": {
+        "polygon": _parse_polygon("NORW_CORRIDOR_POLYGON", [
+            (62.00, -5.00), (62.00, 10.00),
+            (55.00, 10.00), (55.00, -5.00),
+        ]),
+        "zoom": 9,
+        "name": "North Sea–Norwegian Corridor",
+    },
+    "WAO": {
+        "polygon": _parse_polygon("W_AFRICA_OFFSHORE_POLYGON", [
+            (-4.00, 8.00), (-4.00, 15.00),
+            (-18.00, 15.00), (-18.00, 8.00),
+        ]),
+        "zoom": 9,
+        "name": "West Africa Offshore (Angola)",
+    },
+    "EAF": {
+        "polygon": _parse_polygon("E_AFRICA_COAST_POLYGON", [
+            (0.00, 38.00), (0.00, 48.00),
+            (-12.00, 48.00), (-12.00, 38.00),
+        ]),
+        "zoom": 9,
+        "name": "East Africa Coast",
+    },
+    "NEP": {
+        "polygon": _parse_polygon("NE_PACIFIC_POLYGON", [
+            (60.00, -150.00), (60.00, -125.00),
+            (48.00, -125.00), (48.00, -150.00),
+        ]),
+        "zoom": 9,
+        "name": "NE Pacific (Alaska–BC)",
     },
 }

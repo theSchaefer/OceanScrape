@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**MarineScraper** — Scrapes MarineTraffic.com using anti-detection browser automation across 57 ocean regions, counts ships via OpenCV inline, and stores results in PostgreSQL. Covers major shipping chokepoints and trade corridors across 5 zoom tiers (z9–z13), spanning ~30% of ocean surface.
+**MarineScraper** — Scrapes MarineTraffic.com using anti-detection browser automation across 79 ocean regions, counts ships via OpenCV inline, and stores results in PostgreSQL. Covers major shipping chokepoints and trade corridors across 5 zoom tiers (z9–z13), spanning ~35% of ocean surface.
 
 ## Key Commands
 
@@ -20,6 +20,10 @@ python run.py
 python scraper_global.py                   # All 57 regions
 python scraper_global.py --save-images     # Also save tile images to disk
 python scraper_global.py --regions N,S,P   # Specific regions only (single-letter codes)
+python scraper_global.py --zoom=9          # Only zoom-level 9 regions
+python scraper_global.py --tier=1          # Tier 1 expansion regions only
+python scraper_global.py --tier=original   # Original 34 chokepoint regions only
+python scraper_global.py --tier=1,2        # Tiers 1+2 combined
 python scraper_global.py --list-regions    # Print all region codes and names
 
 # Diagnostics
@@ -44,7 +48,7 @@ scraper_global.py  →  seer.py (inline)  →  captures_log.json  →  update_da
 
 ## Region Codes
 
-Single-letter keys passed to `--regions`. Examples: `N`/`S` = Suez North/South, `P` = Panama, `M` = Malacca, `H` = Hormuz. Run `--list-regions` for the full list. All polygon boundaries are overridable via env vars (e.g. `NORTH_POLYGON="lat,lon;lat,lon;..."`).
+Short keys passed to `--regions`. Examples: `N`/`S` = Suez North/South, `P` = Panama, `M` = Malacca, `H` = Hormuz. Run `--list-regions` for the full list (shows code, zoom, tier, name). Tiers: `original` (34 chokepoints), `1` (major trade arteries), `2` (regionally critical), `3` (coverage fill). All polygon boundaries are overridable via env vars (e.g. `NORTH_POLYGON="lat,lon;lat,lon;..."`). Filters can be combined: `--tier=1 --zoom=9` selects only tier-1 regions at zoom 9.
 
 ## Configuration (`.env`)
 
