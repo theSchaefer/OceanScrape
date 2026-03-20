@@ -10,6 +10,10 @@ Usage:
   python scraper_global.py                  # Run all regions
   python scraper_global.py --save-images    # Also save tile images
   python scraper_global.py --regions N,S,H  # Run specific regions only
+  python scraper_global.py --zoom=9         # Run only zoom-level 9 regions
+  python scraper_global.py --tier=1         # Tier 1 (major trade arteries)
+  python scraper_global.py --tier=original  # Original 34 chokepoint regions
+  python scraper_global.py --tier=1,2       # Tiers 1+2 combined
   python scraper_global.py --list-regions    # Show all defined regions
 """
 
@@ -34,7 +38,7 @@ from patchright.sync_api import sync_playwright
 
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y
-from regions import REGIONS
+from regions import REGIONS, REGION_TIERS
 from update_database import process_log
 
 load_dotenv()
@@ -1077,20 +1081,40 @@ def main():
 
     # Parse CLI flags
     region_filter = None
+    zoom_filter = None
+    tier_filter = None
     for arg in sys.argv[1:]:
         if arg.startswith("--regions="):
             region_filter = arg.split("=", 1)[1].split(",")
+        elif arg.startswith("--zoom="):
+            zoom_filter = [int(z) for z in arg.split("=", 1)[1].split(",")]
+        elif arg.startswith("--tier="):
+            tier_filter = arg.split("=", 1)[1].split(",")
         elif arg == "--save-images":
             pass  # Already handled at module level via SAVE_IMAGES
         elif arg == "--list-regions":
-            print(f"{'Key':<6} {'Zoom':<5} {'Name'}")
-            print("-" * 50)
+            print(f"{'Key':<6} {'Zoom':<5} {'Tier':<10} {'Name'}")
+            print("-" * 65)
             for key, config in sorted(REGIONS.items()):
-                print(f"{key:<6} z{config['zoom']:<4} {config.get('name', key)}")
+                tier = REGION_TIERS.get(key, "?")
+                print(f"{key:<6} z{config['zoom']:<4} {tier:<10} {config.get('name', key)}")
             return
         elif arg == "--help":
             print(__doc__)
             return
+
+    # Apply --zoom and --tier filters to build region_filter
+    if zoom_filter or tier_filter:
+        filtered = set()
+        for code, config in REGIONS.items():
+            zoom_ok = zoom_filter is None or config["zoom"] in zoom_filter
+            tier_ok = tier_filter is None or REGION_TIERS.get(code) in tier_filter
+            if zoom_ok and tier_ok:
+                filtered.add(code)
+        # Intersect with --regions if both specified
+        if region_filter:
+            filtered &= set(region_filter)
+        region_filter = list(filtered) if filtered else ["__none__"]
 
     # Resolve proxy geolocations at startup
     logger.info("Resolving proxy geolocations...")

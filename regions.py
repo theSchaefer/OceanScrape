@@ -31,6 +31,35 @@ def _parse_polygon(env_key, default):
 #    9 = open ocean shipping lanes (sparse traffic, huge coverage per tile)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Tier classification for CLI filtering (--tier=1, --tier=2, --tier=3).
+#   original = the original 34 chokepoint/corridor regions
+#   1        = major global trade arteries (added expansion)
+#   2        = regionally critical routes (added expansion)
+#   3        = coverage fill for ~30% ocean surface (added expansion)
+# ---------------------------------------------------------------------------
+REGION_TIERS = {
+    # Original regions (no tier flag needed — always included unless filtered)
+    "N": "original", "S": "original", "P": "original", "M": "original",
+    "BO": "original", "H": "original", "B": "original", "G": "original",
+    "E": "original", "SU": "original", "LO": "original", "SG": "original",
+    "TW": "original", "KO": "original", "DA": "original", "SC": "original",
+    "YU": "original", "SCS": "original", "RS": "original", "PG": "original",
+    "GA": "original", "ECS": "original", "MZ": "original", "CG": "original",
+    "JV": "original", "YS": "original", "NAE": "original", "NAW": "original",
+    "MEW": "original", "MEE": "original", "ARS": "original", "BOB": "original",
+    "WP": "original", "IO": "original",
+    # Tier 1: Major global trade arteries
+    "GOM": "1", "CAR": "1", "USE": "1", "USW": "1", "NS": "1", "BS": "1",
+    "BLK": "1", "GG": "1", "SAW": "1", "SAE": "1", "MKS": "1", "PHI": "1",
+    "NWP": "1",
+    # Tier 2: Regionally critical
+    "NOR": "2", "GOT": "2", "COR": "2", "SIO": "2", "NAM": "2", "SEP": "2",
+    "RLP": "2",
+    # Tier 3: Coverage fill
+    "CEP": "3", "SPO": "3", "SOA": "3",
+}
+
 REGIONS = {
     # ── Zoom 13: Narrow / extremely dense ────────────────────────────────
     "N": {
