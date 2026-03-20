@@ -1,0 +1,45 @@
+MarineScraper — PostgreSQL Schema
+==================================
+
+Table: captures
+---------------
+Stores one row per region per scrape run.
+
+  id              BIGSERIAL PRIMARY KEY
+  region          VARCHAR(8)        -- Single-letter region code (e.g. "N", "S", "P")
+  region_name     VARCHAR(128)      -- Human-readable name (e.g. "Suez North")
+  captured_at     TIMESTAMPTZ       -- When the scrape happened
+  ingested_at     TIMESTAMPTZ       -- When the row was inserted (auto-filled)
+  filepath        TEXT              -- Path to saved screenshot (if --save-images)
+  is_north        BOOLEAN           -- Legacy flag for Suez North
+  zoom            SMALLINT          -- Map zoom level used
+  status          VARCHAR(16)       -- "success", "partial", or "error"
+  file_size_kb    REAL              -- Screenshot file size
+  tiles_total     INTEGER           -- Number of tiles attempted
+  tiles_ok        INTEGER           -- Tiles successfully captured
+  tiles_failed    INTEGER           -- Tiles that failed
+  tankers         INTEGER           -- Total tanker count (red markers)
+  cargos          INTEGER           -- Total cargo count (green markers)
+  moving_tankers  INTEGER           -- Moving tankers (arrow-shaped)
+  moving_cargos   INTEGER           -- Moving cargo ships (arrow-shaped)
+  markers         JSONB             -- Array of detected markers with lat/lon/type/motion
+  detections      JSONB             -- Per-tile detection breakdown
+
+  UNIQUE (region, captured_at)
+
+
+Table: vessel_positions
+-----------------------
+Stores one row per detected ship marker. Positions are derived from
+pixel-based OpenCV detection, converted to geographic coordinates
+via Web Mercator projection. Ships are anonymous — no identity data
+(MMSI, name, flag) is available from pixel detection alone.
+
+  id              BIGSERIAL PRIMARY KEY
+  capture_id      BIGINT            -- FK -> captures(id), CASCADE on delete
+  lat             DOUBLE PRECISION  -- Latitude (from pixel -> Web Mercator)
+  lon             DOUBLE PRECISION  -- Longitude (from pixel -> Web Mercator)
+  ship_type       VARCHAR(16)       -- "tanker" (red) or "cargo" (green)
+  motion          VARCHAR(16)       -- "stationary" (circle) or "moving" (arrow)
+
+  UNIQUE (capture_id, lat, lon)
