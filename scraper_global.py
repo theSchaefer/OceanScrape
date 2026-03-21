@@ -92,8 +92,8 @@ proxies = []
 for i in range(10026, 10096):
     proxy = {
         "server": f"http://isp.decodo.com:{i}",
-        "username": "sp9r12fuvq",
-        "password": "c8yCmlGlR5Kk2=g4rm",
+        "username": os.getenv("DECODO_USERNAME"),
+        "password": os.getenv("DECODO_PASSWORD"),
     }
     proxies.append(proxy)
 

@@ -8,13 +8,17 @@ map_discovery.json, then exits.
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
 from patchright.sync_api import sync_playwright
 
 from geo_profile import resolve_proxy_geo
 from grid import get_tile_centers
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -30,8 +34,8 @@ NORTH_POLYGON = [
 
 proxy = {
     "server": "http://isp.decodo.com:10011",
-    "username": "sp9r12fuvq",
-    "password": "c8yCmlGlR5Kk2=g4rm",
+    "username": os.getenv("DECODO_USERNAME"),
+    "password": os.getenv("DECODO_PASSWORD"),
 }
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
