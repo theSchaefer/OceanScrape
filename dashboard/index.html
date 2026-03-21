@@ -525,6 +525,7 @@ async function loadVessels(timestamp) {
     const fm = $('#filter-motion').value;
     if (ft) params.set('type', ft);
     if (fm) params.set('motion', fm);
+    if (S.selectedRegion) params.set('region', S.selectedRegion);
     if (timestamp) params.set('timestamp', timestamp);
     const d = await api('/api/vessels?' + params);
     S.vessels = d.vessels;
@@ -725,6 +726,7 @@ function renderRegionList() {
 function selectRegion(code) {
   S.selectedRegion = code;
   renderRegionList();
+  loadVessels();
   const r = S.regions.find(x => x.code === code);
   if (r) {
     map.fitBounds(
@@ -889,6 +891,7 @@ function closeAnalytics() {
   $('#analytics').classList.remove('open');
   S.selectedRegion = null;
   renderRegionList();
+  loadVessels();
 }
 
 /* ━━ CSV Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */

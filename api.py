@@ -235,6 +235,20 @@ class CustomRegionUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Helpers – active region codes
+# ---------------------------------------------------------------------------
+
+def _valid_region_codes():
+    """Return the set of region codes that currently exist (predefined + custom)."""
+    codes = set(REGIONS.keys())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code FROM custom_regions")
+            codes.update(r[0] for r in cur.fetchall())
+    return codes
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -257,7 +271,9 @@ def get_status():
             cur.execute("SELECT COUNT(*) AS total FROM vessel_positions")
             total_markers = cur.fetchone()["total"]
 
-            cur.execute("SELECT COUNT(DISTINCT region) AS cnt FROM captures")
+            valid = list(_valid_region_codes())
+            cur.execute("SELECT COUNT(DISTINCT region) AS cnt FROM captures "
+                        "WHERE region = ANY(%s)", (valid,))
             regions_active = cur.fetchone()["cnt"]
 
             last_run_stats = None
@@ -660,13 +676,15 @@ def get_vessels(
                         LIMIT 1
                     """, (region, ts))
                 else:
+                    valid = list(_valid_region_codes())
                     cur.execute("""
                         SELECT DISTINCT ON (region) id, region, captured_at, markers
                         FROM captures
                         WHERE captured_at BETWEEN %s - INTERVAL '2 hours'
                               AND %s + INTERVAL '2 hours'
+                              AND region = ANY(%s)
                         ORDER BY region, ABS(EXTRACT(EPOCH FROM captured_at - %s))
-                    """, (ts, ts, ts))
+                    """, (ts, ts, valid, ts))
             else:
                 if region:
                     cur.execute("""
@@ -677,11 +695,13 @@ def get_vessels(
                         LIMIT 1
                     """, (region,))
                 else:
+                    valid = list(_valid_region_codes())
                     cur.execute("""
                         SELECT DISTINCT ON (region) id, region, captured_at, markers
                         FROM captures
+                        WHERE region = ANY(%s)
                         ORDER BY region, captured_at DESC
-                    """)
+                    """, (valid,))
 
             rows = cur.fetchall()
 

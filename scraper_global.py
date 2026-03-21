@@ -489,6 +489,38 @@ def _get_map_dimensions(page):
     return {"x": 0, "y": 0, "width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT}
 
 
+def _get_map_center_offset(page):
+    """Query the actual pixel position of the map center within #map_canvas.
+
+    Leaflet's setView() centres the map inside its own container, which may be
+    offset from #map_canvas due to UI chrome (sidebars, headers).  Playwright's
+    element.screenshot() captures at *device-pixel* resolution, which can
+    differ from the CSS-pixel dimensions returned by getBoundingClientRect().
+    This helper returns the map-centre pixel in CSS coords plus the device
+    pixel ratio so callers can convert to image-pixel space.
+
+    Returns ``{"center_x": float, "center_y": float, "dpr": float}`` or
+    ``None`` if the Leaflet map instance isn't available.
+    """
+    return page.evaluate("""
+    () => {
+        const map = window.__mtMap;
+        if (!map) return null;
+        const center = map.getCenter();
+        const centerPt = map.latLngToContainerPoint(center);
+        const mapEl = map.getContainer();
+        const mapRect = mapEl.getBoundingClientRect();
+        const canvas = document.getElementById('map_canvas');
+        const canvasRect = canvas.getBoundingClientRect();
+        return {
+            center_x: centerPt.x + (mapRect.x - canvasRect.x),
+            center_y: centerPt.y + (mapRect.y - canvasRect.y),
+            dpr: window.devicePixelRatio || 1
+        };
+    }
+    """)
+
+
 def _pan_map_js(page, target_lat, target_lon, zoom):
     """Pan map using Leaflet's setView API — pixel-perfect positioning."""
     return page.evaluate(f"""
@@ -586,7 +618,7 @@ def _wait_for_tiles_after_pan(page, timeout_ms=5000):
 
 
 def _detect_ships_inline(img_bytes, center_lat, center_lon, zoom,
-                         viewport_w, viewport_h):
+                         viewport_w, viewport_h, center_offset=None):
     """Run OpenCV ship detection in-memory.
 
     Returns (counts_dict, markers_list):
@@ -596,7 +628,8 @@ def _detect_ships_inline(img_bytes, center_lat, center_lon, zoom,
     """
     from seer import detect_ships_from_bytes
     return detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
-                                   viewport_w, viewport_h)
+                                   viewport_w, viewport_h,
+                                   center_offset=center_offset)
 
 
 # --- Leaflet map discovery ----------------------------------------------------
@@ -698,14 +731,25 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 screenshot_args["quality"] = SCREENSHOT_QUALITY
             img_bytes = map_locator.screenshot(**screenshot_args)
 
+            # Query actual map-centre pixel (accounts for UI chrome + DPR)
+            center_offset = _get_map_center_offset(page)
+
             # Inline ship detection + geo-coordinate extraction
             logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
                          row, col, len(img_bytes))
             det, tile_markers = _detect_ships_inline(
-                img_bytes, lat, lon, zoom, map_width, map_height
+                img_bytes, lat, lon, zoom, map_width, map_height,
+                center_offset=center_offset
             )
             logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
                          row, col, det, len(tile_markers))
+
+            # Debug: verify center-pixel maps back to requested center
+            if center_offset and center_offset.get("dpr"):
+                from seer import _debug_center_check
+                _debug_center_check(lat, lon, zoom, map_width, map_height,
+                                    center_offset, row, col, logger)
+
             st = det["stationary_tankers"]
             mt = det["moving_tankers"]
             sc = det["stationary_cargos"]

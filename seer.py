@@ -254,7 +254,7 @@ _DETECT_SCALE_SQ = _DETECT_SCALE * _DETECT_SCALE   # area scales as square
 
 
 def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
-                            viewport_w, viewport_h):
+                            viewport_w, viewport_h, center_offset=None):
     """Detect ships in one pass: counts + geo-coordinates.
 
     Combines the work of count_ships_from_bytes() and extract_marker_coords()
@@ -262,6 +262,10 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     processing.  The image is downscaled by _DETECT_SCALE before detection
     to reduce CPU load; marker pixel positions are projected against the
     original viewport size so lat/lon accuracy is unaffected.
+
+    ``center_offset`` (optional dict with ``center_x``, ``center_y``, ``dpr``)
+    corrects for UI chrome offsets and device-pixel-ratio differences between
+    the CSS layout and the actual screenshot resolution.
 
     Returns (counts_dict, markers_list):
       - counts: {"stationary_tankers", "moving_tankers",
@@ -297,12 +301,24 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     cy_px = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
              / math.pi) / 2.0 * total_px
 
+    # Determine map-centre pixel in the *image* coordinate system.
+    # center_offset (from Leaflet) gives the CSS-pixel position of the map
+    # centre within #map_canvas; multiply by DPR to get image pixels.
+    if center_offset and center_offset.get("dpr"):
+        dpr = center_offset["dpr"]
+        img_center_x = center_offset["center_x"] * dpr
+        img_center_y = center_offset["center_y"] * dpr
+    else:
+        # Fallback: assume geometric centre of the screenshot equals map centre
+        img_center_x = viewport_w / 2
+        img_center_y = viewport_h / 2
+
     def _pixel_to_latlon(px_x, px_y):
-        # Scale pixel coords back to original viewport before projecting
+        # Scale pixel coords back to original image resolution
         orig_x = px_x / _DETECT_SCALE
         orig_y = px_y / _DETECT_SCALE
-        gx = cx_px + (orig_x - viewport_w / 2)
-        gy = cy_px + (orig_y - viewport_h / 2)
+        gx = cx_px + (orig_x - img_center_x)
+        gy = cy_px + (orig_y - img_center_y)
         lon = gx / total_px * 360.0 - 180.0
         merc_y = gy / total_px
         lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
@@ -355,6 +371,41 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
         "moving_cargos": mov_green,
     }
     return counts, markers_red + markers_green
+
+
+def _debug_center_check(center_lat, center_lon, zoom, viewport_w, viewport_h,
+                         center_offset, row, col, logger):
+    """Log whether the center pixel projects back to the requested center."""
+    dpr = center_offset.get("dpr", 1)
+    img_cx = center_offset["center_x"] * dpr
+    img_cy = center_offset["center_y"] * dpr
+
+    total_px = 256 * (2 ** zoom)
+    cx_px = (center_lon + 180) / 360.0 * total_px
+    lat_rad = math.radians(center_lat)
+    cy_px = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
+             / math.pi) / 2.0 * total_px
+
+    # The center pixel should map back to (center_lat, center_lon)
+    gx = cx_px + (img_cx - img_cx)   # == cx_px (offset is zero at center)
+    gy = cy_px + (img_cy - img_cy)   # == cy_px
+    lon_check = gx / total_px * 360.0 - 180.0
+    merc_y = gy / total_px
+    lat_check = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
+
+    dlat = abs(lat_check - center_lat)
+    dlon = abs(lon_check - center_lon)
+    if dlat > 0.01 or dlon > 0.01:
+        logger.warning("  Tile (%d,%d): center-pixel drift! "
+                       "expected (%.5f, %.5f), got (%.5f, %.5f), "
+                       "delta (%.5f, %.5f)",
+                       row, col, center_lat, center_lon,
+                       lat_check, lon_check, dlat, dlon)
+    else:
+        logger.debug("  Tile (%d,%d): center-pixel OK — "
+                     "offset css=(%.1f, %.1f) dpr=%.1f",
+                     row, col, center_offset["center_x"],
+                     center_offset["center_y"], dpr)
 
 
 if __name__ == "__main__":
