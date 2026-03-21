@@ -52,8 +52,7 @@ REGION_TIERS = {
     # Tier 1: Major global trade arteries
     "GOM": "1", "CAR": "1", "USE": "1", "USW": "1", "NS": "1", "BS": "1",
     "BLK": "1", "GG": "1", "SAW": "1", "SAE": "1", "MKS": "1", "PHI": "1",
-    "NWP": "1",
-    "TSU": "1", "TSM": "1", "TOR": "1", "CHR": "1", "HOU": "1", "SHA": "1",
+    "TSU": "1", "TOR": "1", "CHR": "1", "HOU": "1", "SHA": "1",
     "BNF": "1",
     # Tier 2: Regionally critical
     "NOR": "2", "GOT": "2", "COR": "2", "SIO": "2", "NAM": "2", "SEP": "2",
@@ -61,8 +60,8 @@ REGION_TIERS = {
     "BAS": "2", "CK": "2", "WIN": "2", "MON": "2", "ORE": "2", "LUZ": "2",
     "GSA": "2", "MAR": "2", "SAN": "2",
     # Tier 3: Coverage fill
-    "CEP": "3", "SPO": "3", "SOA": "3",
-    "ARC": "3", "NNC": "3", "WAO": "3", "EAF": "3", "NEP": "3", "BFS": "3",
+    "CEP": "3", "SOA": "3",
+    "ARC": "3", "WAO": "3", "EAF": "3", "NEP": "3", "BFS": "3",
 }
 
 REGIONS = {
@@ -185,8 +184,8 @@ REGIONS = {
     },
     "KO": {
         "polygon": _parse_polygon("KOREA_POLYGON", [
-            (35.00, 128.50), (35.00, 130.50),
-            (33.50, 130.50), (33.50, 128.50),
+            (35.00, 128.00), (35.00, 130.50),
+            (33.50, 130.50), (33.50, 128.00),
         ]),
         "zoom": 11,
         "name": "Korean Strait",
@@ -219,24 +218,64 @@ REGIONS = {
     # ── Zoom 10: Regional corridors ──────────────────────────────────────
     "NS": {
         "polygon": _parse_polygon("NORTH_SEA_POLYGON", [
-            (61.00, -4.00), (61.00, 9.00),
-            (51.00, 9.00), (51.00, -4.00),
+            # North Sea water body.  West: follows UK east coast.
+            # East: follows Norwegian/Danish/German/Dutch coast.
+            (58.50, -3.50),   # Northern Scotland (Moray Firth)
+            (57.50, -1.50),   # NE Scotland (Aberdeen)
+            (56.00, -2.00),   # SE Scotland (Edinburgh)
+            (55.00, -1.00),   # NE England (Newcastle)
+            (53.50, 0.50),    # East England (Humber)
+            (52.00, 1.50),    # East Anglia (Norfolk)
+            (51.00, 2.00),    # Thames Estuary / Dover
+            (51.50, 3.50),    # Belgian/Dutch coast
+            (53.50, 6.00),    # Netherlands / Frisian Islands
+            (54.50, 8.00),    # German Bight
+            (56.00, 8.50),    # Danish west coast (Jutland)
+            (58.00, 6.00),    # Norwegian south coast (Stavanger)
+            (60.50, 5.00),    # Norwegian west coast (Bergen)
+            (62.00, 5.00),    # Norwegian coast (Alesund)
+            (62.00, -1.00),   # Norwegian Sea boundary
         ]),
         "zoom": 10,
         "name": "North Sea",
     },
     "BLK": {
         "polygon": _parse_polygon("BLACK_SEA_POLYGON", [
-            (47.00, 28.00), (47.00, 42.00),
-            (41.00, 42.00), (41.00, 28.00),
+            # Black Sea water body, tracing the coastline to exclude
+            # Turkey (south), Caucasus (east), Ukraine/Romania (north-west).
+            (43.50, 28.50),   # Romanian coast (Constanta)
+            (46.00, 30.50),   # Ukrainian coast (Odesa)
+            (46.50, 33.50),   # Crimean west
+            (45.00, 36.00),   # Crimean south / Sea of Azov entrance
+            (44.50, 38.00),   # Russian coast (Novorossiysk)
+            (43.00, 40.50),   # Georgian coast (Batumi)
+            (42.00, 41.00),   # Georgian coast
+            (41.50, 40.50),   # NE Turkey coast (Trabzon)
+            (41.50, 36.00),   # N Turkey coast (Samsun)
+            (41.80, 32.50),   # N Turkey coast (Sinop)
+            (41.20, 29.50),   # Bosporus approach
+            (43.00, 28.50),   # Bulgarian coast (Varna)
         ]),
         "zoom": 10,
         "name": "Black Sea",
     },
     "GOT": {
         "polygon": _parse_polygon("GULF_OF_THAILAND_POLYGON", [
-            (14.00, 97.00), (14.00, 107.00),
-            (5.00, 107.00), (5.00, 97.00),
+            # Traces the Gulf of Thailand water body, excluding the Thai,
+            # Cambodian, and Malaysian peninsulas.
+            (13.50, 100.00),  # Bangkok coast
+            (12.50, 101.00),  # Eastern Gulf (Pattaya area)
+            (10.50, 104.00),  # Cambodian coast
+            (8.50, 106.50),   # Southern Vietnam (Mekong Delta)
+            (6.00, 106.00),   # SE approach
+            (5.00, 104.00),   # South China Sea approach
+            (2.50, 104.50),   # East Malaysia approach
+            (1.50, 103.50),   # Singapore approach
+            (2.50, 101.50),   # Malay Peninsula (east coast)
+            (5.50, 100.50),   # Thai-Malay border coast
+            (8.00, 99.50),    # Southern Thai coast
+            (10.00, 99.00),   # Gulf of Thailand (west side)
+            (13.00, 99.50),   # Upper Gulf (west side)
         ]),
         "zoom": 10,
         "name": "Gulf of Thailand",
@@ -259,16 +298,34 @@ REGIONS = {
     },
     "RS": {
         "polygon": _parse_polygon("RED_SEA_POLYGON", [
-            (28.00, 32.50), (28.00, 42.00),
-            (20.00, 42.00), (20.00, 32.50),
+            # Red Sea — narrow body of water between Egypt/Sudan and
+            # Saudi Arabia.  Tightly follows both coastlines.
+            (28.00, 33.50),   # Gulf of Suez (north)
+            (27.50, 34.00),   # Egyptian coast (Hurghada)
+            (24.00, 35.50),   # Egyptian coast
+            (22.00, 36.50),   # Sudanese coast
+            (20.00, 38.50),   # Southern Red Sea (Eritrea approach)
+            (20.00, 40.50),   # Southern Red Sea (Saudi side)
+            (22.50, 39.00),   # Saudi coast (Jeddah)
+            (25.00, 37.00),   # Saudi coast
+            (27.00, 36.00),   # Saudi coast (Tabuk)
+            (28.00, 35.00),   # Gulf of Aqaba approach
         ]),
         "zoom": 10,
         "name": "Red Sea",
     },
     "PG": {
         "polygon": _parse_polygon("PERSIAN_GULF_POLYGON", [
-            (30.50, 47.00), (30.50, 57.00),
-            (23.50, 57.00), (23.50, 47.00),
+            # Persian Gulf — wider polygon to ensure tile centers over
+            # water are kept.  Excludes deep interior of Iran/Arabia.
+            (30.50, 47.50),   # NW corner (Kuwait/Iraq coast)
+            (30.00, 50.00),   # Northern Gulf
+            (27.50, 52.00),   # Central Gulf (Iranian side)
+            (26.50, 56.50),   # Strait of Hormuz
+            (24.00, 55.00),   # UAE coast
+            (23.50, 51.00),   # Qatar / Saudi approach
+            (26.50, 49.50),   # Saudi coast (Dammam)
+            (29.00, 48.00),   # Kuwait approach
         ]),
         "zoom": 10,
         "name": "Persian Gulf",
@@ -307,8 +364,20 @@ REGIONS = {
     },
     "JV": {
         "polygon": _parse_polygon("JAVA_SEA_POLYGON", [
-            (-3.00, 105.00), (-3.00, 115.00),
-            (-8.00, 115.00), (-8.00, 105.00),
+            # Java Sea water body between Sumatra, Borneo, and Java.
+            # Excludes deep interior of each island.
+            (-2.50, 105.50),  # SE Sumatra coast
+            (-1.50, 107.50),  # Bangka/Belitung islands
+            (-1.00, 109.00),  # West Borneo coast
+            (-1.50, 111.00),  # SW Borneo coast
+            (-3.00, 113.00),  # S Borneo coast
+            (-3.50, 114.50),  # SE Borneo approach
+            (-5.00, 114.00),  # Java Sea center-east
+            (-6.50, 112.50),  # North Java coast (Surabaya)
+            (-6.80, 110.50),  # North Java coast (Semarang)
+            (-6.50, 108.50),  # North Java coast (Cirebon)
+            (-5.80, 106.00),  # Sunda Strait approach
+            (-3.50, 105.00),  # SE Sumatra
         ]),
         "zoom": 10,
         "name": "Java Sea",
@@ -316,7 +385,7 @@ REGIONS = {
     "YS": {
         "polygon": _parse_polygon("YELLOW_SEA_POLYGON", [
             (39.00, 119.00), (39.00, 127.00),
-            (33.00, 127.00), (33.00, 119.00),
+            (34.00, 127.00), (34.00, 119.00),
         ]),
         "zoom": 10,
         "name": "Yellow Sea",
@@ -325,40 +394,96 @@ REGIONS = {
     # ── Zoom 9: Open ocean shipping lanes ────────────────────────────────
     "GOM": {
         "polygon": _parse_polygon("GULF_OF_MEXICO_POLYGON", [
-            (30.00, -98.00), (30.00, -82.00),
-            (18.00, -82.00), (18.00, -98.00),
+            # Gulf of Mexico water body.  Traces US Gulf coast (north),
+            # Mexican coast (west/south), and Florida coast (east).
+            (30.00, -88.00),   # Mississippi coast
+            (29.50, -85.00),   # Florida panhandle
+            (28.50, -83.00),   # West Florida coast
+            (25.50, -82.00),   # Florida Keys (west)
+            (22.00, -82.00),   # Straits of Florida / Cuba
+            (20.00, -87.00),   # Yucatan Channel
+            (19.00, -92.00),   # Southern Gulf (Campeche)
+            (20.00, -96.50),   # Mexican coast (Veracruz)
+            (22.00, -97.50),   # Mexican coast (Tampico)
+            (26.00, -97.00),   # Texas coast (S)
+            (28.50, -95.50),   # Texas coast (Houston)
+            (29.50, -93.50),   # Louisiana coast
         ]),
         "zoom": 9,
         "name": "Gulf of Mexico",
     },
     "CAR": {
         "polygon": _parse_polygon("CARIBBEAN_POLYGON", [
-            (20.00, -85.00), (20.00, -60.00),
-            (10.00, -60.00), (10.00, -85.00),
+            # Caribbean Sea.  North boundary at 18°N (below GOM).
+            # Excludes Central American interior; traces coast.
+            (18.00, -85.00),   # NW corner (Honduras approach)
+            (18.00, -60.00),   # NE corner (Lesser Antilles)
+            (10.00, -60.00),   # SE corner (Trinidad approach)
+            (10.00, -76.00),   # Colombian coast (east)
+            (11.00, -75.00),   # Colombian coast (Cartagena)
+            (12.00, -82.00),   # Nicaraguan coast
+            (15.00, -83.50),   # Honduras coast
+            (16.00, -85.00),   # Honduras/Belize approach
         ]),
         "zoom": 9,
         "name": "Caribbean Sea",
     },
     "USE": {
         "polygon": _parse_polygon("US_EAST_COAST_POLYGON", [
-            (40.00, -80.00), (40.00, -65.00),
-            (25.00, -65.00), (25.00, -80.00),
+            # US East Coast — ocean side only.
+            # West boundary follows the coastline to exclude inland.
+            (40.00, -74.00),   # New York / New Jersey coast
+            (40.00, -65.00),   # NE corner (open ocean)
+            (25.00, -65.00),   # SE corner (open ocean)
+            (25.00, -80.50),   # Florida Keys
+            (27.00, -80.50),   # SE Florida coast
+            (30.50, -81.00),   # Jacksonville coast
+            (33.00, -79.00),   # South Carolina coast
+            (35.00, -76.00),   # Cape Hatteras
+            (37.00, -76.00),   # Chesapeake Bay entrance
+            (39.00, -74.50),   # Delaware Bay / NJ coast
         ]),
         "zoom": 9,
         "name": "US East Coast",
     },
     "USW": {
         "polygon": _parse_polygon("US_WEST_COAST_POLYGON", [
-            (50.00, -135.00), (50.00, -117.00),
-            (30.00, -117.00), (30.00, -135.00),
+            # US/Canada Pacific coast — ocean side only.
+            # East boundary follows the coastline to exclude land.
+            (50.00, -135.00),  # NW corner (open ocean)
+            (50.00, -126.00),  # Vancouver Island approach
+            (48.50, -125.00),  # Washington coast
+            (46.00, -124.50),  # Oregon coast
+            (42.00, -124.50),  # Oregon/California border
+            (38.00, -123.50),  # Northern California
+            (34.50, -121.00),  # Central California
+            (33.00, -118.00),  # Southern California (LA)
+            (30.00, -117.50),  # Mexican border
+            (30.00, -135.00),  # SW corner (open ocean)
         ]),
         "zoom": 9,
         "name": "US/Canada West Coast",
     },
     "BS": {
         "polygon": _parse_polygon("BALTIC_SEA_POLYGON", [
-            (66.00, 10.00), (66.00, 30.00),
-            (54.00, 30.00), (54.00, 10.00),
+            # Traces the Baltic coastline to exclude Scandinavian interior.
+            # Starts at Skagerrak, follows Swedish coast east, then Finnish
+            # coast south-east, down through the Gulf of Finland and Baltic
+            # proper, returning along the southern (Polish/German) shore.
+            (58.00, 10.00),   # Skagerrak entrance
+            (59.00, 11.00),   # Swedish west coast (Gothenburg)
+            (59.50, 18.00),   # Stockholm archipelago
+            (60.50, 19.50),   # Aland Sea
+            (63.50, 20.50),   # Gulf of Bothnia (Swedish side)
+            (65.50, 24.00),   # Northern Gulf of Bothnia
+            (63.50, 25.50),   # Gulf of Bothnia (Finnish side)
+            (60.20, 25.00),   # Gulf of Finland (Helsinki)
+            (59.50, 28.00),   # Gulf of Finland (east end)
+            (57.50, 27.00),   # Estonian coast
+            (56.00, 21.00),   # Latvian/Lithuanian coast
+            (54.50, 19.50),   # Gdansk Bay
+            (54.00, 14.00),   # German/Polish coast
+            (55.50, 10.50),   # Danish straits (south)
         ]),
         "zoom": 9,
         "name": "Baltic Sea",
@@ -394,14 +519,6 @@ REGIONS = {
         ]),
         "zoom": 9,
         "name": "Philippine Sea",
-    },
-    "NWP": {
-        "polygon": _parse_polygon("N_PACIFIC_POLYGON", [
-            (50.00, 155.00), (50.00, 180.00),
-            (30.00, 180.00), (30.00, 155.00),
-        ]),
-        "zoom": 9,
-        "name": "North Pacific",
     },
     "NOR": {
         "polygon": _parse_polygon("NORWEGIAN_SEA_POLYGON", [
@@ -451,14 +568,6 @@ REGIONS = {
         "zoom": 9,
         "name": "Central East Pacific",
     },
-    "SPO": {
-        "polygon": _parse_polygon("S_PACIFIC_POLYGON", [
-            (-15.00, -180.00), (-15.00, -140.00),
-            (-40.00, -140.00), (-40.00, -180.00),
-        ]),
-        "zoom": 9,
-        "name": "South Pacific",
-    },
     "SOA": {
         "polygon": _parse_polygon("S_ATLANTIC_C_POLYGON", [
             (-10.00, -25.00), (-10.00, 0.00),
@@ -469,8 +578,8 @@ REGIONS = {
     },
     "NAE": {
         "polygon": _parse_polygon("N_ATLANTIC_E_POLYGON", [
-            (55.00, -30.00), (55.00, -10.00),
-            (40.00, -10.00), (40.00, -30.00),
+            (55.00, -25.00), (55.00, -10.00),
+            (40.00, -10.00), (40.00, -25.00),
         ]),
         "zoom": 9,
         "name": "North Atlantic East",
@@ -485,16 +594,50 @@ REGIONS = {
     },
     "MEW": {
         "polygon": _parse_polygon("MED_WEST_POLYGON", [
-            (43.00, -5.00), (43.00, 15.00),
-            (33.00, 15.00), (33.00, -5.00),
+            # Traces the western Mediterranean basin.  North coast follows
+            # Spain → France → Italy; south coast follows Morocco → Algeria
+            # → Tunisia.  Excludes deep inland areas on both shores.
+            (36.20, -5.30),   # Strait of Gibraltar (north)
+            (36.70, -2.00),   # SE Spain (Almeria)
+            (38.00, 0.00),    # Valencia coast
+            (39.50, 2.50),    # Balearic Islands
+            (41.50, 3.00),    # French coast (Montpellier)
+            (43.30, 5.50),    # French Riviera (Marseille)
+            (43.80, 7.50),    # Nice / Monaco
+            (43.50, 10.00),   # Ligurian Sea (La Spezia)
+            (41.00, 13.00),   # Italian west coast (south of Rome)
+            (39.00, 14.50),   # Naples / Tyrrhenian Sea
+            (37.50, 15.00),   # Sicily (NE tip)
+            (36.80, 14.00),   # Sicily (south coast)
+            (35.50, 11.00),   # Tunisian coast
+            (34.00, 8.00),    # Eastern Algeria coast
+            (35.50, 2.00),    # Western Algeria coast
+            (35.80, -2.00),   # Northern Morocco coast
+            (35.80, -5.30),   # Strait of Gibraltar (south)
         ]),
         "zoom": 9,
         "name": "Mediterranean West",
     },
     "MEE": {
         "polygon": _parse_polygon("MED_EAST_POLYGON", [
-            (40.00, 15.00), (40.00, 36.00),
-            (30.00, 36.00), (30.00, 15.00),
+            # Eastern Mediterranean.  North coast: Italy boot → Greece →
+            # Turkey.  South coast: Libya → Egypt → Israel → Lebanon.
+            (38.00, 15.00),   # Southern Italy (Calabria)
+            (40.00, 18.50),   # Adriatic (Puglia heel)
+            (39.50, 20.00),   # W Greece (Ionian)
+            (37.50, 21.00),   # Peloponnese
+            (35.00, 24.00),   # Crete (south)
+            (36.50, 27.50),   # Dodecanese / E Aegean
+            (37.00, 30.00),   # Turkish SW coast (Antalya)
+            (36.50, 35.00),   # Turkish S coast (Mersin)
+            (35.00, 35.50),   # Cyprus / Syria coast
+            (33.00, 35.00),   # Lebanese coast
+            (31.50, 34.00),   # Israeli coast
+            (31.00, 32.50),   # Egyptian coast (Port Said)
+            (31.00, 28.00),   # Egyptian coast (Alexandria)
+            (32.50, 23.00),   # Libyan coast (Benghazi)
+            (33.00, 18.00),   # Gulf of Sidra (Libya)
+            (35.50, 15.00),   # Tunisian/Sicilian channel
         ]),
         "zoom": 9,
         "name": "Mediterranean East",
@@ -595,14 +738,6 @@ REGIONS = {
     },
 
     # ── Zoom 11: Wide straits (expansion) ──────────────────────────────────
-    "TSM": {
-        "polygon": _parse_polygon("TSUSHIMA_POLYGON", [
-            (35.00, 128.00), (35.00, 129.50),
-            (33.50, 129.50), (33.50, 128.00),
-        ]),
-        "zoom": 11,
-        "name": "Tsushima Strait",
-    },
     "HOU": {
         "polygon": _parse_polygon("HOUSTON_POLYGON", [
             (30.00, -95.50), (30.00, -93.50),
@@ -686,14 +821,6 @@ REGIONS = {
         ]),
         "zoom": 9,
         "name": "Northern Sea Route / Arctic",
-    },
-    "NNC": {
-        "polygon": _parse_polygon("NORW_CORRIDOR_POLYGON", [
-            (62.00, -5.00), (62.00, 10.00),
-            (55.00, 10.00), (55.00, -5.00),
-        ]),
-        "zoom": 9,
-        "name": "North Sea–Norwegian Corridor",
     },
     "WAO": {
         "polygon": _parse_polygon("W_AFRICA_OFFSHORE_POLYGON", [

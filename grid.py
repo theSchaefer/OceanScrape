@@ -22,9 +22,37 @@ def pixel_y_to_lat(pixel_y, zoom):
     return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
 
 
+def _point_in_polygon(lat, lon, polygon):
+    """Ray-casting point-in-polygon test.
+
+    Casts a horizontal ray eastward from (lat, lon) and counts how many
+    polygon edges it crosses.  Odd crossings = inside, even = outside.
+    Works for any simple polygon (convex or concave).
+
+    Args:
+        lat, lon: test point coordinates
+        polygon: list of (lat, lon) tuples defining the polygon boundary
+    """
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]
+        yj, xj = polygon[j]
+        if ((yi > lat) != (yj > lat)) and \
+           (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
 def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
     """
-    Compute non-overlapping tile centers covering a polygon's bounding box.
+    Compute non-overlapping tile centers covering a polygon's bounding box,
+    then filter out tiles whose center falls outside the polygon.
+
+    For simple rectangular (4-vertex) polygons every tile is kept.  For
+    concave coastline-following polygons, tiles over land are skipped.
 
     Args:
         polygon: list of (lat, lon) tuples defining the region
@@ -51,7 +79,7 @@ def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
     y_bot = lat_to_pixel_y(lat_min, zoom)
     n_rows = max(1, math.ceil((y_bot - y_top) / viewport_height))
 
-    tiles = []
+    bbox_tiles = []
     for row in range(n_rows):
         # Snake/boustrophedon ordering: even rows L→R, odd rows R→L
         # This minimizes pan distance between consecutive tiles
@@ -60,7 +88,16 @@ def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
             center_lon = lon_min + lon_span / 2 + col * lon_span
             center_y = y_top + viewport_height / 2 + row * viewport_height
             center_lat = pixel_y_to_lat(center_y, zoom)
-            tiles.append((row, col, center_lat, center_lon))
+            bbox_tiles.append((row, col, center_lat, center_lon))
+
+    # Filter tiles whose center falls outside the polygon.
+    # For 4-vertex rectangles this is a no-op (all centers are inside).
+    is_rect = len(polygon) <= 4
+    if is_rect:
+        tiles = bbox_tiles
+    else:
+        tiles = [t for t in bbox_tiles
+                 if _point_in_polygon(t[2], t[3], polygon)]
 
     grid_info = {
         "n_rows": n_rows,
@@ -68,6 +105,7 @@ def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
         "y_top": y_top,
         "lon_min": lon_min,
         "lon_span": lon_span,
+        "total_bbox_tiles": len(bbox_tiles),
     }
     return tiles, grid_info
 
