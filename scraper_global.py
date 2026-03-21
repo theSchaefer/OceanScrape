@@ -49,11 +49,11 @@ DEFAULT_ZOOM_LEVEL = int(os.getenv("ZOOM_LEVEL", "13"))
 VIEWPORT_WIDTH = int(os.getenv("VIEWPORT_WIDTH", "7680"))
 VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "4320"))
 CAPTURES_DIR = os.getenv("CAPTURES_DIR_PATCHRIGHT_PAN", "./data/captures")
-SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60"))
+SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "120"))
 JITTER_SECONDS = int(os.getenv("JITTER_SECONDS", "300"))
 
 # Tab parallelism: how many regions to load as tabs in a single browser
-TABS_PER_BROWSER = int(os.getenv("TABS_PER_BROWSER", "4"))
+TABS_PER_BROWSER = int(os.getenv("TABS_PER_BROWSER", "1"))
 # Max concurrent browser processes
 MAX_BROWSERS = int(os.getenv("MAX_BROWSERS", "4"))
 # Save images to disk (default: only counts are kept)
