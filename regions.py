@@ -224,64 +224,92 @@ REGIONS = {
     # ── Zoom 10: Regional corridors ──────────────────────────────────────
     "NS": {
         "polygon": _parse_polygon("NORTH_SEA_POLYGON", [
-            # North Sea water body.  West: follows UK east coast.
-            # East: follows Norwegian/Danish/German/Dutch coast.
-            (58.50, -3.50),   # Northern Scotland (Moray Firth)
-            (57.50, -1.50),   # NE Scotland (Aberdeen)
-            (56.00, -2.00),   # SE Scotland (Edinburgh)
-            (55.00, -1.00),   # NE England (Newcastle)
-            (53.50, 0.50),    # East England (Humber)
-            (52.00, 1.50),    # East Anglia (Norfolk)
-            (51.00, 2.00),    # Thames Estuary / Dover
-            (51.50, 3.50),    # Belgian/Dutch coast
-            (53.50, 6.00),    # Netherlands / Frisian Islands
-            (54.50, 8.00),    # German Bight
-            (56.00, 8.50),    # Danish west coast (Jutland)
-            (58.00, 6.00),    # Norwegian south coast (Stavanger)
-            (60.50, 5.00),    # Norwegian west coast (Bergen)
-            (62.00, 5.00),    # Norwegian coast (Alesund)
-            (62.00, -1.00),   # Norwegian Sea boundary
+            # North Sea — generous water coverage.
+            (61.00, -2.00),   # Shetland Islands (south)
+            (59.00, -3.00),   # Orkney Islands
+            (58.60, -3.20),   # N Scotland (Pentland Firth)
+            (57.70, -1.80),   # Aberdeen coast
+            (56.30, -1.80),   # Dundee / Firth of Tay
+            (56.00, -2.50),   # Edinburgh / Firth of Forth
+            (55.50, -1.50),   # NE England (Newcastle)
+            (54.60, -0.50),   # Yorkshire coast (Whitby)
+            (53.60, 0.20),    # Humber estuary
+            (52.50, 1.80),    # East Anglia (Great Yarmouth)
+            (51.40, 1.50),    # Thames Estuary
+            (51.00, 2.50),    # Dover / Calais
+            (51.40, 3.50),    # Belgian coast (Zeebrugge)
+            (51.90, 4.50),    # Rotterdam / Hook of Holland
+            (53.00, 5.00),    # Dutch coast (Den Helder)
+            (53.50, 6.50),    # Frisian Islands
+            (54.00, 7.50),    # German Bight (Borkum)
+            (54.30, 8.50),    # Schleswig coast
+            (55.00, 8.50),    # S Denmark (Esbjerg)
+            (55.80, 8.20),    # Jutland west coast
+            (57.00, 8.30),    # NW Jutland (Thyboron)
+            (57.70, 10.50),   # Skagen tip
+            (58.20, 6.50),    # S Norway coast (Kristiansand)
+            (59.00, 5.50),    # Stavanger approach
+            (60.40, 5.00),    # Bergen approach
+            (61.00, 4.50),    # Sognefjord entrance
+            (62.00, 4.00),    # Alesund approach
+            (62.00, -1.00),   # Open sea boundary (NW)
         ]),
         "zoom": 10,
         "name": "North Sea",
     },
     "BLK": {
         "polygon": _parse_polygon("BLACK_SEA_POLYGON", [
-            # Black Sea water body, tracing the coastline to exclude
-            # Turkey (south), Caucasus (east), Ukraine/Romania (north-west).
-            (43.50, 28.50),   # Romanian coast (Constanta)
-            (46.00, 30.50),   # Ukrainian coast (Odesa)
-            (46.50, 33.50),   # Crimean west
-            (45.00, 36.00),   # Crimean south / Sea of Azov entrance
-            (44.50, 38.00),   # Russian coast (Novorossiysk)
-            (43.00, 40.50),   # Georgian coast (Batumi)
-            (42.00, 41.00),   # Georgian coast
-            (41.50, 40.50),   # NE Turkey coast (Trabzon)
-            (41.50, 36.00),   # N Turkey coast (Samsun)
-            (41.80, 32.50),   # N Turkey coast (Sinop)
-            (41.20, 29.50),   # Bosporus approach
-            (43.00, 28.50),   # Bulgarian coast (Varna)
+            # Black Sea — generous coastline tracing to capture all water.
+            (41.30, 29.10),   # Bosporus N entrance
+            (42.00, 28.00),   # Bulgarian coast (Burgas)
+            (43.20, 28.00),   # Bulgarian coast (Varna)
+            (44.40, 29.00),   # Romanian coast (Constanta approach)
+            (45.30, 29.80),   # Danube Delta
+            (46.00, 30.80),   # Ukrainian coast (Odesa)
+            (46.30, 32.00),   # Kherson approach
+            (46.20, 33.80),   # Crimean west (Yevpatoria)
+            (45.50, 33.50),   # Crimean SW (Sevastopol)
+            (44.40, 34.00),   # Crimean S coast (Yalta)
+            (45.00, 36.50),   # Kerch Strait approach
+            (45.30, 37.50),   # Sea of Azov entrance
+            (44.60, 38.00),   # Novorossiysk coast
+            (44.00, 39.00),   # Russian coast (Tuapse)
+            (43.40, 40.00),   # Sochi coast
+            (42.50, 41.50),   # Georgian coast (Poti)
+            (41.80, 41.80),   # Georgian coast (Batumi)
+            (41.30, 41.00),   # Turkey NE coast (Rize)
+            (41.00, 40.50),   # Turkey coast (Trabzon)
+            (41.30, 38.00),   # Turkey coast (Giresun)
+            (41.70, 36.00),   # Turkey coast (Samsun)
+            (42.00, 34.00),   # Turkey coast (Sinop)
+            (41.70, 32.50),   # Turkey coast (Zonguldak)
+            (41.20, 30.00),   # Turkey coast (Istanbul approach)
         ]),
         "zoom": 10,
         "name": "Black Sea",
     },
     "GOT": {
         "polygon": _parse_polygon("GULF_OF_THAILAND_POLYGON", [
-            # Traces the Gulf of Thailand water body, excluding the Thai,
-            # Cambodian, and Malaysian peninsulas.
-            (13.50, 100.00),  # Bangkok coast
-            (12.50, 101.00),  # Eastern Gulf (Pattaya area)
-            (10.50, 104.00),  # Cambodian coast
-            (8.50, 106.50),   # Southern Vietnam (Mekong Delta)
-            (6.00, 106.00),   # SE approach
-            (5.00, 104.00),   # South China Sea approach
-            (2.50, 104.50),   # East Malaysia approach
-            (1.50, 103.50),   # Singapore approach
-            (2.50, 101.50),   # Malay Peninsula (east coast)
-            (5.50, 100.50),   # Thai-Malay border coast
-            (8.00, 99.50),    # Southern Thai coast
-            (10.00, 99.00),   # Gulf of Thailand (west side)
-            (13.00, 99.50),   # Upper Gulf (west side)
+            # Gulf of Thailand + S. China Sea approach — generous coverage.
+            (13.50, 100.20),  # Upper Gulf (Bangkok approach)
+            (13.20, 100.90),  # Eastern upper Gulf
+            (12.60, 101.00),  # Pattaya coast
+            (11.50, 102.50),  # Cambodian coast (Sihanoukville)
+            (10.50, 104.30),  # S Cambodia / Phu Quoc
+            (9.50, 105.50),   # Mekong Delta
+            (8.50, 106.70),   # SE Vietnam coast
+            (6.50, 106.50),   # Southern approach
+            (4.00, 104.50),   # East coast Malay Peninsula (Kuantan approach)
+            (2.00, 104.50),   # E Malaysia (Tioman area)
+            (1.50, 103.80),   # Singapore NE approach
+            (1.50, 103.30),   # Singapore/Malacca boundary
+            (2.50, 102.00),   # E Malay coast (Mersing)
+            (4.00, 101.50),   # E Malay coast (Kuala Terengganu)
+            (6.00, 100.50),   # Thai-Malay border (Kota Bharu)
+            (7.50, 99.50),    # Southern Thai coast (Nakhon)
+            (9.50, 99.50),    # Chumphon coast
+            (10.50, 99.00),   # Gulf of Thailand west
+            (12.50, 99.80),   # Upper Gulf west
         ]),
         "zoom": 10,
         "name": "Gulf of Thailand",
@@ -302,112 +330,173 @@ REGIONS = {
     },
     "SCS": {
         "polygon": _parse_polygon("S_CHINA_SEA_POLYGON", [
-            (22.00, 110.00),  # Hainan / S China coast
-            (21.00, 113.00),  # Hong Kong approach
-            (20.00, 117.00),  # Taiwan Strait south
-            (15.00, 118.00),  # Luzon (west coast)
-            (10.00, 117.50),  # Palawan approach
-            (7.00, 115.00),   # Spratly area
-            (5.00, 112.00),   # Borneo NW coast
-            (3.00, 110.00),   # Sarawak coast
-            (2.00, 108.00),   # South approach
-            (10.00, 107.00),  # Vietnam south coast
-            (16.00, 108.00),  # Vietnam central coast
-            (20.00, 107.00),  # Gulf of Tonkin
+            # South China Sea — generous water coverage including Gulf of Tonkin.
+            (21.50, 107.50),  # N Vietnam coast (Haiphong)
+            (20.00, 106.50),  # Gulf of Tonkin west
+            (18.00, 106.50),  # Central Vietnam coast (Vinh)
+            (16.00, 108.00),  # Vietnam coast (Da Nang)
+            (12.00, 109.30),  # SE Vietnam coast (Nha Trang)
+            (10.00, 107.00),  # S Vietnam coast (Vung Tau)
+            (8.50, 106.80),   # Mekong Delta approach
+            (4.00, 108.00),   # S approach
+            (2.00, 109.50),   # Borneo NW coast (Kuching)
+            (3.00, 110.50),   # Sarawak coast
+            (5.00, 113.00),   # Brunei approach
+            (7.00, 116.50),   # Spratly area
+            (8.00, 117.50),   # Palawan approach
+            (10.50, 118.00),  # Palawan north
+            (12.50, 120.00),  # Mindoro Strait
+            (14.50, 119.50),  # W Luzon coast (Manila)
+            (18.50, 118.00),  # NW Luzon coast
+            (20.50, 117.00),  # S Taiwan Strait
+            (21.50, 114.00),  # Hong Kong / Macau
+            (22.00, 113.00),  # Pearl River Delta
+            (21.00, 110.50),  # Hainan east coast
+            (19.50, 109.00),  # Hainan south coast
+            (20.00, 108.50),  # Hainan SW
         ]),
         "zoom": 10,
         "name": "South China Sea",
     },
     "RS": {
         "polygon": _parse_polygon("RED_SEA_POLYGON", [
-            # Red Sea — narrow body of water between Egypt/Sudan and
-            # Saudi Arabia.  Tightly follows both coastlines.
-            (28.00, 33.50),   # Gulf of Suez (north)
-            (27.50, 34.00),   # Egyptian coast (Hurghada)
-            (24.00, 35.50),   # Egyptian coast
-            (22.00, 36.50),   # Sudanese coast
-            (20.00, 38.50),   # Southern Red Sea (Eritrea approach)
-            (20.00, 40.50),   # Southern Red Sea (Saudi side)
-            (22.50, 39.00),   # Saudi coast (Jeddah)
-            (25.00, 37.00),   # Saudi coast
-            (27.00, 36.00),   # Saudi coast (Tabuk)
-            (28.00, 35.00),   # Gulf of Aqaba approach
+            # Red Sea — follows both coastlines generously seaward.
+            (29.50, 32.50),   # Gulf of Suez north (Suez city)
+            (28.00, 33.50),   # Gulf of Suez
+            (27.80, 34.00),   # Hurghada coast
+            (26.50, 34.00),   # Egyptian coast
+            (24.00, 35.30),   # Egyptian coast (Marsa Alam)
+            (22.50, 36.50),   # Egyptian/Sudanese border coast
+            (21.00, 37.50),   # Sudanese coast (Port Sudan)
+            (19.50, 37.50),   # Sudanese coast
+            (18.50, 38.50),   # Eritrean coast
+            (16.00, 40.00),   # Eritrean coast (Massawa)
+            (14.50, 42.00),   # Eritrea / Djibouti approach
+            (12.80, 43.30),   # Bab al-Mandab approach
+            (13.50, 43.50),   # Yemen coast (Mocha)
+            (15.00, 42.50),   # Yemen coast
+            (17.50, 41.50),   # Saudi / Yemen border coast
+            (19.50, 40.50),   # Saudi coast (Farasan Islands)
+            (21.50, 39.00),   # Saudi coast (Jeddah)
+            (23.00, 38.50),   # Saudi coast
+            (25.00, 37.00),   # Saudi coast (Yanbu)
+            (26.50, 36.50),   # Saudi coast (Duba)
+            (28.00, 35.00),   # Gulf of Aqaba mouth
+            (29.50, 34.80),   # Gulf of Aqaba (Eilat/Aqaba)
         ]),
         "zoom": 10,
         "name": "Red Sea",
     },
     "PG": {
         "polygon": _parse_polygon("PERSIAN_GULF_POLYGON", [
-            # Persian Gulf — wider polygon to ensure tile centers over
-            # water are kept.  Excludes deep interior of Iran/Arabia.
-            (30.50, 47.50),   # NW corner (Kuwait/Iraq coast)
-            (30.00, 50.00),   # Northern Gulf
-            (27.50, 52.00),   # Central Gulf (Iranian side)
+            # Persian Gulf — generous coastline tracing on both shores.
+            (30.00, 48.50),   # Shatt al-Arab / Iraq
+            (30.30, 49.00),   # Kuwait coast
+            (29.30, 48.50),   # Kuwait Bay
+            (28.50, 49.50),   # Saudi coast (Jubail)
+            (27.00, 49.80),   # Saudi coast (Dammam)
+            (26.00, 50.30),   # Bahrain approach
+            (25.50, 50.80),   # Qatar west coast
+            (25.30, 51.50),   # Qatar east coast (Doha)
+            (24.80, 51.80),   # Qatar south
+            (24.50, 53.00),   # UAE coast (Abu Dhabi approach)
+            (24.00, 54.50),   # Abu Dhabi coast
+            (24.50, 55.50),   # Sharjah / Dubai approach
+            (25.50, 56.50),   # Fujairah / Hormuz approach
             (26.50, 56.50),   # Strait of Hormuz
-            (24.00, 55.00),   # UAE coast
-            (23.50, 51.00),   # Qatar / Saudi approach
-            (26.50, 49.50),   # Saudi coast (Dammam)
-            (29.00, 48.00),   # Kuwait approach
+            (27.20, 56.00),   # Iran coast (Bandar Abbas)
+            (27.50, 54.00),   # Iran coast (Kish Island)
+            (28.00, 52.00),   # Iran coast (Bushehr)
+            (29.00, 50.50),   # Iran coast (Kharg Island)
+            (30.00, 49.50),   # Iran coast (Abadan)
         ]),
         "zoom": 10,
         "name": "Persian Gulf",
     },
     "GA": {
         "polygon": _parse_polygon("GULF_OF_ADEN_POLYGON", [
-            (12.60, 43.30),  # Bab al-Mandab (south)
-            (14.50, 44.00),  # Yemeni coast
-            (14.00, 48.00),  # Yemeni coast (central)
-            (13.50, 50.50),  # Eastern Yemen / Socotra approach
-            (12.00, 51.00),  # Cape Guardafui (Horn of Africa)
-            (11.00, 49.00),  # Somali coast
-            (11.00, 45.00),  # Djibouti approach
-            (11.50, 43.50),  # Djibouti coast
+            # Gulf of Aden — traces Yemen coast (N) and Somalia coast (S).
+            (12.60, 43.30),   # Bab al-Mandab entrance
+            (12.80, 44.50),   # Yemeni coast
+            (13.50, 45.50),   # Yemeni coast (Aden)
+            (14.00, 47.00),   # Yemeni coast (Mukalla)
+            (14.50, 49.00),   # Yemeni coast
+            (13.80, 50.50),   # E Yemen (Socotra approach)
+            (12.50, 54.00),   # Socotra Island (generous)
+            (12.00, 52.00),   # Cape Guardafui
+            (11.50, 50.50),   # Horn of Africa (tip)
+            (10.50, 49.00),   # Somali coast
+            (10.80, 47.00),   # Somali coast (Bosaso)
+            (11.00, 45.00),   # Somali coast
+            (11.50, 43.30),   # Djibouti coast
         ]),
         "zoom": 10,
         "name": "Gulf of Aden",
     },
     "ECS": {
         "polygon": _parse_polygon("E_CHINA_SEA_POLYGON", [
-            (33.50, 121.00),  # Shanghai / Yangtze
-            (33.00, 126.00),  # Jeju approach
-            (30.00, 128.00),  # Ryukyu Islands (north)
-            (27.00, 127.00),  # Okinawa approach
-            (25.50, 123.00),  # Taiwan NE tip
-            (26.00, 120.50),  # Taiwan Strait north
-            (28.00, 121.00),  # Zhejiang coast
-            (31.00, 122.00),  # Yangtze Delta
+            # East China Sea — generous water coverage.
+            (34.00, 120.50),  # Jiangsu coast
+            (32.50, 121.50),  # Yangtze Delta / Shanghai
+            (30.50, 122.50),  # Zhoushan Islands
+            (29.00, 122.00),  # Zhejiang coast (Wenzhou)
+            (27.50, 121.00),  # Fujian coast (Fuzhou)
+            (25.50, 120.00),  # Taiwan Strait N entrance
+            (25.00, 122.50),  # Taiwan NE coast
+            (26.00, 125.00),  # Ryukyu chain (south)
+            (28.00, 127.50),  # Amami Islands
+            (30.00, 128.50),  # Ryukyu N / Kyushu S approach
+            (31.50, 128.00),  # Open ECS (E)
+            (33.00, 127.00),  # Jeju Island approach
+            (34.50, 126.00),  # SW Korean coast
+            (34.50, 124.00),  # Yellow Sea border
         ]),
         "zoom": 10,
         "name": "East China Sea",
     },
     "MZ": {
         "polygon": _parse_polygon("MOZAMBIQUE_POLYGON", [
-            (-12.00, 40.50),  # N Mozambique coast (Comoros approach)
-            (-12.50, 44.00),  # NW Madagascar
-            (-16.00, 45.50),  # W Madagascar coast
-            (-20.00, 44.00),  # SW Madagascar
-            (-23.50, 44.00),  # S Madagascar approach
-            (-25.00, 40.00),  # S Mozambique Channel
-            (-23.00, 35.50),  # S Mozambique coast
-            (-18.00, 36.00),  # Central Mozambique coast
-            (-14.00, 40.50),  # N Mozambique coast
+            # Mozambique Channel — traces both coastlines generously.
+            (-11.00, 40.00),  # N Mozambique (Pemba)
+            (-12.50, 40.80),  # N Mozambique (Ilha de Mocambique)
+            (-14.00, 40.50),  # Mozambique coast
+            (-16.00, 39.50),  # Quelimane coast
+            (-18.00, 36.50),  # Beira approach
+            (-20.00, 35.00),  # S Mozambique (Save River)
+            (-23.00, 35.30),  # Inhambane coast
+            (-25.00, 34.00),  # Maputo approach
+            (-26.50, 35.00),  # S Mozambique
+            (-26.50, 40.00),  # Open ocean (S)
+            (-25.00, 44.00),  # S Madagascar approach
+            (-23.00, 44.00),  # SW Madagascar (Toliara)
+            (-20.00, 44.50),  # W Madagascar (Morondava)
+            (-17.00, 44.00),  # NW Madagascar (Maintirano)
+            (-15.50, 45.50),  # NW Madagascar (Mahajanga)
+            (-12.50, 48.50),  # N Madagascar tip (Nosy Be)
+            (-11.50, 44.00),  # Comoros Islands
+            (-11.00, 42.00),  # N Channel entrance
         ]),
         "zoom": 10,
         "name": "Mozambique Channel",
     },
     "CG": {
         "polygon": _parse_polygon("CAPE_POLYGON", [
+            # Cape of Good Hope — generous offshore extension to capture shipping lanes.
+            (-31.50, 17.50),  # W coast (Saldanha Bay)
             (-33.00, 17.50),  # Table Bay (Cape Town)
             (-34.00, 18.50),  # Cape of Good Hope
-            (-34.80, 20.00),  # Cape Agulhas
-            (-35.50, 22.00),  # Mossel Bay
-            (-34.50, 26.00),  # Port Elizabeth approach
-            (-33.50, 26.50),  # Algoa Bay
-            (-33.50, 28.00),  # East London approach
-            (-33.00, 28.50),  # SE corner (open ocean)
-            (-36.50, 25.00),  # Southern offshore
-            (-36.50, 16.00),  # SW offshore
-            (-34.00, 15.00),  # West coast approach
+            (-34.80, 20.00),  # Cape Agulhas (southernmost point)
+            (-34.00, 22.00),  # Mossel Bay
+            (-34.00, 24.00),  # Garden Route coast
+            (-33.80, 26.00),  # Port Elizabeth
+            (-33.00, 27.50),  # East London coast
+            (-31.50, 29.50),  # Durban approach
+            (-30.00, 31.50),  # KZN coast (generous)
+            (-34.00, 32.00),  # Offshore (SE, shipping lane)
+            (-37.00, 28.00),  # Deep offshore (S)
+            (-37.00, 18.00),  # Deep offshore (SW)
+            (-34.00, 14.00),  # Open ocean (W)
+            (-31.50, 15.00),  # W coast approach
         ]),
         "zoom": 10,
         "name": "Cape of Good Hope",
@@ -434,15 +523,28 @@ REGIONS = {
     },
     "YS": {
         "polygon": _parse_polygon("YELLOW_SEA_POLYGON", [
-            (39.50, 119.50),  # Bohai Strait approach
-            (38.00, 121.00),  # Shandong Peninsula (east)
-            (35.00, 126.00),  # Central Yellow Sea
-            (34.00, 126.50),  # SW Korean coast (Jeju approach)
-            (36.00, 126.50),  # W Korean coast
+            # Yellow Sea + Bohai Sea — generous coastline following.
+            (40.50, 120.50),  # Bohai Strait west (Penglai)
+            (39.00, 118.50),  # Tianjin coast
+            (38.50, 117.50),  # Bohai Bay (inner)
+            (38.00, 118.00),  # Shandong N coast (Dongying)
+            (37.50, 119.50),  # Shandong NE coast (Weifang)
+            (37.30, 122.50),  # Shandong E tip (Weihai)
+            (36.00, 120.50),  # Qingdao coast
+            (35.00, 119.50),  # Jiangsu N coast (Lianyungang)
+            (34.00, 120.00),  # Jiangsu coast
+            (33.50, 121.00),  # Yangtze approach
+            (34.00, 125.50),  # Central Yellow Sea
+            (34.00, 126.50),  # Jeju SW approach
+            (35.00, 126.50),  # SW Korean coast
+            (36.00, 126.50),  # W Korean coast (Gunsan)
+            (37.00, 126.00),  # W Korean coast (Incheon)
             (38.00, 125.00),  # Korean Bay
-            (39.50, 124.50),  # Dalian approach
-            (40.00, 122.00),  # Liaodong Peninsula
-            (39.00, 120.00),  # NW coast
+            (39.00, 124.50),  # N Korean coast (Sinuiju)
+            (40.00, 124.50),  # Yalu River mouth
+            (40.30, 122.50),  # Liaodong Peninsula tip
+            (40.00, 121.50),  # Dalian coast
+            (40.50, 121.50),  # Bohai Strait east
         ]),
         "zoom": 10,
         "name": "Yellow Sea",
@@ -451,117 +553,202 @@ REGIONS = {
     # ── Zoom 9: Open ocean shipping lanes ────────────────────────────────
     "GOM": {
         "polygon": _parse_polygon("GULF_OF_MEXICO_POLYGON", [
-            # Gulf of Mexico water body.  Traces US Gulf coast (north),
-            # Mexican coast (west/south), and Florida coast (east).
-            (30.00, -88.00),   # Mississippi coast
-            (29.50, -85.00),   # Florida panhandle
-            (28.50, -83.00),   # West Florida coast
-            (25.50, -82.00),   # Florida Keys (west)
-            (22.00, -82.00),   # Straits of Florida / Cuba
-            (20.00, -87.00),   # Yucatan Channel
-            (19.00, -92.00),   # Southern Gulf (Campeche)
-            (20.00, -96.50),   # Mexican coast (Veracruz)
-            (22.00, -97.50),   # Mexican coast (Tampico)
-            (26.00, -97.00),   # Texas coast (S)
-            (28.50, -95.50),   # Texas coast (Houston)
-            (29.50, -93.50),   # Louisiana coast
+            # Gulf of Mexico — generous coastal tracing + Cuba N coast.
+            (30.30, -88.50),   # Mississippi coast (Gulfport)
+            (30.20, -86.50),   # Alabama coast (Pensacola)
+            (29.90, -85.00),   # Florida panhandle
+            (29.00, -83.50),   # W Florida coast (Cedar Key)
+            (27.00, -83.00),   # W Florida coast (Tampa)
+            (26.00, -82.00),   # SW Florida (Fort Myers)
+            (25.00, -81.50),   # Florida Keys (west)
+            (24.50, -83.00),   # Dry Tortugas / deep Florida Strait
+            (23.00, -82.00),   # Cuba N coast (Havana)
+            (22.00, -84.00),   # Cuba W coast
+            (21.50, -87.00),   # Yucatan Channel
+            (20.50, -87.00),   # Yucatan NE coast (Cancun)
+            (20.00, -90.50),   # Yucatan N coast (Merida)
+            (19.00, -92.50),   # Campeche Bay
+            (18.50, -94.50),   # Coatzacoalcos coast
+            (19.50, -96.00),   # Veracruz coast
+            (21.50, -97.50),   # Tampico coast
+            (24.50, -97.50),   # S Texas coast (Brownsville)
+            (26.50, -97.00),   # Texas coast (Corpus Christi)
+            (28.50, -96.00),   # Texas coast (Matagorda)
+            (29.30, -94.50),   # Texas coast (Galveston)
+            (29.80, -93.50),   # Louisiana coast (Sabine)
+            (29.50, -92.00),   # Louisiana coast (Vermilion Bay)
+            (29.20, -90.00),   # Mississippi Delta
+            (29.00, -89.00),   # SE Louisiana
+            (30.00, -89.50),   # Mississippi coast (Biloxi)
         ]),
         "zoom": 9,
         "name": "Gulf of Mexico",
     },
     "CAR": {
         "polygon": _parse_polygon("CARIBBEAN_POLYGON", [
-            # Caribbean Sea.  North boundary at 18°N (below GOM).
-            # Excludes Central American interior; traces coast.
-            (18.00, -85.00),   # NW corner (Honduras approach)
-            (18.00, -60.00),   # NE corner (Lesser Antilles)
-            (10.00, -60.00),   # SE corner (Trinidad approach)
-            (10.00, -76.00),   # Colombian coast (east)
-            (11.00, -75.00),   # Colombian coast (Cartagena)
-            (12.00, -82.00),   # Nicaraguan coast
-            (15.00, -83.50),   # Honduras coast
-            (16.00, -85.00),   # Honduras/Belize approach
+            # Caribbean Sea — generous coverage including all island arcs.
+            (18.50, -88.00),   # Belize coast
+            (17.50, -86.00),   # Honduras coast (Roatan)
+            (16.00, -86.00),   # Honduras coast
+            (15.00, -84.00),   # Mosquito Coast
+            (13.00, -83.50),   # Nicaragua coast
+            (12.00, -83.80),   # Costa Rica coast
+            (10.00, -83.00),   # Costa Rica / Panama
+            (9.50, -80.00),    # Panama (Caribbean side)
+            (9.00, -77.00),    # Colombia (Gulf of Uraba)
+            (10.00, -76.00),   # Colombia coast (Cartagena approach)
+            (11.50, -72.00),   # Colombia coast (Santa Marta)
+            (12.00, -70.00),   # Venezuela (Coro)
+            (10.50, -67.00),   # Venezuela coast (Caracas)
+            (10.50, -62.00),   # Venezuela coast (Barcelona)
+            (10.00, -61.00),   # Trinidad approach
+            (11.00, -60.00),   # Lesser Antilles south
+            (14.00, -60.50),   # Windward Islands
+            (16.00, -61.00),   # Guadeloupe
+            (18.00, -62.00),   # Leeward Islands
+            (19.00, -65.00),   # Virgin Islands
+            (19.50, -68.00),   # Mona Passage
+            (20.00, -73.00),   # Haiti / Cuba south
+            (19.50, -77.50),   # Jamaica south
+            (18.50, -78.00),   # Jamaica
+            (19.50, -81.00),   # Cayman Islands
+            (20.00, -85.00),   # Yucatan Channel south
         ]),
         "zoom": 9,
         "name": "Caribbean Sea",
     },
     "USE": {
         "polygon": _parse_polygon("US_EAST_COAST_POLYGON", [
-            # US East Coast — ocean side only.
-            # West boundary follows the coastline to exclude inland.
-            (40.00, -74.00),   # New York / New Jersey coast
-            (40.00, -65.00),   # NE corner (open ocean)
-            (25.00, -65.00),   # SE corner (open ocean)
-            (25.00, -80.50),   # Florida Keys
-            (27.00, -80.50),   # SE Florida coast
-            (30.50, -81.00),   # Jacksonville coast
-            (33.00, -79.00),   # South Carolina coast
+            # US East Coast — generous offshore extent for shipping lanes.
+            (43.50, -66.00),   # Maine coast (Eastport)
+            (42.00, -70.00),   # Cape Cod
+            (41.00, -71.00),   # Rhode Island / Long Island
+            (40.50, -74.00),   # New York / NJ coast
+            (39.00, -74.50),   # Delaware Bay
+            (37.50, -76.00),   # Chesapeake Bay entrance
+            (36.00, -75.50),   # Virginia Beach
             (35.00, -76.00),   # Cape Hatteras
-            (37.00, -76.00),   # Chesapeake Bay entrance
-            (39.00, -74.50),   # Delaware Bay / NJ coast
+            (34.00, -77.50),   # NC coast (Wilmington)
+            (33.00, -79.00),   # SC coast (Myrtle Beach)
+            (32.00, -80.50),   # SC coast (Charleston)
+            (30.50, -81.00),   # Jacksonville coast
+            (28.50, -80.50),   # Cape Canaveral
+            (27.00, -80.00),   # SE Florida (West Palm Beach)
+            (25.80, -80.00),   # Miami coast
+            (25.00, -80.00),   # Florida Keys east
+            (25.00, -65.00),   # Open ocean (SE, Bermuda corridor)
+            (30.00, -65.00),   # Open ocean (E)
+            (38.00, -65.00),   # Open ocean (NE)
+            (43.50, -63.00),   # Nova Scotia approach
         ]),
         "zoom": 9,
         "name": "US East Coast",
     },
     "USW": {
         "polygon": _parse_polygon("US_WEST_COAST_POLYGON", [
-            # US/Canada Pacific coast — ocean side only.
-            # East boundary follows the coastline to exclude land.
-            (50.00, -135.00),  # NW corner (open ocean)
-            (50.00, -126.00),  # Vancouver Island approach
-            (48.50, -125.00),  # Washington coast
-            (46.00, -124.50),  # Oregon coast
-            (42.00, -124.50),  # Oregon/California border
-            (38.00, -123.50),  # Northern California
-            (34.50, -121.00),  # Central California
-            (33.00, -118.00),  # Southern California (LA)
-            (30.00, -117.50),  # Mexican border
-            (30.00, -135.00),  # SW corner (open ocean)
+            # US/Canada Pacific coast — generous coastline + offshore.
+            (51.00, -131.00),  # Haida Gwaii / Queen Charlottes
+            (50.50, -128.50),  # N Vancouver Island
+            (49.00, -126.50),  # W Vancouver Island
+            (48.50, -125.00),  # Cape Flattery (WA)
+            (47.00, -124.50),  # Washington coast
+            (46.00, -124.20),  # Columbia River mouth
+            (44.50, -124.50),  # Oregon coast (Newport)
+            (43.00, -124.50),  # Oregon coast (Coos Bay)
+            (42.00, -124.50),  # OR/CA border (Crescent City)
+            (40.50, -124.50),  # N California (Eureka)
+            (38.50, -123.50),  # Point Reyes / SF approach
+            (37.00, -122.50),  # San Francisco Bay
+            (36.00, -122.00),  # Monterey Bay
+            (34.50, -121.00),  # Point Conception
+            (34.00, -119.50),  # Santa Barbara Channel
+            (33.50, -118.50),  # Los Angeles / Long Beach
+            (32.70, -117.50),  # San Diego coast
+            (30.00, -116.50),  # Baja California (Ensenada)
+            (30.00, -135.00),  # Open ocean (SW)
+            (40.00, -135.00),  # Open ocean (W)
+            (50.00, -135.00),  # Open ocean (NW)
         ]),
         "zoom": 9,
         "name": "US/Canada West Coast",
     },
     "BS": {
         "polygon": _parse_polygon("BALTIC_SEA_POLYGON", [
-            # Traces the Baltic coastline to exclude Scandinavian interior.
-            # Starts at Skagerrak, follows Swedish coast east, then Finnish
-            # coast south-east, down through the Gulf of Finland and Baltic
-            # proper, returning along the southern (Polish/German) shore.
-            (58.00, 10.00),   # Skagerrak entrance
-            (59.00, 11.00),   # Swedish west coast (Gothenburg)
-            (59.50, 18.00),   # Stockholm archipelago
-            (60.50, 19.50),   # Aland Sea
-            (63.50, 20.50),   # Gulf of Bothnia (Swedish side)
-            (65.50, 24.00),   # Northern Gulf of Bothnia
-            (63.50, 25.50),   # Gulf of Bothnia (Finnish side)
-            (60.20, 25.00),   # Gulf of Finland (Helsinki)
-            (59.50, 28.00),   # Gulf of Finland (east end)
-            (57.50, 27.00),   # Estonian coast
-            (56.00, 21.00),   # Latvian/Lithuanian coast
-            (54.50, 19.50),   # Gdansk Bay
-            (54.00, 14.00),   # German/Polish coast
-            (55.50, 10.50),   # Danish straits (south)
+            # Traces the Baltic coastline generously seaward to capture all
+            # water surface.  ~30 points for accurate coverage.
+            (57.80, 10.50),   # Skagerrak entrance (Skagen tip)
+            (57.70, 11.80),   # Kattegat (Gothenburg approach)
+            (56.20, 12.80),   # Oresund south (Malmo/Copenhagen)
+            (55.30, 13.50),   # Bornholm approach
+            (54.30, 12.50),   # German coast (Rostock)
+            (54.00, 13.50),   # Rugen island
+            (54.40, 14.80),   # Swinoujscie / Oder estuary
+            (54.50, 16.50),   # Polish coast (Kolobrzeg)
+            (54.60, 18.80),   # Gdansk Bay (Hel Peninsula)
+            (54.80, 20.00),   # Kaliningrad coast
+            (55.30, 21.00),   # Lithuanian coast (Klaipeda)
+            (56.00, 21.20),   # Latvian coast
+            (57.10, 22.00),   # Latvian coast (Ventspils)
+            (57.80, 24.50),   # Gulf of Riga
+            (58.50, 24.00),   # Estonian coast (Parnu)
+            (59.00, 25.50),   # Estonian coast (Tallinn)
+            (59.70, 28.50),   # Gulf of Finland (east end, Narva Bay)
+            (60.00, 30.00),   # St. Petersburg approach
+            (60.30, 28.00),   # Finnish coast (Kotka)
+            (60.30, 26.00),   # Helsinki approach
+            (60.00, 24.00),   # Hanko Peninsula
+            (60.50, 21.50),   # Turku archipelago
+            (60.70, 19.00),   # Aland Islands
+            (61.50, 18.00),   # Sea of Bothnia (Swedish side)
+            (63.00, 18.50),   # High Coast (Sweden)
+            (63.80, 20.50),   # Umea/Vaasa latitude
+            (65.20, 23.50),   # N Gulf of Bothnia (Lulea)
+            (65.80, 24.50),   # Tornio / northernmost point
+            (65.20, 25.50),   # Finnish side (Oulu)
+            (63.50, 23.00),   # Finnish coast (Vaasa)
+            (62.00, 21.00),   # Finnish coast (Pori)
+            (60.50, 19.00),   # Return to Aland area (close loop cleanly)
+            (59.50, 18.50),   # Stockholm archipelago
+            (58.50, 17.00),   # Gotland west
+            (57.50, 16.50),   # Oland / Kalmar
+            (56.50, 16.00),   # SE Sweden coast
+            (55.50, 14.50),   # Bornholm (south)
+            (55.00, 12.50),   # Danish straits (Gedser)
+            (55.80, 11.00),   # Great Belt
+            (56.50, 10.50),   # Kattegat (Aarhus)
         ]),
         "zoom": 9,
         "name": "Baltic Sea",
     },
     "GG": {
         "polygon": _parse_polygon("GULF_OF_GUINEA_POLYGON", [
-            (6.00, -8.00),    # Sierra Leone / Liberia coast
-            (5.00, -5.00),    # Cote d'Ivoire (Abidjan)
-            (5.00, -1.50),    # Ghana coast (Accra)
-            (6.00, 1.50),     # Togo / Benin coast
-            (6.50, 3.50),     # Lagos approach
-            (4.50, 7.00),     # Niger Delta
-            (4.00, 9.00),     # Cameroon coast
-            (2.00, 9.50),     # Equatorial Guinea
-            (0.50, 9.00),     # Gabon coast
-            (-1.00, 9.00),    # Gabon / Congo coast
-            (-4.00, 10.50),   # SW Congo coast
-            (-6.00, 8.00),    # Open ocean (south)
-            (-4.00, 0.00),    # Open ocean (SW)
-            (0.00, -5.00),    # Open ocean (W)
-            (4.00, -8.00),    # Open ocean (NW)
+            # Gulf of Guinea — generous coastal tracing W Africa.
+            (7.50, -12.00),    # Sierra Leone coast (Freetown)
+            (6.50, -10.50),    # Liberia coast
+            (5.50, -8.50),     # Liberia coast (Monrovia)
+            (4.50, -7.50),     # Cote d'Ivoire (San Pedro)
+            (5.20, -4.00),     # Cote d'Ivoire (Abidjan)
+            (5.00, -1.50),     # Ghana coast (Takoradi)
+            (5.50, 0.00),      # Ghana coast (Accra)
+            (6.20, 1.50),      # Togo / Benin coast (Lome)
+            (6.40, 2.50),      # Benin coast (Cotonou)
+            (6.50, 3.50),      # Lagos approach
+            (5.50, 5.50),      # Niger Delta (west)
+            (4.50, 6.50),      # Niger Delta (center)
+            (4.00, 8.00),      # Niger Delta (east)
+            (4.00, 9.00),      # Cameroon coast (Douala)
+            (3.50, 9.50),      # Cameroon coast (Kribi)
+            (2.00, 9.80),      # Equatorial Guinea (Bata)
+            (0.50, 9.50),      # Gabon coast (Libreville)
+            (-0.50, 9.00),     # Gabon coast (Port Gentil)
+            (-3.00, 10.00),    # Congo coast
+            (-4.50, 11.50),    # Congo coast (Pointe Noire)
+            (-6.00, 12.00),    # Angola (Cabinda coast)
+            (-6.50, 8.00),     # Open ocean (S)
+            (-5.00, 2.00),     # Open ocean (SW)
+            (-2.00, -3.00),    # Open ocean (W)
+            (2.00, -8.00),     # Open ocean (NW)
+            (5.00, -12.00),    # Open ocean (NW approach)
         ]),
         "zoom": 9,
         "name": "Gulf of Guinea",
@@ -600,31 +787,46 @@ REGIONS = {
     },
     "PHI": {
         "polygon": _parse_polygon("PHILIPPINE_SEA_POLYGON", [
-            (20.00, 122.00),  # Luzon NE coast
-            (18.00, 125.00),  # Philippine Sea (NW)
-            (15.00, 130.00),  # Open ocean (N)
-            (10.00, 135.00),  # Open ocean (E)
+            # Philippine Sea — generous coverage E of Philippines.
+            (20.50, 122.00),  # NE Luzon coast (Aparri)
+            (18.50, 122.50),  # Luzon east coast (Tuguegarao)
+            (16.50, 122.00),  # Luzon coast (Baler)
+            (14.50, 122.00),  # SE Luzon (Naga)
+            (13.00, 124.00),  # Catanduanes / Samar
+            (11.50, 125.00),  # Leyte coast
+            (10.00, 126.00),  # Samar / Leyte Gulf
+            (8.50, 126.50),   # E Mindanao (Davao approach)
+            (7.00, 126.50),   # SE Mindanao
+            (5.50, 127.00),   # SW approach (Celebes Sea)
             (5.00, 132.00),   # Open ocean (SE)
-            (5.00, 127.00),   # Mindanao east approach
-            (8.00, 126.50),   # E Mindanao coast
-            (10.00, 125.50),  # Leyte / Samar
-            (13.00, 124.00),  # Luzon SE coast
-            (18.00, 122.00),  # Luzon east coast
+            (8.00, 135.00),   # Palau approach
+            (12.00, 136.00),  # Open ocean (E)
+            (18.00, 135.00),  # Mariana Islands area
+            (22.00, 132.00),  # Open ocean (NE)
+            (22.00, 126.00),  # Taiwan E coast approach
         ]),
         "zoom": 9,
         "name": "Philippine Sea",
     },
     "NOR": {
         "polygon": _parse_polygon("NORWEGIAN_SEA_POLYGON", [
-            (62.00, -5.00),   # Shetland / Faroe gap
-            (64.00, -8.00),   # Iceland SE approach
-            (67.00, -10.00),  # Iceland NE approach
-            (71.00, -8.00),   # Jan Mayen area
-            (72.00, 5.00),    # Svalbard approach
-            (71.00, 15.00),   # N Norway coast (Hammerfest)
-            (69.00, 16.00),   # Lofoten Islands
-            (67.00, 14.50),   # Bodo coast
-            (64.00, 10.00),   # Trondheim coast
+            # Norwegian Sea — generous coverage, Faroe-Iceland gap to Barents.
+            (62.00, -2.00),   # Shetland N approach
+            (62.00, -7.00),   # Faroe Islands approach
+            (63.50, -10.00),  # Faroe-Iceland gap
+            (65.00, -14.00),  # Iceland E coast approach
+            (67.00, -14.00),  # Iceland NE shelf
+            (69.00, -10.00),  # Jan Mayen area
+            (71.50, -5.00),   # Open ocean (N)
+            (73.00, 5.00),    # Bear Island area
+            (72.00, 16.00),   # Hammerfest offshore
+            (71.00, 18.00),   # N Norway coast (generous)
+            (70.00, 17.00),   # Lofoten Islands (N)
+            (68.50, 15.50),   # Lofoten (S)
+            (67.50, 14.50),   # Bodo coast
+            (66.00, 12.50),   # Helgeland coast
+            (64.50, 11.00),   # Trondheim approach
+            (63.50, 8.00),    # More coast
             (62.50, 5.50),    # Alesund coast
         ]),
         "zoom": 9,
@@ -798,50 +1000,85 @@ REGIONS = {
     },
     "ARS": {
         "polygon": _parse_polygon("ARABIAN_SEA_POLYGON", [
-            (24.50, 57.00),  # Oman coast (Muscat)
-            (22.00, 60.00),  # Oman SE coast
-            (20.00, 63.00),  # Open ocean (Oman east)
-            (16.00, 72.00),  # India west coast (Mumbai approach)
-            (12.00, 74.00),  # India west coast (Goa)
-            (8.00, 76.00),   # Kerala coast
-            (8.00, 68.00),   # Lakshadweep Sea
-            (10.00, 60.00),  # Central Arabian Sea
-            (12.50, 52.00),  # Socotra approach
-            (15.00, 52.50),  # Yemen east coast
-            (20.00, 57.00),  # Oman north coast
+            # Arabian Sea — generous coverage, Oman to India west coast.
+            (25.50, 57.00),   # Oman N coast (Musandam)
+            (23.50, 58.50),   # Oman coast (Muscat)
+            (21.00, 59.50),   # Oman coast (Sur)
+            (20.00, 60.00),   # Oman SE coast
+            (17.00, 55.00),   # Oman S coast (Salalah)
+            (15.00, 52.00),   # Yemen east coast
+            (12.50, 51.50),   # Socotra approach
+            (10.00, 55.00),   # Open ocean (S)
+            (5.00, 60.00),    # Open ocean (Maldives NW)
+            (5.00, 72.00),    # Maldives / Laccadive Sea
+            (8.00, 77.00),    # Kerala coast (Trivandrum)
+            (10.00, 76.00),   # Kerala coast (Kochi)
+            (12.50, 74.80),   # Karnataka coast (Mangalore)
+            (15.50, 73.50),   # Goa coast
+            (17.00, 73.00),   # Maharashtra coast
+            (19.00, 73.00),   # Mumbai approach
+            (21.00, 70.00),   # Gujarat coast (Porbandar)
+            (23.00, 68.50),   # Kutch coast
+            (24.50, 67.00),   # Karachi approach
+            (25.50, 63.00),   # Makran coast (Pakistan)
+            (25.00, 61.00),   # Makran coast (Iran/Pak border)
         ]),
         "zoom": 9,
         "name": "Arabian Sea",
     },
     "BOB": {
         "polygon": _parse_polygon("BAY_OF_BENGAL_POLYGON", [
-            (20.00, 87.00),  # Bangladesh coast (Chittagong)
-            (16.00, 94.00),  # Myanmar coast
-            (14.00, 95.00),  # Andaman Sea approach
-            (10.00, 93.00),  # Andaman Islands
-            (6.00, 92.00),   # Nicobar Islands
-            (5.00, 82.00),   # Sri Lanka SE approach
-            (7.00, 80.00),   # Sri Lanka west coast
-            (10.00, 80.00),  # SE India coast (Chennai)
-            (13.00, 80.50),  # Andhra coast
-            (16.00, 82.00),  # East India coast
-            (19.00, 85.00),  # Odisha coast
+            # Bay of Bengal — generous coverage including Andaman Sea.
+            (22.00, 88.50),   # Bangladesh coast (Ganges Delta)
+            (21.50, 90.00),   # Bangladesh coast (Chittagong)
+            (20.50, 92.50),   # Myanmar coast (Sittwe)
+            (18.00, 94.00),   # Myanmar coast (Irrawaddy Delta)
+            (16.00, 94.50),   # Myanmar coast (Rangoon)
+            (14.00, 97.00),   # Myanmar coast / Andaman Sea
+            (12.00, 98.00),   # Andaman Sea (Myeik)
+            (10.00, 98.00),   # Andaman Sea (Mergui)
+            (8.00, 98.50),    # Andaman Sea (S Myanmar)
+            (7.00, 95.00),    # Nicobar Islands (generous)
+            (5.00, 93.00),    # Open ocean (S Andaman Sea)
+            (4.00, 85.00),    # Open ocean (S)
+            (6.00, 80.00),    # Sri Lanka S tip approach
+            (7.50, 79.50),    # Sri Lanka W coast
+            (9.50, 80.00),    # Sri Lanka N tip (Jaffna)
+            (10.50, 80.00),   # SE India (Nagapattinam)
+            (13.00, 80.50),   # Chennai coast
+            (15.00, 80.00),   # Andhra coast
+            (16.50, 82.50),   # Andhra coast (Visakhapatnam)
+            (18.50, 84.50),   # Odisha coast
+            (20.00, 86.50),   # Odisha coast (Puri)
+            (21.50, 87.50),   # West Bengal coast (Digha)
         ]),
         "zoom": 9,
         "name": "Bay of Bengal",
     },
     "WP": {
         "polygon": _parse_polygon("W_PACIFIC_POLYGON", [
-            (40.00, 130.00),  # Sea of Japan (east)
-            (38.00, 135.00),  # Japan west coast
+            # Western Pacific — Japan archipelago + offshore shipping lanes.
+            (42.00, 139.50),  # SW Hokkaido coast
+            (41.50, 141.00),  # Hokkaido S coast (Hakodate approach)
+            (42.00, 145.00),  # Hokkaido SE coast
+            (43.50, 145.50),  # Hokkaido E coast (Kushiro)
+            (40.00, 146.00),  # Offshore NE Japan
+            (37.00, 142.00),  # Offshore E Japan (Sendai)
+            (35.50, 141.00),  # E Japan (Choshi)
             (35.00, 140.00),  # Tokyo Bay approach
-            (32.00, 133.00),  # Shikoku south coast
-            (30.00, 131.00),  # Kyushu SE coast
-            (25.00, 130.00),  # Ryukyu Islands (south)
-            (25.00, 140.00),  # Bonin Islands approach
-            (30.00, 145.00),  # Open Pacific (E)
-            (35.00, 145.00),  # NE Japan offshore
-            (40.00, 143.00),  # Hokkaido SE coast
+            (34.50, 138.00),  # Shizuoka coast
+            (33.50, 136.00),  # Kii Peninsula
+            (33.00, 133.00),  # Shikoku south coast
+            (31.50, 131.00),  # Kyushu SE coast (Miyazaki)
+            (30.50, 131.00),  # Kyushu S coast (Kagoshima)
+            (28.00, 129.50),  # Amami Islands
+            (26.00, 128.00),  # Okinawa area
+            (24.50, 125.00),  # Miyako / Yaeyama Islands
+            (24.50, 135.00),  # Open ocean (S)
+            (28.00, 142.00),  # Bonin Islands
+            (32.00, 145.00),  # Open Pacific
+            (38.00, 146.00),  # Open Pacific (NE)
+            (42.00, 143.00),  # Hokkaido SE offshore
         ]),
         "zoom": 9,
         "name": "Western Pacific",
@@ -1053,26 +1290,43 @@ REGIONS = {
     # ── Zoom 10: Regional corridors (expansion) ───────────────────────────
     "CHR": {
         "polygon": _parse_polygon("CAPE_HORN_POLYGON", [
-            (-54.00, -72.00),  # Magellan Strait approach
-            (-54.50, -68.00),  # Beagle Channel
-            (-55.00, -65.00),  # Cape Horn
-            (-58.00, -65.00),  # Drake Passage (south)
-            (-58.00, -72.00),  # Drake Passage (SW)
-            (-56.00, -70.00),  # Open ocean
+            # Cape Horn / Drake Passage — generous water coverage.
+            (-52.50, -75.00),  # W Patagonia (Gulf of Penas)
+            (-53.00, -73.00),  # Strait of Magellan west
+            (-53.50, -71.00),  # Strait of Magellan
+            (-54.00, -69.00),  # Tierra del Fuego S coast
+            (-55.00, -67.00),  # Beagle Channel
+            (-56.00, -67.00),  # Cape Horn (generous)
+            (-56.00, -63.00),  # Drake Passage (E)
+            (-58.50, -62.00),  # Drake Passage (SE)
+            (-60.00, -65.00),  # Deep Drake Passage
+            (-60.00, -72.00),  # Drake Passage (SW)
+            (-58.00, -75.00),  # Open Pacific (S)
+            (-55.00, -76.00),  # Open Pacific approach
+            (-52.50, -76.00),  # W Patagonia offshore
         ]),
         "zoom": 10,
         "name": "Cape Horn / Drake Passage",
     },
     "BFS": {
         "polygon": _parse_polygon("BANDA_FLORES_POLYGON", [
-            (-5.00, 118.00),  # Flores Sea (west)
-            (-5.50, 121.00),  # Flores coast
-            (-6.00, 124.00),  # Flores Sea (east)
-            (-5.50, 128.00),  # Banda Sea (NE)
-            (-7.00, 128.00),  # Banda Sea (SE)
-            (-8.50, 125.00),  # Timor approach
-            (-8.50, 120.00),  # Timor Sea (W)
-            (-7.50, 117.50),  # S Borneo / E Java approach
+            # Banda Sea / Flores Sea — Indonesian inner seas.
+            (-5.00, 117.50),  # E Java Sea / Makassar S approach
+            (-6.50, 118.00),  # Flores west coast
+            (-7.50, 118.50),  # Sumbawa N coast approach
+            (-8.00, 119.00),  # Sumbawa N coast
+            (-8.50, 120.00),  # Sumba approach
+            (-8.50, 122.00),  # Flores S coast
+            (-8.00, 123.50),  # Flores E tip
+            (-8.50, 125.00),  # Timor N coast approach
+            (-8.00, 127.50),  # Wetar Strait
+            (-6.50, 128.50),  # Banda Sea (E)
+            (-4.50, 128.00),  # Seram S coast
+            (-4.00, 126.00),  # Buru Island approach
+            (-3.50, 124.00),  # Banda Sea center
+            (-4.00, 122.00),  # SE Sulawesi approach
+            (-5.00, 120.00),  # Flores Sea center
+            (-5.00, 118.50),  # Flores Sea (W)
         ]),
         "zoom": 10,
         "name": "Banda Sea / Flores Sea",
@@ -1108,74 +1362,117 @@ REGIONS = {
     },
     "ARC": {
         "polygon": _parse_polygon("ARCTIC_POLYGON", [
-            (78.00, 30.00),   # Svalbard / Barents Sea
-            (76.00, 50.00),   # Novaya Zemlya approach
-            (74.00, 70.00),   # Kara Sea
-            (72.00, 80.00),   # Yamal coast
-            (71.00, 100.00),  # Laptev approach
-            (68.00, 90.00),   # Yenisei estuary
-            (68.00, 70.00),   # Ob estuary
-            (70.00, 50.00),   # Russian Arctic coast
-            (72.00, 40.00),   # Barents Sea (south)
-            (76.00, 30.00),   # Svalbard approach
+            # Northern Sea Route — follows Russian Arctic coast generously.
+            (72.00, 33.00),   # Murmansk coast (Barents Sea)
+            (70.00, 40.00),   # Kanin Peninsula
+            (69.00, 44.00),   # Pechora Sea
+            (69.00, 50.00),   # Novaya Zemlya S approach
+            (71.00, 52.00),   # Novaya Zemlya W coast
+            (76.00, 55.00),   # Novaya Zemlya N tip
+            (74.00, 58.00),   # Kara Gate
+            (73.00, 60.00),   # Kara Sea W
+            (72.00, 68.00),   # Yamal Peninsula W
+            (70.00, 68.00),   # Ob Gulf
+            (72.00, 73.00),   # Gydan Peninsula
+            (73.00, 80.00),   # Kara Sea E
+            (74.00, 86.00),   # Severnaya Zemlya approach
+            (77.00, 95.00),   # Severnaya Zemlya
+            (76.00, 105.00),  # Laptev Sea W
+            (74.00, 115.00),  # Laptev Sea E
+            (72.00, 130.00),  # New Siberian Islands
+            (70.50, 140.00),  # E Siberian Sea approach
+            (69.00, 140.00),  # Russian coast
+            (68.00, 120.00),  # Lena Delta area
+            (68.00, 100.00),  # Laptev approach (coast)
+            (68.50, 85.00),   # Yenisei estuary
+            (69.00, 73.00),   # Ob estuary
+            (69.00, 60.00),   # Pechora coast
+            (70.00, 45.00),   # Barents coast (return)
         ]),
         "zoom": 9,
         "name": "Northern Sea Route / Arctic",
     },
     "NNC": {
         "polygon": _parse_polygon("NORW_CORRIDOR_POLYGON", [
-            (62.00, 0.00),    # Norwegian Sea approach
-            (60.50, 5.00),    # Bergen coast
-            (58.50, 6.00),    # Stavanger coast
-            (57.50, 8.00),    # Southern Norway coast
-            (55.50, 8.50),    # Jutland (Denmark west)
-            (55.00, 4.00),    # Dogger Bank area
-            (56.00, -2.00),   # North Sea (W)
-            (58.00, -4.00),   # Orkney / Shetland approach
-            (60.00, -3.00),   # Shetland east
+            # N Sea–Norwegian Corridor — shipping lane from Shetland to Skagerrak.
+            (62.00, -1.00),   # Shetland NE approach
+            (61.00, 1.00),    # Norwegian sector
+            (60.50, 5.00),    # Bergen offshore
+            (59.00, 5.50),    # Stavanger offshore
+            (58.00, 7.00),    # Southern Norway (Kristiansand)
+            (57.80, 10.00),   # Skagerrak entrance
+            (57.00, 9.00),    # Central North Sea E
+            (56.00, 8.00),    # Jutland W coast
+            (55.50, 6.00),    # Dogger Bank (E)
+            (55.00, 3.00),    # Dogger Bank (W)
+            (56.00, -1.00),   # Central North Sea W
+            (58.00, -3.50),   # Orkney approach
+            (59.50, -2.00),   # Shetland approach
+            (61.00, -2.00),   # Shetland W
         ]),
         "zoom": 9,
         "name": "North Sea–Norwegian Corridor",
     },
     "WAO": {
         "polygon": _parse_polygon("W_AFRICA_OFFSHORE_POLYGON", [
-            (-4.00, 10.50),   # Gabon coast
-            (-6.00, 12.00),   # Congo/Angola border
-            (-9.00, 13.00),   # Luanda coast
-            (-12.00, 13.50),  # Angola coast
-            (-15.50, 12.00),  # Namibia border
-            (-18.00, 11.50),  # Namibia north coast
-            (-18.00, 8.00),   # Open ocean (SW)
-            (-10.00, 5.00),   # Open ocean (W)
-            (-4.00, 7.00),    # Open ocean (NW)
+            # West Africa Offshore — Angola/Namibia coast + offshore.
+            (-4.50, 11.50),    # Congo-Brazzaville coast
+            (-5.50, 12.00),    # Cabinda coast
+            (-6.50, 12.00),    # Angola coast (Soyo)
+            (-8.50, 13.20),    # Angola coast (Luanda)
+            (-10.00, 13.50),   # Angola coast (Lobito)
+            (-12.50, 13.50),   # Angola coast (Benguela)
+            (-15.00, 12.00),   # Angola/Namibia border
+            (-17.00, 11.80),   # Namibia (Skeleton Coast)
+            (-19.00, 12.00),   # Namibia (Walvis Bay approach)
+            (-19.00, 8.00),    # Offshore (SW)
+            (-15.00, 5.00),    # Offshore (W)
+            (-8.00, 4.00),     # Offshore (NW)
+            (-4.50, 8.00),     # Open ocean (N approach)
         ]),
         "zoom": 9,
         "name": "West Africa Offshore (Angola)",
     },
     "EAF": {
         "polygon": _parse_polygon("E_AFRICA_COAST_POLYGON", [
-            (0.00, 41.00),    # Kenya / Somali border coast
-            (-1.00, 41.50),   # Mombasa approach
-            (-4.00, 39.50),   # Tanzania coast (Dar es Salaam)
-            (-8.00, 39.50),   # S Tanzania coast
-            (-10.50, 40.50),  # Mozambique north coast
-            (-12.00, 44.00),  # Comoros approach
-            (-8.00, 48.00),   # Open ocean (E)
-            (-2.00, 48.00),   # Open ocean (NE)
-            (0.00, 45.00),    # Somali coast
+            # East Africa Coast — Kenya/Tanzania/N Mozambique.
+            (2.00, 41.00),     # S Somalia coast
+            (0.00, 41.50),     # Kenya coast (Lamu)
+            (-2.00, 40.50),    # Kenya coast (Malindi)
+            (-4.00, 39.70),    # Mombasa coast
+            (-5.00, 39.50),    # Tanzania (Tanga)
+            (-6.50, 39.50),    # Dar es Salaam coast
+            (-8.00, 39.50),    # Tanzania (Kilwa)
+            (-10.00, 40.00),   # S Tanzania (Mtwara)
+            (-11.00, 40.50),   # N Mozambique (Pemba)
+            (-13.00, 41.00),   # Comoros W approach
+            (-12.50, 44.50),   # Comoros E approach
+            (-11.00, 47.50),   # Open ocean (E, Seychelles approach)
+            (-5.00, 48.00),    # Open ocean (NE)
+            (-1.00, 47.00),    # Open ocean (N)
+            (2.00, 45.00),     # Somali coast approach
         ]),
         "zoom": 9,
         "name": "East Africa Coast",
     },
     "NEP": {
         "polygon": _parse_polygon("NE_PACIFIC_POLYGON", [
-            (60.00, -148.00),  # Gulf of Alaska (central)
-            (58.00, -137.00),  # Glacier Bay approach
-            (54.00, -133.00),  # Haida Gwaii
-            (50.00, -128.00),  # Vancouver Island (N)
-            (48.00, -126.00),  # Vancouver Island (S)
-            (48.00, -140.00),  # Open ocean (SW)
-            (55.00, -150.00),  # Kodiak approach
+            # NE Pacific — Alaska to BC coast + generous offshore.
+            (61.00, -146.00),  # Prince William Sound
+            (60.00, -148.00),  # Gulf of Alaska
+            (59.00, -152.00),  # Kodiak Island approach
+            (57.00, -155.00),  # Alaska Peninsula
+            (55.00, -160.00),  # Aleutian chain E approach
+            (52.00, -150.00),  # Open ocean (SW)
+            (48.50, -140.00),  # Open ocean (S)
+            (48.50, -128.00),  # Vancouver Island W approach
+            (50.50, -128.50),  # N Vancouver Island
+            (52.00, -131.00),  # Haida Gwaii
+            (54.50, -133.50),  # Haida Gwaii N
+            (56.00, -135.00),  # SE Alaska (Sitka)
+            (57.50, -136.00),  # Glacier Bay approach
+            (59.00, -140.00),  # Yakutat coast
+            (60.50, -144.00),  # Cordova coast
         ]),
         "zoom": 9,
         "name": "NE Pacific (Alaska–BC)",

@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
-from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y
+from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y, _point_in_polygon
 from regions import REGIONS, REGION_TIERS
 from update_database import process_log
 
@@ -632,6 +632,21 @@ def _detect_ships_inline(img_bytes, center_lat, center_lon, zoom,
                                    center_offset=center_offset)
 
 
+def _filter_markers_to_polygon(markers, polygon):
+    """Keep only markers whose lat/lon falls inside the region polygon."""
+    filtered = [m for m in markers
+                if _point_in_polygon(m["lat"], m["lon"], polygon)]
+    counts = {
+        "stationary_tankers": 0, "moving_tankers": 0,
+        "stationary_cargos": 0, "moving_cargos": 0,
+    }
+    for m in filtered:
+        key = ("moving_" if m["motion"] == "moving" else "stationary_") + \
+              ("tankers" if m["type"] == "tanker" else "cargos")
+        counts[key] += 1
+    return counts, filtered
+
+
 # --- Leaflet map discovery ----------------------------------------------------
 
 
@@ -741,6 +756,14 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 img_bytes, lat, lon, zoom, map_width, map_height,
                 center_offset=center_offset
             )
+
+            # Filter markers to region polygon boundary
+            raw_count = len(tile_markers)
+            det, tile_markers = _filter_markers_to_polygon(tile_markers, polygon)
+            if raw_count != len(tile_markers):
+                logger.debug("  Tile (%d,%d): geo-filtered %d → %d markers",
+                             row, col, raw_count, len(tile_markers))
+
             logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
                          row, col, det, len(tile_markers))
 
