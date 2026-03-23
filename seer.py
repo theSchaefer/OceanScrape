@@ -289,14 +289,18 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, w = image.shape[:2]
 
-    # Build masks WITHOUT morphological opening — downscaling already
-    # removes noise, and the 3×3 kernel destroys triangle vertices at
-    # this reduced resolution, causing moving ships to be misclassified
-    # as stationary.
+    # Build masks with a smaller morph kernel than _build_masks() uses.
+    # The full-res 3×3 kernel destroys triangle vertices at 0.75× scale,
+    # but skipping morph entirely lets green noise through (green's S≥80
+    # range is more permissive than red's S≥120). A 2×2 kernel removes
+    # single-pixel noise while preserving triangle shape.
+    _downscale_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
     mask_red1 = cv2.inRange(image_hsv, lower_red1, upper_red1)
     mask_red2 = cv2.inRange(image_hsv, lower_red2, upper_red2)
     mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, _downscale_kernel)
     mask_green = cv2.inRange(image_hsv, lower_green, upper_green)
+    mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, _downscale_kernel)
 
     # Adjusted area thresholds for the smaller image
     min_area = MIN_MARKER_AREA * _DETECT_SCALE_SQ
