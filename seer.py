@@ -284,7 +284,7 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
 
     # Downscale for cheaper detection
     image = cv2.resize(image, None, fx=_DETECT_SCALE, fy=_DETECT_SCALE,
-                       interpolation=cv2.INTER_AREA)
+                       interpolation=cv2.INTER_NEAREST)
 
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, w = image.shape[:2]
@@ -348,9 +348,13 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
                 continue
 
             approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
+            n_vertices = len(approx)
             circularity = 4 * math.pi * area / (perimeter * perimeter)
 
-            if circularity < CIRCULARITY_THRESHOLD:
+            # Triangle/arrow: few vertices (3–4) OR low circularity.
+            # Using both signals catches small markers where downscaling
+            # inflates circularity but vertex count stays low.
+            if n_vertices <= 4 or circularity < CIRCULARITY_THRESHOLD:
                 motion = "moving"
                 moving += 1
             else:
