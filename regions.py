@@ -168,14 +168,16 @@ REGIONS = {
     # ── Zoom 11: Wide straits ────────────────────────────────────────────
     "MKS": {
         "polygon": _parse_polygon("MAKASSAR_POLYGON", [
-            (-0.50, 117.50),  # NE Borneo coast
-            (-1.50, 118.80),  # East Borneo (Balikpapan approach)
-            (-3.00, 118.50),  # SE Borneo
-            (-4.00, 119.50),  # Southern strait
-            (-5.00, 119.80),  # SW Sulawesi (Makassar city)
-            (-3.50, 120.00),  # West Sulawesi coast
-            (-1.50, 120.50),  # Central Sulawesi coast
-            (-0.50, 119.50),  # North Sulawesi approach
+            # Clockwise: south along Borneo east coast, cross at south,
+            # north along Sulawesi west coast, close at north.
+            (-0.50, 117.00),  # NW — off NE Borneo coast
+            (-2.00, 116.80),  # W — East Kalimantan coast (Samarinda)
+            (-4.00, 117.50),  # SW — SE Borneo coast (south of Balikpapan)
+            (-5.20, 119.00),  # S — southern strait opening
+            (-5.00, 119.80),  # SE — SW Sulawesi (Makassar city)
+            (-3.00, 119.50),  # E — West Sulawesi coast
+            (-1.00, 120.50),  # NE — Central Sulawesi coast
+            (-0.50, 119.50),  # N — northern strait
         ]),
         "zoom": 11,
         "name": "Makassar Strait",
@@ -389,10 +391,12 @@ REGIONS = {
     },
     "PG": {
         "polygon": _parse_polygon("PERSIAN_GULF_POLYGON", [
-            # Persian Gulf — generous coastline tracing on both shores.
-            (30.00, 48.50),   # Shatt al-Arab / Iraq
-            (30.30, 49.00),   # Kuwait coast
+            # Persian Gulf — clockwise: Arabian shore (NW→SE),
+            # Hormuz, Iranian shore (SE→NW).
+            # ── Arabian shore (NW → SE) ──
+            (30.00, 48.50),   # Shatt al-Arab (NW head of Gulf)
             (29.30, 48.50),   # Kuwait Bay
+            (29.00, 48.80),   # Kuwait coast
             (28.50, 49.50),   # Saudi coast (Jubail)
             (27.00, 49.80),   # Saudi coast (Dammam)
             (26.00, 50.30),   # Bahrain approach
@@ -401,14 +405,16 @@ REGIONS = {
             (24.80, 51.80),   # Qatar south
             (24.50, 53.00),   # UAE coast (Abu Dhabi approach)
             (24.00, 54.50),   # Abu Dhabi coast
-            (24.50, 55.50),   # Sharjah / Dubai approach
-            (25.50, 56.50),   # Fujairah / Hormuz approach
+            (24.50, 55.50),   # Dubai approach
+            (25.50, 56.50),   # Fujairah / Hormuz
+            # ── Strait of Hormuz ──
             (26.50, 56.50),   # Strait of Hormuz
-            (27.20, 56.00),   # Iran coast (Bandar Abbas)
-            (27.50, 54.00),   # Iran coast (Kish Island)
-            (28.00, 52.00),   # Iran coast (Bushehr)
-            (29.00, 50.50),   # Iran coast (Kharg Island)
-            (30.00, 49.50),   # Iran coast (Abadan)
+            # ── Iranian shore (SE → NW) ──
+            (27.20, 56.00),   # Iran (Bandar Abbas)
+            (27.50, 54.00),   # Iran (Kish Island)
+            (28.00, 52.00),   # Iran (Bushehr)
+            (29.00, 50.50),   # Iran (Kharg Island)
+            (30.00, 49.50),   # Iran (Abadan)
         ]),
         "zoom": 10,
         "name": "Persian Gulf",
@@ -674,48 +680,54 @@ REGIONS = {
     },
     "BS": {
         "polygon": _parse_polygon("BALTIC_SEA_POLYGON", [
-            # Traces the Baltic coastline generously seaward to capture all
-            # water surface.  ~30 points for accurate coverage.
-            (57.80, 10.50),   # Skagerrak entrance (Skagen tip)
-            (57.70, 11.80),   # Kattegat (Gothenburg approach)
-            (56.20, 12.80),   # Oresund south (Malmo/Copenhagen)
-            (55.30, 13.50),   # Bornholm approach
+            # Baltic Sea — single clockwise loop. Start at Skagen, go east
+            # along south coast, up east coast, across top of Bothnia,
+            # down Swedish coast, back to Skagen. NO back-tracking.
+            # ── South coast (W → E) ──
+            (57.80, 10.50),   # Skagen tip (entrance)
+            (56.50, 10.50),   # Kattegat (Aarhus)
+            (55.80, 11.00),   # Great Belt (S Denmark)
+            (55.00, 12.50),   # Gedser / Falster
             (54.30, 12.50),   # German coast (Rostock)
-            (54.00, 13.50),   # Rugen island
-            (54.40, 14.80),   # Swinoujscie / Oder estuary
+            (54.00, 13.50),   # Rugen Island
+            (54.40, 14.80),   # Oder estuary (Swinoujscie)
             (54.50, 16.50),   # Polish coast (Kolobrzeg)
             (54.60, 18.80),   # Gdansk Bay (Hel Peninsula)
             (54.80, 20.00),   # Kaliningrad coast
+            # ── East coast (S → N) ──
             (55.30, 21.00),   # Lithuanian coast (Klaipeda)
-            (56.00, 21.20),   # Latvian coast
+            (56.00, 21.20),   # Latvian coast (Liepaja)
             (57.10, 22.00),   # Latvian coast (Ventspils)
             (57.80, 24.50),   # Gulf of Riga
             (58.50, 24.00),   # Estonian coast (Parnu)
             (59.00, 25.50),   # Estonian coast (Tallinn)
-            (59.70, 28.50),   # Gulf of Finland (east end, Narva Bay)
+            (59.70, 28.50),   # Gulf of Finland (Narva Bay)
             (60.00, 30.00),   # St. Petersburg approach
+            # ── Finnish coast (SE → N) ──
             (60.30, 28.00),   # Finnish coast (Kotka)
-            (60.30, 26.00),   # Helsinki approach
-            (60.00, 24.00),   # Hanko Peninsula
-            (60.50, 21.50),   # Turku archipelago
-            (60.70, 19.00),   # Aland Islands
-            (61.50, 18.00),   # Sea of Bothnia (Swedish side)
-            (63.00, 18.50),   # High Coast (Sweden)
-            (63.80, 20.50),   # Umea/Vaasa latitude
-            (65.20, 23.50),   # N Gulf of Bothnia (Lulea)
-            (65.80, 24.50),   # Tornio / northernmost point
-            (65.20, 25.50),   # Finnish side (Oulu)
-            (63.50, 23.00),   # Finnish coast (Vaasa)
-            (62.00, 21.00),   # Finnish coast (Pori)
-            (60.50, 19.00),   # Return to Aland area (close loop cleanly)
+            (60.30, 25.00),   # Helsinki
+            (60.00, 23.00),   # Hanko Peninsula
+            (60.70, 22.00),   # Turku archipelago
+            (61.00, 21.50),   # Finnish coast (Rauma)
+            (62.00, 21.50),   # Finnish coast (Pori)
+            (63.50, 22.50),   # Finnish coast (Vaasa)
+            (65.20, 25.00),   # Finnish coast (Oulu)
+            # ── Top of Bothnia (E → W) ──
+            (65.80, 24.50),   # Tornio / northernmost
+            (65.20, 23.50),   # Lulea
+            # ── Swedish coast (N → S) ──
+            (63.80, 20.00),   # High Coast (Umea)
+            (63.00, 18.50),   # Harnosand
+            (61.50, 17.50),   # Sundsvall
+            (60.70, 17.50),   # Gavle
             (59.50, 18.50),   # Stockholm archipelago
             (58.50, 17.00),   # Gotland west
             (57.50, 16.50),   # Oland / Kalmar
-            (56.50, 16.00),   # SE Sweden coast
-            (55.50, 14.50),   # Bornholm (south)
-            (55.00, 12.50),   # Danish straits (Gedser)
-            (55.80, 11.00),   # Great Belt
-            (56.50, 10.50),   # Kattegat (Aarhus)
+            (56.50, 16.00),   # Karlskrona
+            (55.50, 14.50),   # Bornholm south
+            (55.30, 13.50),   # Bornholm approach
+            (56.20, 12.80),   # Oresund (Malmo/Copenhagen)
+            (57.70, 11.80),   # Kattegat (Gothenburg)
         ]),
         "zoom": 9,
         "name": "Baltic Sea",
@@ -755,16 +767,20 @@ REGIONS = {
     },
     "SAW": {
         "polygon": _parse_polygon("S_ATLANTIC_W_POLYGON", [
-            (-5.00, -35.00),   # NE Brazil coast (Natal)
+            # S Atlantic West — clockwise: coast (N→S), ocean (S→N).
+            # ── Brazil coast (N → S) ──
+            (-5.00, -35.00),   # NE Brazil (Natal)
             (-8.00, -34.50),   # Recife coast
             (-13.00, -38.50),  # Salvador coast
             (-23.00, -42.00),  # Rio de Janeiro coast
-            (-28.00, -48.50),  # S Brazil coast (Florianopolis)
+            (-28.00, -48.50),  # Florianopolis
             (-33.00, -52.00),  # Uruguay approach
-            (-35.00, -48.00),  # Open ocean (S)
+            # ── Ocean (S → E → N) ──
+            (-35.00, -52.00),  # Open ocean (SW)
+            (-35.00, -40.00),  # Open ocean (S)
             (-35.00, -30.00),  # Open ocean (SE)
             (-20.00, -25.00),  # Mid-Atlantic
-            (-5.00, -28.00),   # Equatorial Atlantic
+            (-5.00, -30.00),   # Equatorial Atlantic
         ]),
         "zoom": 9,
         "name": "South Atlantic West",
@@ -950,9 +966,8 @@ REGIONS = {
     },
     "MEW": {
         "polygon": _parse_polygon("MED_WEST_POLYGON", [
-            # Traces the western Mediterranean basin.  North coast follows
-            # Spain → France → Italy; south coast follows Morocco → Algeria
-            # → Tunisia.  Excludes deep inland areas on both shores.
+            # Western Mediterranean basin.  North coast: Spain → France →
+            # Italy.  South coast: Tunisia → Algeria → Morocco.
             (36.20, -5.30),   # Strait of Gibraltar (north)
             (36.70, -2.00),   # SE Spain (Almeria)
             (38.00, 0.00),    # Valencia coast
@@ -963,12 +978,13 @@ REGIONS = {
             (43.50, 10.00),   # Ligurian Sea (La Spezia)
             (41.00, 13.00),   # Italian west coast (south of Rome)
             (39.00, 14.50),   # Naples / Tyrrhenian Sea
-            (37.50, 15.00),   # Sicily (NE tip)
-            (36.80, 14.00),   # Sicily (south coast)
-            (35.50, 11.00),   # Tunisian coast
-            (34.00, 8.00),    # Eastern Algeria coast
-            (35.50, 2.00),    # Western Algeria coast
-            (35.80, -2.00),   # Northern Morocco coast
+            (37.50, 15.50),   # Sicily (NE tip)
+            (36.70, 14.50),   # Sicily (south coast)
+            (36.00, 11.50),   # Cap Bon / Tunisian NE coast
+            (36.80, 8.00),    # Annaba / NE Algeria coast
+            (36.70, 4.00),    # Algiers coast
+            (35.80, 0.00),    # Oran coast
+            (35.20, -2.50),   # Morocco Rif coast
             (35.80, -5.30),   # Strait of Gibraltar (south)
         ]),
         "zoom": 9,
@@ -982,7 +998,8 @@ REGIONS = {
             (40.00, 18.50),   # Adriatic (Puglia heel)
             (39.50, 20.00),   # W Greece (Ionian)
             (37.50, 21.00),   # Peloponnese
-            (35.00, 24.00),   # Crete (south)
+            (35.00, 23.50),   # S of Crete (west end)
+            (35.00, 26.50),   # S of Crete (east end)
             (36.50, 27.50),   # Dodecanese / E Aegean
             (37.00, 30.00),   # Turkish SW coast (Antalya)
             (36.50, 35.00),   # Turkish S coast (Mersin)
@@ -991,9 +1008,9 @@ REGIONS = {
             (31.50, 34.00),   # Israeli coast
             (31.00, 32.50),   # Egyptian coast (Port Said)
             (31.00, 28.00),   # Egyptian coast (Alexandria)
-            (32.50, 23.00),   # Libyan coast (Benghazi)
-            (33.00, 18.00),   # Gulf of Sidra (Libya)
-            (35.50, 15.00),   # Tunisian/Sicilian channel
+            (32.00, 23.00),   # Libyan coast (Benghazi)
+            (32.50, 18.00),   # Gulf of Sidra (Libya)
+            (33.50, 15.00),   # Libyan coast / Sicilian channel
         ]),
         "zoom": 9,
         "name": "Mediterranean East",
@@ -1057,28 +1074,31 @@ REGIONS = {
     },
     "WP": {
         "polygon": _parse_polygon("W_PACIFIC_POLYGON", [
-            # Western Pacific — Japan archipelago + offshore shipping lanes.
-            (42.00, 139.50),  # SW Hokkaido coast
-            (41.50, 141.00),  # Hokkaido S coast (Hakodate approach)
+            # Western Pacific — clockwise loop: Japan coast (N→S),
+            # then offshore (S→N) back to start.
+            # ── Japan coast (N → S) ──
+            (43.50, 146.00),  # Hokkaido E coast (Kushiro)
             (42.00, 145.00),  # Hokkaido SE coast
-            (43.50, 145.50),  # Hokkaido E coast (Kushiro)
-            (40.00, 146.00),  # Offshore NE Japan
-            (37.00, 142.00),  # Offshore E Japan (Sendai)
+            (41.50, 141.00),  # Hokkaido S (Hakodate)
+            (40.00, 140.00),  # N Honshu (Akita)
+            (38.00, 139.50),  # Niigata coast
             (35.50, 141.00),  # E Japan (Choshi)
             (35.00, 140.00),  # Tokyo Bay approach
             (34.50, 138.00),  # Shizuoka coast
             (33.50, 136.00),  # Kii Peninsula
             (33.00, 133.00),  # Shikoku south coast
-            (31.50, 131.00),  # Kyushu SE coast (Miyazaki)
+            (31.50, 131.00),  # Kyushu SE coast
             (30.50, 131.00),  # Kyushu S coast (Kagoshima)
             (28.00, 129.50),  # Amami Islands
-            (26.00, 128.00),  # Okinawa area
-            (24.50, 125.00),  # Miyako / Yaeyama Islands
-            (24.50, 135.00),  # Open ocean (S)
+            (26.00, 128.00),  # Okinawa
+            (24.50, 125.00),  # Yaeyama Islands
+            # ── Offshore (S → N) ──
+            (24.50, 130.00),  # Open ocean (S)
+            (26.00, 135.00),  # Open ocean (S-central)
             (28.00, 142.00),  # Bonin Islands
             (32.00, 145.00),  # Open Pacific
             (38.00, 146.00),  # Open Pacific (NE)
-            (42.00, 143.00),  # Hokkaido SE offshore
+            (43.50, 148.00),  # Hokkaido far offshore
         ]),
         "zoom": 9,
         "name": "Western Pacific",
@@ -1346,52 +1366,8 @@ REGIONS = {
         "zoom": 9,
         "name": "North Pacific",
     },
-    "SPO": {
-        "polygon": _parse_polygon("S_PACIFIC_POLYGON", [
-            (-15.00, 175.00),  # Fiji / Tonga area
-            (-20.00, -175.00), # Dateline crossing (east side)
-            (-25.00, -165.00), # Central South Pacific
-            (-35.00, -150.00), # SE Pacific
-            (-40.00, -140.00), # Open ocean (SE)
-            (-40.00, 175.00),  # NZ south approach
-            (-35.00, 175.00),  # NZ north approach
-            (-20.00, 175.00),  # Fiji approach
-        ]),
-        "zoom": 9,
-        "name": "South Pacific",
-    },
-    "ARC": {
-        "polygon": _parse_polygon("ARCTIC_POLYGON", [
-            # Northern Sea Route — follows Russian Arctic coast generously.
-            (72.00, 33.00),   # Murmansk coast (Barents Sea)
-            (70.00, 40.00),   # Kanin Peninsula
-            (69.00, 44.00),   # Pechora Sea
-            (69.00, 50.00),   # Novaya Zemlya S approach
-            (71.00, 52.00),   # Novaya Zemlya W coast
-            (76.00, 55.00),   # Novaya Zemlya N tip
-            (74.00, 58.00),   # Kara Gate
-            (73.00, 60.00),   # Kara Sea W
-            (72.00, 68.00),   # Yamal Peninsula W
-            (70.00, 68.00),   # Ob Gulf
-            (72.00, 73.00),   # Gydan Peninsula
-            (73.00, 80.00),   # Kara Sea E
-            (74.00, 86.00),   # Severnaya Zemlya approach
-            (77.00, 95.00),   # Severnaya Zemlya
-            (76.00, 105.00),  # Laptev Sea W
-            (74.00, 115.00),  # Laptev Sea E
-            (72.00, 130.00),  # New Siberian Islands
-            (70.50, 140.00),  # E Siberian Sea approach
-            (69.00, 140.00),  # Russian coast
-            (68.00, 120.00),  # Lena Delta area
-            (68.00, 100.00),  # Laptev approach (coast)
-            (68.50, 85.00),   # Yenisei estuary
-            (69.00, 73.00),   # Ob estuary
-            (69.00, 60.00),   # Pechora coast
-            (70.00, 45.00),   # Barents coast (return)
-        ]),
-        "zoom": 9,
-        "name": "Northern Sea Route / Arctic",
-    },
+    
+    
     "NNC": {
         "polygon": _parse_polygon("NORW_CORRIDOR_POLYGON", [
             # N Sea–Norwegian Corridor — shipping lane from Shetland to Skagerrak.

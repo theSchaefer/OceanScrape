@@ -288,7 +288,15 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
 
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, w = image.shape[:2]
-    mask_red, mask_green = _build_masks(image_hsv)
+
+    # Build masks WITHOUT morphological opening — downscaling already
+    # removes noise, and the 3×3 kernel destroys triangle vertices at
+    # this reduced resolution, causing moving ships to be misclassified
+    # as stationary.
+    mask_red1 = cv2.inRange(image_hsv, lower_red1, upper_red1)
+    mask_red2 = cv2.inRange(image_hsv, lower_red2, upper_red2)
+    mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_green = cv2.inRange(image_hsv, lower_green, upper_green)
 
     # Adjusted area thresholds for the smaller image
     min_area = MIN_MARKER_AREA * _DETECT_SCALE_SQ
