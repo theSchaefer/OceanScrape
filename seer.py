@@ -228,8 +228,8 @@ def extract_marker_coords(img_bytes, center_lat, center_lon, zoom,
             M = cv2.moments(cnt)
             if M["m00"] == 0:
                 continue
-            mx = int(M["m10"] / M["m00"])
-            my = int(M["m01"] / M["m00"])
+            mx = M["m10"] / M["m00"]
+            my = M["m01"] / M["m00"]
             lat, lon = _pixel_to_latlon(mx, my)
             results.append({
                 "lat": lat,
@@ -352,8 +352,8 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
             M = cv2.moments(cnt)
             if M["m00"] == 0:
                 continue
-            mx = int(M["m10"] / M["m00"])
-            my = int(M["m01"] / M["m00"])
+            mx = M["m10"] / M["m00"]
+            my = M["m01"] / M["m00"]
             lat, lon = _pixel_to_latlon(mx, my)
             markers.append({
                 "lat": lat, "lon": lon,
