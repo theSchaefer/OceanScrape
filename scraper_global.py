@@ -62,6 +62,24 @@ SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.arg
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
 SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
 
+# Crash retry settings
+MAX_REGION_RETRIES = 2
+RETRY_BACKOFF_BASE = 5  # seconds
+
+# Error substrings that indicate a browser/driver crash (retryable)
+_CRASH_PATTERNS = (
+    "target crashed", "epipe", "target closed", "browser closed",
+    "connection closed", "protocol error", "page.evaluate",
+    "mouse.move", "browser has been closed", "crashed",
+)
+
+
+def _is_crash_error(exc: Exception) -> bool:
+    """Return True if the exception looks like a Patchright/Chromium crash."""
+    msg = str(exc).lower()
+    return any(p in msg for p in _CRASH_PATTERNS)
+
+
 # --- Tile grid cache ----------------------------------------------------------
 # Polygons, zoom levels, and viewport dims are constant across scrape cycles,
 # so tile grids only need to be computed once per region.
@@ -895,6 +913,7 @@ def capture_batch(region_batch, timestamp_str):
     geo = geo_profiles.get(proxy["server"], fallback)
 
     results = {}
+    retryable = []  # regions that failed due to browser/driver crashes
 
     try:
         with sync_playwright() as p:
@@ -972,7 +991,11 @@ def capture_batch(region_batch, timestamp_str):
                     map_dims = _get_map_dimensions(page)
                     ready_tabs[name] = (page, map_dims)
                 except Exception as e:
-                    logger.error("  [%s] Setup failed: %s", name, e)
+                    if _is_crash_error(e):
+                        logger.error("  [%s] Setup crashed (retryable): %s", name, e)
+                        retryable.append(name)
+                    else:
+                        logger.error("  [%s] Setup failed: %s", name, e)
                     _log_json(timestamp_str, name, "", 0, 0, 0, 0.0, 0, 0,
                               REGIONS[name]["zoom"], [])
 
@@ -984,7 +1007,11 @@ def capture_batch(region_batch, timestamp_str):
                     )
                     results[name] = result
                 except Exception as e:
-                    logger.error("Region %s capture failed: %s", name, e)
+                    if _is_crash_error(e):
+                        logger.error("Region %s crashed (retryable): %s", name, e)
+                        retryable.append(name)
+                    else:
+                        logger.error("Region %s capture failed: %s", name, e)
                     _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
                               REGIONS[name]["zoom"], [])
 
@@ -992,8 +1019,13 @@ def capture_batch(region_batch, timestamp_str):
             browser.close()
 
     except Exception as e:
-        logger.error("Batch failed: %s", e)
+        if _is_crash_error(e):
+            logger.error("Batch crashed (retryable): %s", e)
+            retryable.extend(n for n in region_batch if n not in results)
+        else:
+            logger.error("Batch failed: %s", e)
 
+    results["_retryable"] = retryable
     return results
 
 
@@ -1094,27 +1126,76 @@ def capture_all_regions(region_filter=None):
     t_start = time.perf_counter()
     all_results = {}
 
-    with ThreadPoolExecutor(max_workers=MAX_BROWSERS) as executor:
-        futures = {
-            executor.submit(capture_batch, batch, timestamp_str): batch
-            for batch in batches
-        }
-        for future in as_completed(futures):
-            batch = futures[future]
-            try:
-                batch_results = future.result()
-                all_results.update(batch_results or {})
-            except Exception as e:
-                logger.error("Batch %s failed: %s", batch, e)
+    def _run_batches(batch_list):
+        """Submit batches to the thread pool and return (results, retryable)."""
+        batch_results_all = {}
+        retry_names = []
+        with ThreadPoolExecutor(max_workers=MAX_BROWSERS) as executor:
+            futures = {
+                executor.submit(capture_batch, b, timestamp_str): b
+                for b in batch_list
+            }
+            for future in as_completed(futures):
+                batch = futures[future]
+                try:
+                    batch_results = future.result() or {}
+                    # Extract retryable list before merging into results
+                    retry_names.extend(batch_results.pop("_retryable", []))
+                    batch_results_all.update(batch_results)
+                except Exception as e:
+                    logger.error("Batch %s failed: %s", batch, e)
+                    if _is_crash_error(e):
+                        retry_names.extend(batch)
+        return batch_results_all, retry_names
+
+    # Initial run
+    results_batch, retryable = _run_batches(batches)
+    all_results.update(results_batch)
+
+    # Retry crashed regions with fresh browsers
+    for attempt in range(1, MAX_REGION_RETRIES + 1):
+        if not retryable:
+            break
+        # De-duplicate and keep only regions not yet successfully captured
+        retryable = list(dict.fromkeys(
+            n for n in retryable if n not in all_results
+        ))
+        if not retryable:
+            break
+
+        backoff = RETRY_BACKOFF_BASE * attempt + random.uniform(0, 5)
+        logger.info(
+            "Retry attempt %d/%d for %d crashed region(s): %s  "
+            "(backoff %.1fs)",
+            attempt, MAX_REGION_RETRIES, len(retryable), retryable, backoff,
+        )
+        time.sleep(backoff)
+
+        retry_batches = [retryable[i:i + TABS_PER_BROWSER]
+                         for i in range(0, len(retryable), TABS_PER_BROWSER)]
+        results_batch, retryable = _run_batches(retry_batches)
+        all_results.update(results_batch)
+
+    # Report regions that exhausted all retries
+    still_failed = [n for n in retryable if n not in all_results] if retryable else []
+    if still_failed:
+        logger.error(
+            "Regions failed after %d retries: %s",
+            MAX_REGION_RETRIES, still_failed,
+        )
 
     elapsed = time.perf_counter() - t_start
     per_tile = elapsed / total_tiles if total_tiles > 0 else 0
 
-    # Summary
-    grand_tankers = sum(r.get("tankers", 0) for r in all_results.values())
-    grand_cargos = sum(r.get("cargos", 0) for r in all_results.values())
-    grand_mov_t = sum(r.get("moving_tankers", 0) for r in all_results.values())
-    grand_mov_c = sum(r.get("moving_cargos", 0) for r in all_results.values())
+    # Summary — exclude internal keys like _retryable
+    grand_tankers = sum(r.get("tankers", 0) for r in all_results.values()
+                        if isinstance(r, dict))
+    grand_cargos = sum(r.get("cargos", 0) for r in all_results.values()
+                       if isinstance(r, dict))
+    grand_mov_t = sum(r.get("moving_tankers", 0) for r in all_results.values()
+                      if isinstance(r, dict))
+    grand_mov_c = sum(r.get("moving_cargos", 0) for r in all_results.values()
+                      if isinstance(r, dict))
 
     logger.info(
         "STOPWATCH  all regions: %.2fs total | %d tiles | %.2fs/tile | "
