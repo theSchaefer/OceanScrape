@@ -1295,13 +1295,14 @@ REGIONS = {
     },
     "SAN": {
         "polygon": _parse_polygon("SANTOS_POLYGON", [
-            (-23.00, -45.00),  # Rio coast approach
-            (-23.50, -44.50),  # Ilha Grande Bay
-            (-24.00, -45.50),  # Santos coast
-            (-25.00, -46.50),  # Offshore (S)
-            (-25.00, -46.00),  # Paranagua approach
-            (-24.00, -46.80),  # Offshore (W)
-            (-23.50, -46.50),  # Santos port
+            # Clockwise: coast south, then offshore west, close north.
+            (-23.00, -45.00),   # Rio coast approach
+            (-23.80, -44.30),   # Ilha Grande Bay
+            (-24.50, -45.00),   # Santos coast
+            (-25.50, -46.00),   # Paranagua / offshore S
+            (-25.50, -47.00),   # Offshore SW
+            (-24.00, -47.00),   # Offshore W
+            (-23.00, -46.00),   # Santos port approach
         ]),
         "zoom": 11,
         "name": "Santos / SE Brazil Coast",

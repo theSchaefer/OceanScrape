@@ -34,16 +34,16 @@ python seer.py path/to/image.jpg           # Run OpenCV detection on a file (CLI
 ## Architecture
 
 ```
-scraper_global.py  →  seer.py (inline)  →  captures_log.json  →  update_database.py  →  PostgreSQL
-  browser + tabs      in-memory OpenCV      counts + metadata       psycopg2 batch insert
+scraper_global.py  →  seer.py (inline)  →  captures_log.jsonl  →  update_database.py  →  PostgreSQL
+  browser workers     in-memory OpenCV      counts + metadata        psycopg2 batch insert
 ```
 
-- **`scraper_global.py`** — Main scraper. Launches Patchright (undetected Playwright fork) browsers with tab parallelism (`TABS_PER_BROWSER` × `MAX_BROWSERS`). Navigates MarineTraffic once per browser, then pans via Leaflet `setView()` for subsequent tiles. Calls `count_ships_from_bytes()` and `extract_marker_coords()` inline — no images written to disk by default. Marker pixel positions are converted to lat/lon via Web Mercator projection.
+- **`scraper_global.py`** — Main scraper. Launches Patchright (undetected Playwright fork) with `MAX_BROWSERS` concurrent browser workers. Each worker pulls regions from a shared queue (work-stealing), navigates MarineTraffic once, then pans via Leaflet `setView()` for all subsequent regions and tiles — no repeated page loads. Regions are sorted largest-first to reduce tail latency. Calls `count_ships_from_bytes()` and `extract_marker_coords()` inline — no images written to disk by default. Marker pixel positions are converted to lat/lon via Web Mercator projection.
 - **`seer.py`** — OpenCV ship counter. HSV color masking → contour detection → shape classification: triangles (3 vertices via `approxPolyDP`) = moving ships; circles (high circularity ratio) = stationary ships. Red = tankers, green = cargo. Exports `count_ships_from_bytes()` for in-memory use and `extract_marker_coords()` for lat/lon position extraction.
 - **`grid.py`** — Web Mercator projection utilities. `get_tile_centers()` computes non-overlapping tile grids covering a polygon's bounding box. `generate_ocean_grid()` auto-tiles large bounding boxes. Snake/boustrophedon tile ordering.
 - **`geo_profile.py`** — Resolves proxy IP geolocation via ip-api.com. Maps country codes to locale/Accept-Language/timezone for browser fingerprinting. Requires `DECODO_USERNAME`/`DECODO_PASSWORD` in `.env`.
 - **`run.py`** — Orchestrator. Calls `scraper_global.py` as subprocess, then `update_database.process_log()`.
-- **`update_database.py`** — PostgreSQL database layer. Reads `captures_log.json`, batch-inserts capture records into a `captures` table and detected marker positions into `vessel_positions` using psycopg2. Ship counts, tile stats, and marker coordinates are stored per capture with JSONB in `captures`. Each marker's lat/lon, ship type, and motion state are also stored relationally in `vessel_positions` (FK to `captures`). Auto-creates schema on first run. Idempotent via `ON CONFLICT`.
+- **`update_database.py`** — PostgreSQL database layer. Reads `captures_log.jsonl` (JSONL — one JSON object per line), batch-inserts capture records into a `captures` table and detected marker positions into `vessel_positions` using psycopg2. Ship counts, tile stats, and marker coordinates are stored per capture with JSONB in `captures`. Each marker's lat/lon, ship type, and motion state are also stored relationally in `vessel_positions` (FK to `captures`). Auto-creates schema on first run. Idempotent via `ON CONFLICT`. Falls back to legacy `captures_log.json` if JSONL file is absent.
 - **`discover_map.py`** — Dev/debug tool. Injects constructor hooks before page load to introspect how MarineTraffic stores its Leaflet map instance. Outputs to `map_discovery.json`.
 
 ## Region Codes
@@ -55,8 +55,7 @@ Short keys passed to `--regions`. Examples: `N`/`S` = Suez North/South, `P` = Pa
 ```
 DECODO_USERNAME / DECODO_PASSWORD   # Proxy credentials (decodo.com, ports 10011–10025)
 VIEWPORT_WIDTH / VIEWPORT_HEIGHT    # Default 7680×4320 (8K — maximizes area per tile)
-TABS_PER_BROWSER                    # Default 4
-MAX_BROWSERS                        # Default 4 (16 regions load concurrently)
+MAX_BROWSERS                        # Default 2 (concurrent browser workers; scale up to RAM limit)
 SAVE_IMAGES                         # Default 0; set to 1 or use --save-images flag
 SCREENSHOT_FORMAT / QUALITY         # Default jpeg / 85
 SCRAPE_INTERVAL_MINUTES             # Default 60
@@ -66,11 +65,11 @@ DATABASE_URL                        # PostgreSQL connection string (e.g. postgre
 
 ## Anti-Detection
 
-Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-profile spoofing (timezone, locale, geolocation derived from proxy IP). UA rotation. Single `page.goto()` per browser + `setView()` panning avoids repeated Cloudflare challenges. Tab parallelism shares one Cloudflare pass across multiple regions.
+Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-profile spoofing (timezone, locale, geolocation derived from proxy IP). UA rotation. Single `page.goto()` per browser worker + `setView()` panning for all subsequent regions avoids repeated Cloudflare challenges. Each browser worker processes many regions sequentially via work-stealing, reusing one Cloudflare pass.
 
 ## Notes
 
-- `data/` directory is gitignored; it holds `captures_log.json` and saved images. The database is external (PostgreSQL).
+- `data/` directory is gitignored; it holds `captures_log.jsonl` and saved images. The database is external (PostgreSQL).
 - At 8K viewport, most regions fit in a single tile across 57 regions.
 
 ## Learning & Discovery

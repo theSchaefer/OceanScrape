@@ -26,12 +26,13 @@ upper_red1 = np.array([10, 255, 255])
 lower_red2 = np.array([160, 120, 100])
 upper_red2 = np.array([179, 255, 255])
 
-# Green — moderate tightening: S≥80 filters teal/olive while surviving JPEG compression
-lower_green = np.array([40, 80, 80])
+# Green — S≥55 catches pale/washed-out markers at low zoom while hue range [40-90]
+# prevents teal/olive false positives
+lower_green = np.array([40, 55, 80])
 upper_green = np.array([90, 255, 255])
 
-# Contour area bounds (in pixels²) — 30 filters sub-pixel noise, 10000 filters UI blobs
-MIN_MARKER_AREA = 30
+# Contour area bounds (in pixels²) — 10 catches markers down to ~4px diameter, 10000 filters UI blobs
+MIN_MARKER_AREA = 10
 MAX_MARKER_AREA = 10000
 
 # Shape classification thresholds
@@ -39,7 +40,8 @@ CIRCULARITY_THRESHOLD = 0.55   # 4π·area/perimeter² above this → circle
 POLY_EPSILON_FACTOR = 0.04     # approxPolyDP epsilon as fraction of arc length
 
 # Morphological kernel for noise removal (opening = erosion → dilation)
-_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+# 2×2 preserves markers down to ~4px while removing single-pixel noise/JPEG debris
+_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
 
 
 ########
@@ -244,14 +246,7 @@ def extract_marker_coords(img_bytes, center_lat, center_lon, zoom,
     return markers
 
 
-# --- Unified detection (single-pass, with optional downscale) ----------------
-
-# Downscale factor for detection — 0.75× reduces pixel count by ~44% while
-# keeping markers well above MIN_MARKER_AREA.  Coordinates are projected
-# using the *original* viewport dimensions so geo-accuracy is preserved.
-_DETECT_SCALE = 0.75
-_DETECT_SCALE_SQ = _DETECT_SCALE * _DETECT_SCALE   # area scales as square
-
+# --- Unified detection (single-pass) ------------------------------------------
 
 def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
                             viewport_w, viewport_h, center_offset=None):
@@ -259,9 +254,7 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
 
     Combines the work of count_ships_from_bytes() and extract_marker_coords()
     into a single decode → HSV → mask → contour pipeline, avoiding duplicate
-    processing.  The image is downscaled by _DETECT_SCALE before detection
-    to reduce CPU load; marker pixel positions are projected against the
-    original viewport size so lat/lon accuracy is unaffected.
+    processing.
 
     ``center_offset`` (optional dict with ``center_x``, ``center_y``, ``dpr``)
     corrects for UI chrome offsets and device-pixel-ratio differences between
@@ -282,31 +275,11 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     if image is None:
         return empty_counts, []
 
-    # Downscale for cheaper detection
-    image = cv2.resize(image, None, fx=_DETECT_SCALE, fy=_DETECT_SCALE,
-                       interpolation=cv2.INTER_NEAREST)
-
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, w = image.shape[:2]
+    mask_red, mask_green = _build_masks(image_hsv)
 
-    # Build masks with a smaller morph kernel than _build_masks() uses.
-    # The full-res 3×3 kernel destroys triangle vertices at 0.75× scale,
-    # but skipping morph entirely lets green noise through (green's S≥80
-    # range is more permissive than red's S≥120). A 2×2 kernel removes
-    # single-pixel noise while preserving triangle shape.
-    _downscale_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    mask_red1 = cv2.inRange(image_hsv, lower_red1, upper_red1)
-    mask_red2 = cv2.inRange(image_hsv, lower_red2, upper_red2)
-    mask_red = cv2.bitwise_or(mask_red1, mask_red2)
-    mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, _downscale_kernel)
-    mask_green = cv2.inRange(image_hsv, lower_green, upper_green)
-    mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, _downscale_kernel)
-
-    # Adjusted area thresholds for the smaller image
-    min_area = MIN_MARKER_AREA * _DETECT_SCALE_SQ
-    max_area = MAX_MARKER_AREA * _DETECT_SCALE_SQ
-
-    # Mercator projection setup (uses original viewport dims, not scaled)
+    # Mercator projection setup
     total_px = 256 * (2 ** zoom)
     cx_px = (center_lon + 180) / 360.0 * total_px
     lat_rad = math.radians(center_lat)
@@ -321,16 +294,12 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
         img_center_x = center_offset["center_x"] * dpr
         img_center_y = center_offset["center_y"] * dpr
     else:
-        # Fallback: assume geometric centre of the screenshot equals map centre
-        img_center_x = viewport_w / 2
-        img_center_y = viewport_h / 2
+        img_center_x = w / 2
+        img_center_y = h / 2
 
     def _pixel_to_latlon(px_x, px_y):
-        # Scale pixel coords back to original image resolution
-        orig_x = px_x / _DETECT_SCALE
-        orig_y = px_y / _DETECT_SCALE
-        gx = cx_px + (orig_x - img_center_x)
-        gy = cy_px + (orig_y - img_center_y)
+        gx = cx_px + (px_x - img_center_x)
+        gy = cy_px + (px_y - img_center_y)
         lon = gx / total_px * 360.0 - 180.0
         merc_y = gy / total_px
         lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
@@ -345,13 +314,12 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
         markers = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < min_area or area > max_area:
+            if area < MIN_MARKER_AREA or area > MAX_MARKER_AREA:
                 continue
             perimeter = cv2.arcLength(cnt, True)
             if perimeter == 0:
                 continue
 
-            approx = cv2.approxPolyDP(cnt, POLY_EPSILON_FACTOR * perimeter, True)
             circularity = 4 * math.pi * area / (perimeter * perimeter)
 
             if circularity < CIRCULARITY_THRESHOLD:

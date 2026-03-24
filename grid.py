@@ -91,13 +91,23 @@ def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
             bbox_tiles.append((row, col, center_lat, center_lon))
 
     # Filter tiles whose center falls outside the polygon.
-    # For 4-vertex rectangles this is a no-op (all centers are inside).
+    # For simple rectangles (≤4 vertices) this is a no-op.
+    # For small grids (≤4 tiles) skip filtering too — the viewport already
+    # covers the entire bounding box, so removing tiles is counterproductive
+    # (tile centers can overshoot narrow concave polygons).
     is_rect = len(polygon) <= 4
-    if is_rect:
+    small_grid = len(bbox_tiles) <= 4
+    if is_rect or small_grid:
         tiles = bbox_tiles
     else:
         tiles = [t for t in bbox_tiles
                  if _point_in_polygon(t[2], t[3], polygon)]
+        # Fallback: when all tiles are filtered out, place one tile at
+        # the polygon centroid so the region isn't skipped entirely.
+        if not tiles and bbox_tiles:
+            clat = sum(p[0] for p in polygon) / len(polygon)
+            clon = sum(p[1] for p in polygon) / len(polygon)
+            tiles = [(0, 0, clat, clon)]
 
     grid_info = {
         "n_rows": n_rows,

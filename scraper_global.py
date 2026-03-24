@@ -1,10 +1,11 @@
 #!/bin/python3
 """Patchright scraper — global maritime chokepoint monitor.
 
-Loads MarineTraffic once per browser tab, then pans via Leaflet setView()
-for each subsequent tile.  Supports per-region zoom levels, tab-based
-parallelism (multiple regions per browser), inline OpenCV ship detection,
-and JPEG output for minimal storage.
+Launches MAX_BROWSERS concurrent browser workers, each pulling regions from
+a shared queue (work-stealing).  Each worker loads MarineTraffic once, then
+pans via Leaflet setView() for all subsequent regions and tiles.  Supports
+per-region zoom levels, inline OpenCV ship detection, and JPEG output for
+minimal storage.
 
 Usage:
   python scraper_global.py                  # Run all regions
@@ -25,7 +26,9 @@ import os
 import platform
 import random
 import string
+import queue
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -52,9 +55,7 @@ CAPTURES_DIR = os.getenv("CAPTURES_DIR_PATCHRIGHT_PAN", "./data/captures")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "120"))
 JITTER_SECONDS = int(os.getenv("JITTER_SECONDS", "300"))
 
-# Tab parallelism: how many regions to load as tabs in a single browser
-TABS_PER_BROWSER = int(os.getenv("TABS_PER_BROWSER", "1"))
-# Max concurrent browser processes
+# Max concurrent browser workers (each pulls regions from a shared queue)
 MAX_BROWSERS = int(os.getenv("MAX_BROWSERS", "2"))
 # Save images to disk (default: only counts are kept)
 SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.argv
@@ -745,6 +746,16 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     if canvas_state != "ok":
         logger.warning("Region %s: map not ready — %s", region_name, canvas_state)
 
+    # Guard: if tile filtering removed everything, skip this region
+    if not tiles:
+        logger.warning("Region %s: 0 tiles after grid filtering, skipping", region_name)
+        return {
+            "tankers": 0, "cargos": 0,
+            "moving_tankers": 0, "moving_cargos": 0,
+            "tiles_ok": 0, "tiles_failed": 0, "tiles_total": 0,
+            "markers": [], "tile_images": {},
+        }
+
     # Navigate to first tile
     first_row, first_col, first_lat, first_lon = tiles[0]
     _pan_map(page, center_lat, center_lon, first_lat, first_lon, zoom,
@@ -894,19 +905,27 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     }
 
 
-# --- Batch capture (tab parallelism) -----------------------------------------
+# --- Work-stealing browser workers -------------------------------------------
 
 
 def capture_batch(region_batch, timestamp_str):
-    """Capture a batch of regions using multiple tabs in one browser.
+    """Capture a fixed batch of regions (legacy interface for retries).
 
-    Tab parallelism: all regions in the batch share one browser process and
-    one proxy.  Each region gets its own tab (page).  The initial page loads
-    happen concurrently (the browser handles parallel network requests),
-    then tiles are captured sequentially per tab.
+    Wraps capture_worker by feeding the batch into a queue.
+    """
+    q = queue.Queue()
+    for name in region_batch:
+        q.put(name)
+    return capture_worker(q, timestamp_str)
 
-    Compared to one-browser-per-region: saves ~10s startup per extra region
-    in the batch, and uses ~80% less memory per additional region.
+
+def capture_worker(region_queue, timestamp_str):
+    """Work-stealing worker: opens one browser, pulls regions from a shared
+    queue until it is empty.
+
+    The first region triggers a full page.goto() + Cloudflare setup.
+    Subsequent regions reuse the same browser session via Leaflet setView()
+    panning — no extra page loads, no repeated Cloudflare challenges.
     """
     proxy = random.choice(proxies)
     fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
@@ -956,51 +975,100 @@ def capture_batch(region_batch, timestamp_str):
             )
             context.add_cookies(_random_cookies(".marinetraffic.com"))
 
-            # Phase 1: Open all tabs and start loading in parallel
-            tabs = {}
-            for name in region_batch:
-                config = REGIONS[name]
-                page = context.new_page()
-                _inject_stealth_scripts(page, geo)
-                _inject_map_hooks(page)
+            # Pull first region for initial page load + Cloudflare setup
+            try:
+                first_name = region_queue.get_nowait()
+            except queue.Empty:
+                context.close()
+                browser.close()
+                results["_retryable"] = retryable
+                return results
 
-                center_lat, center_lon = _polygon_center(config["polygon"])
-                url = build_url(center_lat, center_lon, config["zoom"])
-                logger.info("  [batch] Loading tab for %s (%s) at zoom %d",
-                            name, config.get("name", name), config["zoom"])
-                page.goto(url, wait_until="domcontentloaded")
-                tabs[name] = page
+            config = REGIONS[first_name]
+            page = context.new_page()
+            _inject_stealth_scripts(page, geo)
+            _inject_map_hooks(page)
 
-            # Phase 2: Setup each tab (Cloudflare, overlays, map discovery)
-            ready_tabs = {}
-            for name, page in tabs.items():
-                try:
-                    if _wait_for_cloudflare(page):
-                        logger.info("  [%s] Cloudflare passed", name)
-                    elif _is_cloudflare_blocked(page):
-                        logger.error("  [%s] Cloudflare block", name)
-                        _log_json(timestamp_str, name, "", 0, 0, 0, 0.0, 0, 0,
-                                  REGIONS[name]["zoom"], [])
-                        continue
+            center_lat, center_lon = _polygon_center(config["polygon"])
+            url = build_url(center_lat, center_lon, config["zoom"])
+            logger.info("  [worker] Loading %s (%s) at zoom %d",
+                        first_name, config.get("name", first_name), config["zoom"])
+            page.goto(url, wait_until="domcontentloaded")
 
+            # Setup: Cloudflare, overlays, map discovery
+            page_ready = True
+            try:
+                if _wait_for_cloudflare(page):
+                    logger.info("  [%s] Cloudflare passed", first_name)
+                elif _is_cloudflare_blocked(page):
+                    logger.error("  [%s] Cloudflare block", first_name)
+                    _log_json(timestamp_str, first_name, "", 0, 0, 0, 0.0, 0, 0,
+                              config["zoom"], [])
+                    page_ready = False
+
+                if page_ready:
                     wait_for_map_tiles(page)
                     dismiss_cookie_banner(page)
                     hide_ui_overlays(page)
                     _discover_leaflet_map(page)
+            except Exception as e:
+                if _is_crash_error(e):
+                    logger.error("  [%s] Setup crashed (retryable): %s", first_name, e)
+                    retryable.append(first_name)
+                else:
+                    logger.error("  [%s] Setup failed: %s", first_name, e)
+                _log_json(timestamp_str, first_name, "", 0, 0, 0, 0.0, 0, 0,
+                          config["zoom"], [])
+                page_ready = False
 
-                    map_dims = _get_map_dimensions(page)
-                    ready_tabs[name] = (page, map_dims)
-                except Exception as e:
-                    if _is_crash_error(e):
-                        logger.error("  [%s] Setup crashed (retryable): %s", name, e)
-                        retryable.append(name)
-                    else:
-                        logger.error("  [%s] Setup failed: %s", name, e)
-                    _log_json(timestamp_str, name, "", 0, 0, 0, 0.0, 0, 0,
-                              REGIONS[name]["zoom"], [])
+            if not page_ready:
+                context.close()
+                browser.close()
+                # Put remaining regions back as retryable so they aren't lost
+                while True:
+                    try:
+                        retryable.append(region_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                results["_retryable"] = retryable
+                return results
 
-            # Phase 3: Capture tiles for each ready region
-            for name, (page, map_dims) in ready_tabs.items():
+            map_dims = _get_map_dimensions(page)
+
+            # Capture first region
+            try:
+                result = _capture_region_tiles(
+                    first_name, REGIONS[first_name], timestamp_str, page, map_dims,
+                )
+                results[first_name] = result
+            except Exception as e:
+                if _is_crash_error(e):
+                    logger.error("Region %s crashed (retryable): %s", first_name, e)
+                    retryable.append(first_name)
+                    # Browser crashed — drain queue into retryable
+                    while True:
+                        try:
+                            retryable.append(region_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                    context.close()
+                    browser.close()
+                    results["_retryable"] = retryable
+                    return results
+                else:
+                    logger.error("Region %s capture failed: %s", first_name, e)
+                    _log_json(timestamp_str, first_name, "", 0, 0, 1, 0.0, 0, 0,
+                              REGIONS[first_name]["zoom"], [])
+
+            # Work-stealing loop: pull more regions from the shared queue
+            while True:
+                try:
+                    name = region_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                logger.info("  [worker] Stealing region %s (%s)",
+                            name, REGIONS[name].get("name", name))
                 try:
                     result = _capture_region_tiles(
                         name, REGIONS[name], timestamp_str, page, map_dims,
@@ -1010,20 +1078,32 @@ def capture_batch(region_batch, timestamp_str):
                     if _is_crash_error(e):
                         logger.error("Region %s crashed (retryable): %s", name, e)
                         retryable.append(name)
+                        # Browser crashed — drain remaining queue
+                        while True:
+                            try:
+                                retryable.append(region_queue.get_nowait())
+                            except queue.Empty:
+                                break
+                        break
                     else:
                         logger.error("Region %s capture failed: %s", name, e)
-                    _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
-                              REGIONS[name]["zoom"], [])
+                        _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
+                                  REGIONS[name]["zoom"], [])
 
             context.close()
             browser.close()
 
     except Exception as e:
         if _is_crash_error(e):
-            logger.error("Batch crashed (retryable): %s", e)
-            retryable.extend(n for n in region_batch if n not in results)
+            logger.error("Worker crashed (retryable): %s", e)
+            # Drain queue into retryable
+            while True:
+                try:
+                    retryable.append(region_queue.get_nowait())
+                except queue.Empty:
+                    break
         else:
-            logger.error("Batch failed: %s", e)
+            logger.error("Worker failed: %s", e)
 
     results["_retryable"] = retryable
     return results
@@ -1039,18 +1119,14 @@ def capture_region(region_name, config, timestamp_str):
 
 # --- Logging ------------------------------------------------------------------
 
+_log_lock = threading.Lock()
+
 
 def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
               tankers=0, cargos=0, zoom=None, detections=None,
               moving_tankers=0, moving_cargos=0, markers=None):
-    json_path = Path("./data") / "captures_log.json"
+    """Append a single JSON line to captures_log.jsonl (thread-safe)."""
     Path("./data").mkdir(parents=True, exist_ok=True)
-
-    if json_path.exists():
-        with open(json_path, "r") as f:
-            entries = json.load(f)
-    else:
-        entries = []
 
     if total == 0 and ok == 0:
         status = "error"
@@ -1061,7 +1137,7 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
     else:
         status = "error"
 
-    entries.append({
+    entry = {
         "region": region,
         "region_name": REGIONS.get(region, {}).get("name", region),
         "filepath": filepath,
@@ -1079,10 +1155,12 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
         "status": status,
         "markers": markers or [],
         "detections": detections or [],
-    })
+    }
 
-    with open(json_path, "w") as f:
-        json.dump(entries, f, indent=2)
+    jsonl_path = Path("./data") / "captures_log.jsonl"
+    with _log_lock:
+        with open(jsonl_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     logger.info("_log_json: region=%s status=%s tankers=%d cargos=%d "
                 "moving_t=%d moving_c=%d tiles=%d/%d markers=%d",
@@ -1094,10 +1172,11 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
 
 
 def capture_all_regions(region_filter=None):
-    """Capture all (or filtered) regions using batched tab parallelism.
+    """Capture all (or filtered) regions using work-stealing parallelism.
 
-    Regions are grouped into batches of TABS_PER_BROWSER.  Up to MAX_BROWSERS
-    batches run in parallel, each in its own browser process with its own proxy.
+    Regions are sorted largest-first (most tiles) and placed in a shared
+    queue.  Up to MAX_BROWSERS worker threads each open a browser and pull
+    regions from the queue until it is empty — no idle tabs.
     """
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     logger.info("Starting capture run: %s", timestamp_str)
@@ -1108,48 +1187,47 @@ def capture_all_regions(region_filter=None):
     else:
         names = list(REGIONS.keys())
 
-    # Log tile counts per region
+    # Compute tile counts and sort largest-first (reduces tail latency)
+    tile_counts = {}
     total_tiles = 0
     for name in names:
         config = REGIONS[name]
         tiles, info = _get_tile_grid(name, config)
+        tile_counts[name] = len(tiles)
         total_tiles += len(tiles)
         logger.info("  %s (%s): %d tiles, zoom %d",
                     name, config.get("name", name), len(tiles), config["zoom"])
 
-    logger.info("Total: %d regions, %d tiles", len(names), total_tiles)
-
-    # Split into batches
-    batches = [names[i:i + TABS_PER_BROWSER]
-               for i in range(0, len(names), TABS_PER_BROWSER)]
+    names.sort(key=lambda n: tile_counts[n], reverse=True)
+    logger.info("Total: %d regions, %d tiles (sorted largest-first)", len(names), total_tiles)
 
     t_start = time.perf_counter()
     all_results = {}
 
-    def _run_batches(batch_list):
-        """Submit batches to the thread pool and return (results, retryable)."""
-        batch_results_all = {}
+    def _run_with_queue(region_names):
+        """Populate a shared queue and run MAX_BROWSERS workers."""
+        region_q = queue.Queue()
+        for n in region_names:
+            region_q.put(n)
+
+        worker_results_all = {}
         retry_names = []
         with ThreadPoolExecutor(max_workers=MAX_BROWSERS) as executor:
             futures = {
-                executor.submit(capture_batch, b, timestamp_str): b
-                for b in batch_list
+                executor.submit(capture_worker, region_q, timestamp_str): i
+                for i in range(min(MAX_BROWSERS, len(region_names)))
             }
             for future in as_completed(futures):
-                batch = futures[future]
                 try:
-                    batch_results = future.result() or {}
-                    # Extract retryable list before merging into results
-                    retry_names.extend(batch_results.pop("_retryable", []))
-                    batch_results_all.update(batch_results)
+                    worker_results = future.result() or {}
+                    retry_names.extend(worker_results.pop("_retryable", []))
+                    worker_results_all.update(worker_results)
                 except Exception as e:
-                    logger.error("Batch %s failed: %s", batch, e)
-                    if _is_crash_error(e):
-                        retry_names.extend(batch)
-        return batch_results_all, retry_names
+                    logger.error("Worker failed: %s", e)
+        return worker_results_all, retry_names
 
     # Initial run
-    results_batch, retryable = _run_batches(batches)
+    results_batch, retryable = _run_with_queue(names)
     all_results.update(results_batch)
 
     # Retry crashed regions with fresh browsers
@@ -1171,9 +1249,7 @@ def capture_all_regions(region_filter=None):
         )
         time.sleep(backoff)
 
-        retry_batches = [retryable[i:i + TABS_PER_BROWSER]
-                         for i in range(0, len(retryable), TABS_PER_BROWSER)]
-        results_batch, retryable = _run_batches(retry_batches)
+        results_batch, retryable = _run_with_queue(retryable)
         all_results.update(results_batch)
 
     # Report regions that exhausted all retries
@@ -1204,13 +1280,13 @@ def capture_all_regions(region_filter=None):
         grand_tankers, grand_mov_t, grand_cargos, grand_mov_c,
     )
 
-    # Flush captures_log.json into PostgreSQL
+    # Flush captures_log.jsonl into PostgreSQL
     try:
         logger.info("Ingesting captures log into database...")
         process_log()
         logger.info("Database ingestion complete")
     except Exception as e:
-        logger.error("Database ingestion failed: %s (data preserved in captures_log.json)", e)
+        logger.error("Database ingestion failed: %s (data preserved in captures_log.jsonl)", e)
 
     return all_results
 
@@ -1290,9 +1366,9 @@ def main():
 
     active_count = len(region_filter) if region_filter else len(REGIONS)
     logger.info("Total: %d regions, %d tiles | Viewport: %dx%d | "
-                "Tabs/browser: %d | Max browsers: %d | Save images: %s",
+                "Max browsers: %d | Save images: %s",
                 active_count, total_tiles, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
-                TABS_PER_BROWSER, MAX_BROWSERS, SAVE_IMAGES)
+                MAX_BROWSERS, SAVE_IMAGES)
 
     # Run once immediately
     capture_all_regions(region_filter)

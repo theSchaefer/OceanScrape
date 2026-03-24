@@ -6,7 +6,7 @@ batch-inserts them into a PostgreSQL ``captures`` table.  Nested marker and
 detection data are stored as JSONB columns.
 
 Exported API (consumed by run.py):
-    process_log(log_path=None)  — ingest ./data/captures_log.json → PostgreSQL
+    process_log(log_path=None)  — ingest ./data/captures_log.jsonl → PostgreSQL
     insert_capture(data)        — insert a single capture record
 """
 
@@ -114,7 +114,8 @@ VALUES (%s, %s, %s, %s, %s)
 ON CONFLICT (capture_id, lat, lon) DO NOTHING
 """
 
-DEFAULT_LOG_PATH = Path("./data") / "captures_log.json"
+DEFAULT_LOG_PATH = Path("./data") / "captures_log.jsonl"
+_LEGACY_LOG_PATH = Path("./data") / "captures_log.json"
 
 
 # ---------------------------------------------------------------------------
@@ -237,26 +238,53 @@ def insert_capture(data):
         conn.close()
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    """Read a JSONL file (one JSON object per line)."""
+    entries = []
+    with open(path, "r") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed line %d in %s", lineno, path)
+    return entries
+
+
 def process_log(log_path=None):
-    """Read captures_log.json, batch-insert all entries, then archive the log.
+    """Read captures_log.jsonl, batch-insert all entries, then archive the log.
 
     After a successful insert the log file is renamed to
-    ``captures_log_YYYYMMDD_HHMMSS.json`` in the same directory and a
-    fresh empty ``[]`` is written in its place so the scraper can
+    ``captures_log_YYYYMMDD_HHMMSS.jsonl`` in the same directory and a
+    fresh empty file is written in its place so the scraper can
     continue appending.
+
+    Falls back to the legacy ``captures_log.json`` format if the JSONL
+    file does not exist.
     """
     log_path = Path(log_path) if log_path else DEFAULT_LOG_PATH
+    is_legacy = False
+
+    if not log_path.exists() and _LEGACY_LOG_PATH.exists():
+        log_path = _LEGACY_LOG_PATH
+        is_legacy = True
+        logger.info("Using legacy JSON log at %s", log_path)
 
     if not log_path.exists():
         logger.info("No captures log found at %s — nothing to process", log_path)
         return
 
-    with open(log_path, "r") as f:
-        try:
-            entries = json.load(f)
-        except json.JSONDecodeError:
-            logger.error("Malformed JSON in %s — skipping", log_path)
-            return
+    if is_legacy:
+        with open(log_path, "r") as f:
+            try:
+                entries = json.load(f)
+            except json.JSONDecodeError:
+                logger.error("Malformed JSON in %s — skipping", log_path)
+                return
+    else:
+        entries = _read_jsonl(log_path)
 
     if not entries:
         logger.info("Captures log is empty — nothing to process")
@@ -301,8 +329,9 @@ def process_log(log_path=None):
         conn.close()
 
     # Archive the processed log
-    archive_name = "captures_log_{}.json".format(
-        datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ext = ".json" if is_legacy else ".jsonl"
+    archive_name = "captures_log_{}{}".format(
+        datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), ext
     )
     archive_path = log_path.parent / archive_name
     shutil.move(str(log_path), str(archive_path))
@@ -310,4 +339,4 @@ def process_log(log_path=None):
 
     # Reset the log file for the next scrape run
     with open(log_path, "w") as f:
-        json.dump([], f)
+        pass  # empty file — scraper appends JSONL lines
