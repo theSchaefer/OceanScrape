@@ -353,39 +353,30 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     return counts, markers_red + markers_green
 
 
-def _debug_center_check(center_lat, center_lon, zoom, viewport_w, viewport_h,
-                         center_offset, row, col, logger):
-    """Log whether the center pixel projects back to the requested center."""
-    dpr = center_offset.get("dpr", 1)
-    img_cx = center_offset["center_x"] * dpr
-    img_cy = center_offset["center_y"] * dpr
+def _debug_center_check(req_lat, req_lon, center_offset, row, col, logger):
+    """Log whether Leaflet's actual map center matches the requested pan target.
 
-    total_px = 256 * (2 ** zoom)
-    cx_px = (center_lon + 180) / 360.0 * total_px
-    lat_rad = math.radians(center_lat)
-    cy_px = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
-             / math.pi) / 2.0 * total_px
+    Compares the lat/lon returned by ``map.getCenter()`` (carried in
+    ``center_offset["map_lat"]/["map_lng"]``) against the lat/lon that was
+    passed to ``setView()``. Any non-trivial delta means a pan was silently
+    rounded or rejected — which would bias every marker on this tile.
+    """
+    act_lat = center_offset.get("map_lat")
+    act_lng = center_offset.get("map_lng")
+    if act_lat is None or act_lng is None:
+        return
 
-    # The center pixel should map back to (center_lat, center_lon)
-    gx = cx_px + (img_cx - img_cx)   # == cx_px (offset is zero at center)
-    gy = cy_px + (img_cy - img_cy)   # == cy_px
-    lon_check = gx / total_px * 360.0 - 180.0
-    merc_y = gy / total_px
-    lat_check = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
-
-    dlat = abs(lat_check - center_lat)
-    dlon = abs(lon_check - center_lon)
-    if dlat > 0.01 or dlon > 0.01:
-        logger.warning("  Tile (%d,%d): center-pixel drift! "
-                       "expected (%.5f, %.5f), got (%.5f, %.5f), "
-                       "delta (%.5f, %.5f)",
-                       row, col, center_lat, center_lon,
-                       lat_check, lon_check, dlat, dlon)
+    dlat = abs(act_lat - req_lat)
+    dlon = abs(act_lng - req_lon)
+    if dlat > 1e-4 or dlon > 1e-4:
+        logger.warning("  Tile (%d,%d): setView drift! "
+                       "requested (%.6f, %.6f), actual (%.6f, %.6f), "
+                       "delta (%.6f, %.6f)",
+                       row, col, req_lat, req_lon, act_lat, act_lng,
+                       dlat, dlon)
     else:
-        logger.debug("  Tile (%d,%d): center-pixel OK — "
-                     "offset css=(%.1f, %.1f) dpr=%.1f",
-                     row, col, center_offset["center_x"],
-                     center_offset["center_y"], dpr)
+        logger.debug("  Tile (%d,%d): setView OK — actual (%.6f, %.6f)",
+                     row, col, act_lat, act_lng)
 
 
 if __name__ == "__main__":

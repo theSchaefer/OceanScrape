@@ -518,8 +518,12 @@ def _get_map_center_offset(page):
     This helper returns the map-centre pixel in CSS coords plus the device
     pixel ratio so callers can convert to image-pixel space.
 
-    Returns ``{"center_x": float, "center_y": float, "dpr": float}`` or
-    ``None`` if the Leaflet map instance isn't available.
+    Returns ``{"center_x": float, "center_y": float, "map_lat": float,
+    "map_lng": float, "dpr": float}`` or ``None`` if the Leaflet map instance
+    isn't available. ``map_lat``/``map_lng`` are the actual current map center
+    read from Leaflet — use these (not the requested setView target) as the
+    projection anchor so marker positions remain correct even if MarineTraffic
+    ever rounds setView internally.
     """
     return page.evaluate("""
     () => {
@@ -534,6 +538,8 @@ def _get_map_center_offset(page):
         return {
             center_x: centerPt.x + (mapRect.x - canvasRect.x),
             center_y: centerPt.y + (mapRect.y - canvasRect.y),
+            map_lat: center.lat,
+            map_lng: center.lng,
             dpr: window.devicePixelRatio || 1
         };
     }
@@ -778,11 +784,16 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             # Query actual map-centre pixel (accounts for UI chrome + DPR)
             center_offset = _get_map_center_offset(page)
 
-            # Inline ship detection + geo-coordinate extraction
+            # Inline ship detection + geo-coordinate extraction.
+            # Anchor the projection on the *actual* map center read from
+            # Leaflet (map.getCenter()), not the requested setView target.
+            # Guards against MarineTraffic ever rounding setView internally.
+            proj_lat = center_offset["map_lat"] if center_offset else lat
+            proj_lon = center_offset["map_lng"] if center_offset else lon
             logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
                          row, col, len(img_bytes))
             det, tile_markers = _detect_ships_inline(
-                img_bytes, lat, lon, zoom, map_width, map_height,
+                img_bytes, proj_lat, proj_lon, zoom, map_width, map_height,
                 center_offset=center_offset
             )
 
@@ -796,11 +807,12 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
                          row, col, det, len(tile_markers))
 
-            # Debug: verify center-pixel maps back to requested center
-            if center_offset and center_offset.get("dpr"):
+            # Debug: warn if Leaflet's actual center drifted from the
+            # requested setView target (would indicate MarineTraffic is
+            # rounding or otherwise mutating our pan calls).
+            if center_offset:
                 from seer import _debug_center_check
-                _debug_center_check(lat, lon, zoom, map_width, map_height,
-                                    center_offset, row, col, logger)
+                _debug_center_check(lat, lon, center_offset, row, col, logger)
 
             st = det["stationary_tankers"]
             mt = det["moving_tankers"]
