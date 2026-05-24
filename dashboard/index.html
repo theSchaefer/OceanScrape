@@ -184,7 +184,8 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
   <div id="analytics">
     <div id="analytics-header">
       <h3 id="analytics-title">Region Analytics</h3>
-      <button id="csv-export" style="width:auto;margin-right:8px;font-size:11px">CSV</button>
+      <button id="csv-export" style="width:auto;margin-right:6px;font-size:11px">CSV</button>
+      <button id="positions-export" style="width:auto;margin-right:8px;font-size:11px" title="Export all vessel positions in a time range">Positions</button>
       <button id="analytics-close">&times;</button>
     </div>
     <div id="analytics-body">
@@ -230,6 +231,22 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
     <div class="dialog-btns">
       <button id="rd-cancel">Cancel</button>
       <button id="rd-save" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Positions Export Dialog ─────────────────────────────────────── -->
+<div id="positions-dialog-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;width:340px">
+    <h3 style="margin-bottom:6px;font-size:15px">Export Vessel Positions</h3>
+    <div id="pe-region" style="font-size:11px;color:var(--text-dim);margin-bottom:10px"></div>
+    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">Start</label>
+    <input id="pe-start" type="datetime-local" style="width:100%">
+    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">End</label>
+    <input id="pe-end" type="datetime-local" style="width:100%">
+    <div class="dialog-btns">
+      <button id="pe-cancel">Cancel</button>
+      <button id="pe-export" class="btn-primary">Download CSV</button>
     </div>
   </div>
 </div>
@@ -914,6 +931,67 @@ function exportCSV() {
   toast('CSV downloaded', 'success');
 }
 
+/* ━━ Positions Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function openPositionsDialog() {
+  if (!S.selectedRegion) {
+    toast('Select a region first', 'error');
+    return;
+  }
+  // Default start/end to whatever's in the timeline inputs, else last 24h
+  const tlStart = $('#tl-start').value;
+  const tlEnd = $('#tl-end').value;
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24*60*60*1000);
+  const fmt = (d) => d.toISOString().slice(0,16);
+  $('#pe-start').value = tlStart || fmt(yesterday);
+  $('#pe-end').value = tlEnd || fmt(now);
+  $('#pe-region').textContent = 'Region: ' + S.selectedRegion;
+  $('#positions-dialog-overlay').style.display = 'flex';
+}
+
+function closePositionsDialog() {
+  $('#positions-dialog-overlay').style.display = 'none';
+}
+
+async function exportPositions() {
+  const start = $('#pe-start').value;
+  const end = $('#pe-end').value;
+  if (!start || !end) { toast('Start and end required', 'error'); return; }
+  if (new Date(start) >= new Date(end)) { toast('End must be after start', 'error'); return; }
+
+  const btn = $('#pe-export');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+  try {
+    const params = new URLSearchParams({
+      region: S.selectedRegion,
+      start: new Date(start).toISOString(),
+      end: new Date(end).toISOString(),
+    });
+    const ft = $('#filter-type').value;
+    const fm = $('#filter-motion').value;
+    if (ft) params.set('type', ft);
+    if (fm) params.set('motion', fm);
+
+    const r = await fetch(API + '/api/vessels/export?' + params);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${S.selectedRegion}_positions_${start.slice(0,10)}_${end.slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Positions exported', 'success');
+    closePositionsDialog();
+  } catch(e) {
+    toast('Export failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
 /* ━━ Custom Regions ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 let pendingPolygon = null;
 
@@ -1041,6 +1119,9 @@ $('#filter-type').addEventListener('change', () => loadVessels());
 $('#filter-motion').addEventListener('change', () => loadVessels());
 $('#analytics-close').addEventListener('click', closeAnalytics);
 $('#csv-export').addEventListener('click', exportCSV);
+$('#positions-export').addEventListener('click', openPositionsDialog);
+$('#pe-cancel').addEventListener('click', closePositionsDialog);
+$('#pe-export').addEventListener('click', exportPositions);
 $('#tl-slider').addEventListener('input', onSliderChange);
 $('#tl-play').addEventListener('click', togglePlay);
 $('#tl-granularity').addEventListener('change', rebuildTimelineSteps);
