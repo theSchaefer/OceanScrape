@@ -1,0 +1,3 @@
+This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the author(s) be liable for any claim, damages, or other liability arising from the use of this software.
+This tool is intended for lawful use only. It is the sole responsibility of the user to ensure that their use of this software complies with all applicable laws, regulations, and the terms of service of any website or service they interact with. The author(s) assume no responsibility or liability for how this software is used, or for any consequences resulting from its use.
+By using this software, you agree that you do so at your own risk.
