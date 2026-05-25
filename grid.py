@@ -22,6 +22,36 @@ def pixel_y_to_lat(pixel_y, zoom):
     return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
 
 
+def lon_to_pixel_x(lon, zoom):
+    """Convert longitude to pixel X in Web Mercator."""
+    return (lon + 180.0) / 360.0 * 256 * (2 ** zoom)
+
+
+def pixel_x_to_lon(pixel_x, zoom):
+    """Convert pixel X back to longitude."""
+    return pixel_x / (256 * (2 ** zoom)) * 360.0 - 180.0
+
+
+def get_tile_bounds(center_lat, center_lon, zoom, viewport_width, viewport_height):
+    """Return the four corner (lat, lon) of a viewport-sized tile.
+
+    Mirrors how the scraper positions a tile: take the center in Web Mercator
+    pixel space, expand ±viewport/2, then project the corners back to lat/lon.
+    Order is NW, NE, SE, SW (suitable for closing into a polygon ring).
+    """
+    cx = lon_to_pixel_x(center_lon, zoom)
+    cy = lat_to_pixel_y(center_lat, zoom)
+    half_w = viewport_width / 2
+    half_h = viewport_height / 2
+
+    lon_w = pixel_x_to_lon(cx - half_w, zoom)
+    lon_e = pixel_x_to_lon(cx + half_w, zoom)
+    lat_n = pixel_y_to_lat(cy - half_h, zoom)
+    lat_s = pixel_y_to_lat(cy + half_h, zoom)
+
+    return [(lat_n, lon_w), (lat_n, lon_e), (lat_s, lon_e), (lat_s, lon_w)]
+
+
 def _point_in_polygon(lat, lon, polygon):
     """Ray-casting point-in-polygon test.
 

@@ -176,9 +176,10 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
     <button id="btn-refresh" title="Refresh data (R)">Refresh</button>
     <button id="btn-draw" title="Draw region (D)">Draw Region</button>
     <button id="btn-lanes" title="Toggle shipping lanes (L)">Lanes</button>
+    <button id="btn-tiles" title="Toggle capture tiles (T)">Tiles</button>
   </div>
   <div id="last-updated"></div>
-  <div id="kb-hint"><kbd>R</kbd> Refresh &nbsp; <kbd>D</kbd> Draw &nbsp; <kbd>L</kbd> Lanes &nbsp; <kbd>Esc</kbd> Close</div>
+  <div id="kb-hint"><kbd>R</kbd> Refresh &nbsp; <kbd>D</kbd> Draw &nbsp; <kbd>L</kbd> Lanes &nbsp; <kbd>T</kbd> Tiles &nbsp; <kbd>Esc</kbd> Close</div>
 
   <!-- Analytics slide-in -->
   <div id="analytics">
@@ -272,6 +273,8 @@ const S = {
   playTimer: null,
   drawMode: false,
   lanesVisible: false,
+  tilesVisible: false,
+  tilesLoaded: false,
   analyticsChart: null,
   analyticsData: null,
 };
@@ -371,6 +374,8 @@ function addMapSources() {
   map.addSource('region-labels', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
   // Shipping lanes
   map.addSource('lanes', {type:'geojson', data:{type:'FeatureCollection',features:buildLanesGeoJSON()}});
+  // Capture tiles (filled lazily on first toggle)
+  map.addSource('tiles', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
 }
 
 function addMapLayers() {
@@ -454,6 +459,18 @@ function addMapLayers() {
     id: 'lanes-layer', type: 'line', source: 'lanes',
     layout: {'visibility':'none'},
     paint: {'line-color':'rgba(255,255,255,0.15)','line-width':1.5,'line-dasharray':[6,4]},
+  });
+
+  // ── Capture tiles (thin outline + faint fill, hidden by default) ──
+  map.addLayer({
+    id: 'tiles-fill', type: 'fill', source: 'tiles',
+    layout: {'visibility':'none'},
+    paint: {'fill-color':'#3fb950','fill-opacity':0.04},
+  });
+  map.addLayer({
+    id: 'tiles-line', type: 'line', source: 'tiles',
+    layout: {'visibility':'none'},
+    paint: {'line-color':'rgba(63,185,80,0.6)','line-width':1},
   });
 
   // ── Click handlers ──
@@ -1111,10 +1128,27 @@ function toggleLanes() {
   $('#btn-lanes').classList.toggle('active', S.lanesVisible);
 }
 
+/* ━━ Tiles Toggle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+async function toggleTiles() {
+  S.tilesVisible = !S.tilesVisible;
+  $('#btn-tiles').classList.toggle('active', S.tilesVisible);
+  const vis = S.tilesVisible ? 'visible' : 'none';
+  map.setLayoutProperty('tiles-fill', 'visibility', vis);
+  map.setLayoutProperty('tiles-line', 'visibility', vis);
+  if (S.tilesVisible && !S.tilesLoaded) {
+    try {
+      const d = await api('/api/tiles');
+      map.getSource('tiles').setData(d);
+      S.tilesLoaded = true;
+    } catch(e) {}
+  }
+}
+
 /* ━━ Event Wiring ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 $('#btn-refresh').addEventListener('click', refresh);
 $('#btn-draw').addEventListener('click', toggleDrawMode);
 $('#btn-lanes').addEventListener('click', toggleLanes);
+$('#btn-tiles').addEventListener('click', toggleTiles);
 $('#filter-type').addEventListener('change', () => loadVessels());
 $('#filter-motion').addEventListener('change', () => loadVessels());
 $('#analytics-close').addEventListener('click', closeAnalytics);
@@ -1156,6 +1190,7 @@ document.addEventListener('keydown', (e) => {
     case 'R': e.preventDefault(); refresh(); break;
     case 'D': e.preventDefault(); toggleDrawMode(); break;
     case 'L': e.preventDefault(); toggleLanes(); break;
+    case 'T': e.preventDefault(); toggleTiles(); break;
     case 'ESCAPE':
       e.preventDefault();
       if ($('#region-dialog-overlay').classList.contains('show')) {

@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from grid import get_tile_bounds, get_tile_centers
 from regions import REGIONS
 from update_database import _SCHEMA_SQL
 
@@ -34,6 +35,13 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60"))
+VIEWPORT_WIDTH = int(os.getenv("VIEWPORT_WIDTH", "7680"))
+VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "4320"))
+# Default spatial dedup bucket for cross-region marker overlap. 0.003° ≈ 330 m
+# at the equator — large enough to collapse the same ship detected by two
+# overlapping regions (different zooms ⇒ different pixel→latlon roundings),
+# small enough to keep neighboring distinct vessels separate.
+VESSEL_DEDUP_EPS_DEG = float(os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"))
 
 app = FastAPI(title="MarineScraper Dashboard API")
 
@@ -656,12 +664,42 @@ def _custom_region_analytics(code, region_name, polygon, area,
     }
 
 
+def _dedup_markers_spatial(vessels, eps_deg):
+    """Collapse near-duplicate markers from overlapping regions.
+
+    Snaps each (lat, lon) to a grid of ``eps_deg`` and keeps the first
+    marker seen per (cell, ship_type). Motion is not part of the key:
+    if the same ship gets classified moving in one region and stationary
+    in another, we keep one — preferring 'moving' (more specific signal
+    from the arrow glyph than the generic circle).
+    """
+    if eps_deg <= 0 or not vessels:
+        return vessels
+    by_key = {}
+    order = []
+    for v in vessels:
+        key = (
+            round(v["lat"] / eps_deg),
+            round(v["lon"] / eps_deg),
+            v.get("type", "unknown"),
+        )
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = v
+            order.append(key)
+        elif existing.get("motion") != "moving" and v.get("motion") == "moving":
+            by_key[key] = v
+    return [by_key[k] for k in order]
+
+
 @app.get("/api/vessels")
 def get_vessels(
     region: Optional[str] = None,
     type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
     motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
     timestamp: Optional[str] = None,
+    dedup: bool = True,
+    dedup_eps: Optional[float] = Query(None, ge=0, le=1),
 ):
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -724,10 +762,19 @@ def get_vessels(
                 "region": row["region"],
             })
 
+    # Cross-region dedup: only meaningful when the response spans more than
+    # one region (single-region requests are already polygon-filtered by the
+    # scraper, so no overlap is possible).
+    raw_count = len(vessels)
+    if dedup and region is None:
+        eps = dedup_eps if dedup_eps is not None else VESSEL_DEDUP_EPS_DEG
+        vessels = _dedup_markers_spatial(vessels, eps)
+
     return {
         "timestamp": effective_ts.isoformat() if effective_ts else None,
         "vessels": vessels,
         "count": len(vessels),
+        "raw_count": raw_count,
     }
 
 
@@ -869,6 +916,53 @@ def export_vessel_positions(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+_tiles_geojson_cache = None
+
+
+def _build_tiles_geojson():
+    """Compute the scraper's tile grid for every predefined region.
+
+    Tile bounds are fully determined by (polygon, zoom, viewport), so we
+    compute them once at first request and cache. Returns a GeoJSON
+    FeatureCollection ready for a mapbox-gl source.
+    """
+    features = []
+    for code, rdef in REGIONS.items():
+        polygon = rdef["polygon"]
+        zoom = rdef["zoom"]
+        name = rdef.get("name", code)
+        tiles, _grid_info = get_tile_centers(
+            polygon, zoom, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
+        )
+        for row, col, lat, lon in tiles:
+            corners = get_tile_bounds(lat, lon, zoom, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+            ring = [[lon_, lat_] for (lat_, lon_) in corners]
+            ring.append(ring[0])
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [ring]},
+                "properties": {
+                    "region": code,
+                    "region_name": name,
+                    "row": row,
+                    "col": col,
+                    "zoom": zoom,
+                    "center_lat": lat,
+                    "center_lon": lon,
+                },
+            })
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/tiles")
+def get_tiles():
+    """Tile-grid coverage as GeoJSON for the predefined regions."""
+    global _tiles_geojson_cache
+    if _tiles_geojson_cache is None:
+        _tiles_geojson_cache = _build_tiles_geojson()
+    return _tiles_geojson_cache
 
 
 @app.get("/api/timeline")
