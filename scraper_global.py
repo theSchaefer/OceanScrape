@@ -519,11 +519,11 @@ def _get_map_center_offset(page):
     pixel ratio so callers can convert to image-pixel space.
 
     Returns ``{"center_x": float, "center_y": float, "map_lat": float,
-    "map_lng": float, "dpr": float}`` or ``None`` if the Leaflet map instance
-    isn't available. ``map_lat``/``map_lng`` are the actual current map center
-    read from Leaflet — use these (not the requested setView target) as the
-    projection anchor so marker positions remain correct even if MarineTraffic
-    ever rounds setView internally.
+    "map_lng": float, "map_zoom": float, "dpr": float}`` or ``None`` if the
+    Leaflet map instance isn't available. ``map_lat``/``map_lng``/``map_zoom``
+    are the actual current map state read from Leaflet — use these (not the
+    requested setView target) as the projection inputs so marker positions
+    remain correct even if MarineTraffic rounds or clamps setView internally.
     """
     return page.evaluate("""
     () => {
@@ -540,6 +540,7 @@ def _get_map_center_offset(page):
             center_y: centerPt.y + (mapRect.y - canvasRect.y),
             map_lat: center.lat,
             map_lng: center.lng,
+            map_zoom: map.getZoom(),
             dpr: window.devicePixelRatio || 1
         };
     }
@@ -646,10 +647,11 @@ def _detect_ships_inline(img_bytes, center_lat, center_lon, zoom,
                          viewport_w, viewport_h, center_offset=None):
     """Run OpenCV ship detection in-memory.
 
-    Returns (counts_dict, markers_list):
+    Returns (counts_dict, markers_list, image_shape):
       - counts: {"stationary_tankers": int, "moving_tankers": int,
                  "stationary_cargos": int, "moving_cargos": int}
       - markers: [{"lat": float, "lon": float, "type": str, "motion": str}, ...]
+      - image_shape: (height, width) of the decoded screenshot.
     """
     from seer import detect_ships_from_bytes
     return detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
@@ -785,16 +787,19 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             center_offset = _get_map_center_offset(page)
 
             # Inline ship detection + geo-coordinate extraction.
-            # Anchor the projection on the *actual* map center read from
-            # Leaflet (map.getCenter()), not the requested setView target.
-            # Guards against MarineTraffic ever rounding setView internally.
+            # Anchor the projection on the *actual* map state read from
+            # Leaflet (map.getCenter() / map.getZoom()), not the requested
+            # setView arguments. Guards against MarineTraffic rounding or
+            # clamping our pan/zoom calls.
             proj_lat = center_offset["map_lat"] if center_offset else lat
             proj_lon = center_offset["map_lng"] if center_offset else lon
+            proj_zoom = (center_offset.get("map_zoom") if center_offset
+                         else zoom) or zoom
             logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
                          row, col, len(img_bytes))
-            det, tile_markers = _detect_ships_inline(
-                img_bytes, proj_lat, proj_lon, zoom, map_width, map_height,
-                center_offset=center_offset
+            det, tile_markers, img_shape = _detect_ships_inline(
+                img_bytes, proj_lat, proj_lon, proj_zoom,
+                map_width, map_height, center_offset=center_offset
             )
 
             # Filter markers to region polygon boundary
@@ -807,12 +812,17 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
                          row, col, det, len(tile_markers))
 
-            # Debug: warn if Leaflet's actual center drifted from the
-            # requested setView target (would indicate MarineTraffic is
-            # rounding or otherwise mutating our pan calls).
+            # Debug: warn if Leaflet's actual center/zoom drifted from the
+            # requested setView arguments (would indicate MarineTraffic is
+            # rounding, clamping, or otherwise mutating our pan calls).
             if center_offset:
                 from seer import _debug_center_check
                 _debug_center_check(lat, lon, center_offset, row, col, logger)
+                act_zoom = center_offset.get("map_zoom")
+                if act_zoom is not None and abs(act_zoom - zoom) > 1e-6:
+                    logger.warning("  Tile (%d,%d): setZoom drift! "
+                                   "requested %s, actual %s",
+                                   row, col, zoom, act_zoom)
 
             st = det["stationary_tankers"]
             mt = det["moving_tankers"]
@@ -836,6 +846,20 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 "moving_tankers": mt,
                 "moving_cargos": mc,
                 "markers": tile_markers,
+                # Projection forensics — lets us correlate misplaced markers
+                # with the exact map state and screenshot dimensions the
+                # scraper saw at capture time.
+                "proj": {
+                    "req_lat": lat, "req_lon": lon, "req_zoom": zoom,
+                    "act_lat": center_offset.get("map_lat") if center_offset else None,
+                    "act_lon": center_offset.get("map_lng") if center_offset else None,
+                    "act_zoom": center_offset.get("map_zoom") if center_offset else None,
+                    "dpr": center_offset.get("dpr") if center_offset else None,
+                    "img_h": int(img_shape[0]) if img_shape else None,
+                    "img_w": int(img_shape[1]) if img_shape else None,
+                    "center_x": center_offset.get("center_x") if center_offset else None,
+                    "center_y": center_offset.get("center_y") if center_offset else None,
+                },
             })
 
             if SAVE_IMAGES:
@@ -978,6 +1002,12 @@ def capture_worker(region_queue, timestamp_str):
                     "password": proxy["password"],
                 },
                 viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                # Pin device_scale_factor=1 so screenshot dimensions exactly
+                # match the viewport CSS size. Without this, host OS display
+                # scaling (e.g. Windows at 150%) can leak through and produce
+                # over-resolution screenshots, which then break the marker
+                # projection math (see seer._pixel_to_latlon).
+                device_scale_factor=1.0,
                 timezone_id=geo.timezone_id,
                 locale=geo.locale,
                 geolocation={"latitude": geo.latitude, "longitude": geo.longitude},

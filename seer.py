@@ -260,10 +260,12 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     corrects for UI chrome offsets and device-pixel-ratio differences between
     the CSS layout and the actual screenshot resolution.
 
-    Returns (counts_dict, markers_list):
+    Returns (counts_dict, markers_list, image_shape):
       - counts: {"stationary_tankers", "moving_tankers",
                  "stationary_cargos", "moving_cargos"}
       - markers: [{"lat", "lon", "type", "motion"}, ...]
+      - image_shape: (height, width) of the decoded screenshot, or (0, 0)
+                     if decoding failed.
     """
     empty_counts = {
         "stationary_tankers": 0, "moving_tankers": 0,
@@ -273,7 +275,7 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
     image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if image is None:
-        return empty_counts, []
+        return empty_counts, [], (0, 0)
 
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h, w = image.shape[:2]
@@ -294,12 +296,17 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
         img_center_x = center_offset["center_x"] * dpr
         img_center_y = center_offset["center_y"] * dpr
     else:
+        dpr = 1
         img_center_x = w / 2
         img_center_y = h / 2
 
     def _pixel_to_latlon(px_x, px_y):
-        gx = cx_px + (px_x - img_center_x)
-        gy = cy_px + (px_y - img_center_y)
+        # px_x/px_y are image pixels (cv2 output); cx_px/cy_px are Mercator
+        # pixels (== CSS pixels at the displayed zoom). Divide the offset by
+        # dpr so the units line up — otherwise markers are over-shifted by
+        # exactly the device-pixel-ratio.
+        gx = cx_px + (px_x - img_center_x) / dpr
+        gy = cy_px + (px_y - img_center_y) / dpr
         lon = gx / total_px * 360.0 - 180.0
         merc_y = gy / total_px
         lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * merc_y))))
@@ -350,7 +357,7 @@ def detect_ships_from_bytes(img_bytes, center_lat, center_lon, zoom,
         "stationary_cargos": stat_green,
         "moving_cargos": mov_green,
     }
-    return counts, markers_red + markers_green
+    return counts, markers_red + markers_green, (h, w)
 
 
 def _debug_center_check(req_lat, req_lon, center_offset, row, col, logger):
