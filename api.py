@@ -22,7 +22,7 @@ import psycopg2.pool
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -773,6 +773,102 @@ def get_vessels_history(
         })
 
     return {"region": region, "frames": frames}
+
+
+@app.get("/api/vessels/export")
+def export_vessel_positions(
+    region: str,
+    start: str,
+    end: str,
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+):
+    """Stream every vessel position in [start, end) for a region as CSV."""
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "start/end must be ISO datetimes")
+    if start_dt >= end_dt:
+        raise HTTPException(400, "end must be after start")
+
+    # Resolve region: predefined or custom
+    polygon = None
+    if region not in REGIONS:
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT polygon FROM custom_regions WHERE code = %s",
+                            (region,))
+                cr = cur.fetchone()
+                if not cr:
+                    raise HTTPException(404, f"Unknown region '{region}'")
+                polygon = cr["polygon"]
+
+    # Build SQL. Predefined: filter by captures.region. Custom: bbox prefilter
+    # on vessel_positions, then point-in-polygon in Python.
+    if polygon is None:
+        sql = """
+            SELECT c.captured_at, vp.lat, vp.lon, vp.ship_type, vp.motion
+            FROM vessel_positions vp
+            JOIN captures c ON c.id = vp.capture_id
+            WHERE c.region = %s
+              AND c.captured_at >= %s
+              AND c.captured_at <  %s
+        """
+        args = [region, start_dt, end_dt]
+    else:
+        bbox = _polygon_bbox(polygon)  # [min_lon, min_lat, max_lon, max_lat]
+        sql = """
+            SELECT c.captured_at, vp.lat, vp.lon, vp.ship_type, vp.motion
+            FROM vessel_positions vp
+            JOIN captures c ON c.id = vp.capture_id
+            WHERE c.captured_at >= %s
+              AND c.captured_at <  %s
+              AND vp.lat BETWEEN %s AND %s
+              AND vp.lon BETWEEN %s AND %s
+        """
+        args = [start_dt, end_dt, bbox[1], bbox[3], bbox[0], bbox[2]]
+    if type:
+        sql += " AND vp.ship_type = %s"
+        args.append(type)
+    if motion:
+        sql += " AND vp.motion = %s"
+        args.append(motion)
+    sql += " ORDER BY c.captured_at, vp.id"
+
+    def stream():
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["timestamp", "region", "lat", "lon", "ship_type", "motion"])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate()
+
+        with get_conn() as conn:
+            with conn.cursor(name="export_cur",
+                             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.itersize = 5000
+                cur.execute(sql, args)
+                for row in cur:
+                    if polygon is not None and not _point_in_polygon(
+                        row["lat"], row["lon"], polygon
+                    ):
+                        continue
+                    w.writerow([
+                        row["captured_at"].isoformat(),
+                        region,
+                        row["lat"], row["lon"],
+                        row["ship_type"], row["motion"],
+                    ])
+                    yield buf.getvalue()
+                    buf.seek(0); buf.truncate()
+
+    fname = f"{region}_positions_{start_dt.date()}_{end_dt.date()}.csv"
+    return StreamingResponse(
+        stream(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.get("/api/timeline")
