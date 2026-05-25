@@ -317,7 +317,11 @@ def get_regions():
     # Predefined regions
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Latest capture per region
+            # Sidebar shows each region's most recent known state, so the
+            # "latest" here is intentionally per-region (mixed timestamps
+            # across regions are expected for this meta-view). The map's
+            # snapshot — which must be a single coherent cycle — is built
+            # via /api/vessels instead.
             cur.execute("""
                 SELECT DISTINCT ON (region)
                        region, captured_at, tankers, cargos,
@@ -380,20 +384,27 @@ def get_regions():
 
         with get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Get the most recent capture IDs (one per predefined region)
+                # Pin the custom-region "latest" to ONE cycle so stats stay
+                # coherent. Without this, capture_ids span different cycles
+                # per underlying predefined region and the same vessel can
+                # be double-counted across cycles.
+                valid = list(_valid_region_codes())
                 cur.execute("""
-                    SELECT DISTINCT ON (region) id, captured_at
-                    FROM captures
-                    ORDER BY region, captured_at DESC
-                """)
-                latest_captures = cur.fetchall()
-                if latest_captures:
-                    capture_ids = [c["id"] for c in latest_captures]
-                    most_recent_ts = max(c["captured_at"] for c in latest_captures)
+                    SELECT MAX(captured_at) AS captured_at
+                    FROM captures WHERE region = ANY(%s)
+                """, (valid,))
+                snapshot_row = cur.fetchone()
+                snapshot_ts = snapshot_row["captured_at"] if snapshot_row else None
+                if snapshot_ts is not None:
+                    cur.execute("""
+                        SELECT id FROM captures
+                        WHERE captured_at = %s AND region = ANY(%s)
+                    """, (snapshot_ts, valid))
+                    capture_ids = [r["id"] for r in cur.fetchall()]
                     stats = _custom_region_stats_from_vp(cur, polygon, capture_ids)
                     if stats and stats["total_ships"] > 0:
                         latest_data = {
-                            "captured_at": most_recent_ts.isoformat(),
+                            "captured_at": snapshot_ts.isoformat(),
                             **stats,
                             "density": round(stats["total_ships"] / area, 2) if area > 0 else 0,
                         }
@@ -476,8 +487,9 @@ def get_region_analytics(
 
     # Defaults: last 7 days
     now = datetime.now(timezone.utc)
-    end_dt = datetime.fromisoformat(end) if end else now
-    start_dt = datetime.fromisoformat(start) if start else (end_dt - timedelta(days=7))
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(days=7)))
 
     # Look up region polygon for density
     region_def = REGIONS.get(code)
@@ -701,11 +713,16 @@ def get_vessels(
     dedup: bool = True,
     dedup_eps: Optional[float] = Query(None, ge=0, le=1),
 ):
+    snapshot_ts = None
+    regions_expected = 0
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if timestamp:
-                ts = datetime.fromisoformat(timestamp)
-                if region:
+            if region:
+                # Single-region: no cross-region mixing possible. Use the
+                # region's own latest, or its row closest to a requested
+                # timestamp.
+                if timestamp:
+                    ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                     cur.execute("""
                         SELECT id, region, captured_at, markers
                         FROM captures
@@ -714,17 +731,6 @@ def get_vessels(
                         LIMIT 1
                     """, (region, ts))
                 else:
-                    valid = list(_valid_region_codes())
-                    cur.execute("""
-                        SELECT DISTINCT ON (region) id, region, captured_at, markers
-                        FROM captures
-                        WHERE captured_at BETWEEN %s - INTERVAL '2 hours'
-                              AND %s + INTERVAL '2 hours'
-                              AND region = ANY(%s)
-                        ORDER BY region, ABS(EXTRACT(EPOCH FROM captured_at - %s))
-                    """, (ts, ts, valid, ts))
-            else:
-                if region:
                     cur.execute("""
                         SELECT id, region, captured_at, markers
                         FROM captures
@@ -732,22 +738,47 @@ def get_vessels(
                         ORDER BY captured_at DESC
                         LIMIT 1
                     """, (region,))
-                else:
-                    valid = list(_valid_region_codes())
+                rows = cur.fetchall()
+                if rows:
+                    snapshot_ts = rows[0]["captured_at"]
+                regions_expected = 1
+            else:
+                # Cross-region: strict snapshot. Resolve a single cycle
+                # timestamp T, then fetch every row at captured_at = T.
+                # Regions missing from cycle T are reported via `coverage`,
+                # not silently filled with stale captures from earlier cycles.
+                valid = list(_valid_region_codes())
+                regions_expected = len(valid)
+                if timestamp:
+                    ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                     cur.execute("""
-                        SELECT DISTINCT ON (region) id, region, captured_at, markers
+                        SELECT DISTINCT captured_at
                         FROM captures
                         WHERE region = ANY(%s)
-                        ORDER BY region, captured_at DESC
+                        ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
+                        LIMIT 1
+                    """, (valid, ts))
+                else:
+                    cur.execute("""
+                        SELECT MAX(captured_at) AS captured_at
+                        FROM captures
+                        WHERE region = ANY(%s)
                     """, (valid,))
+                row = cur.fetchone()
+                snapshot_ts = row["captured_at"] if row else None
 
-            rows = cur.fetchall()
+                if snapshot_ts is None:
+                    rows = []
+                else:
+                    cur.execute("""
+                        SELECT id, region, captured_at, markers
+                        FROM captures
+                        WHERE captured_at = %s AND region = ANY(%s)
+                    """, (snapshot_ts, valid))
+                    rows = cur.fetchall()
 
     vessels = []
-    effective_ts = None
     for row in rows:
-        if effective_ts is None:
-            effective_ts = row["captured_at"]
         markers = row["markers"] if isinstance(row["markers"], list) else json.loads(row["markers"])
         for m in markers:
             if type and m.get("type") != type:
@@ -770,8 +801,15 @@ def get_vessels(
         eps = dedup_eps if dedup_eps is not None else VESSEL_DEDUP_EPS_DEG
         vessels = _dedup_markers_spatial(vessels, eps)
 
+    snapshot_iso = snapshot_ts.isoformat() if snapshot_ts else None
     return {
-        "timestamp": effective_ts.isoformat() if effective_ts else None,
+        # `timestamp` is the back-compat alias for `snapshot_timestamp`.
+        "timestamp": snapshot_iso,
+        "snapshot_timestamp": snapshot_iso,
+        "coverage": {
+            "regions_returned": len(rows),
+            "regions_expected": regions_expected,
+        },
         "vessels": vessels,
         "count": len(vessels),
         "raw_count": raw_count,
@@ -786,8 +824,9 @@ def get_vessels_history(
     max_frames: int = Query(100, ge=1, le=500),
 ):
     now = datetime.now(timezone.utc)
-    end_dt = datetime.fromisoformat(end) if end else now
-    start_dt = datetime.fromisoformat(start) if start else (end_dt - timedelta(hours=24))
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(hours=24)))
 
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -967,6 +1006,9 @@ def get_tiles():
 
 @app.get("/api/timeline")
 def get_timeline():
+    # Filter by current valid region codes so that history rows from
+    # deleted custom regions don't appear on the timeline slider.
+    valid = list(_valid_region_codes())
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
@@ -974,15 +1016,17 @@ def get_timeline():
                        MAX(captured_at) AS latest,
                        COUNT(*) AS total_captures
                 FROM captures
-            """)
+                WHERE region = ANY(%s)
+            """, (valid,))
             row = cur.fetchone()
 
             cur.execute("""
                 SELECT DISTINCT captured_at
                 FROM captures
+                WHERE region = ANY(%s)
                 ORDER BY captured_at DESC
                 LIMIT 200
-            """)
+            """, (valid,))
             snapshots = [r["captured_at"].isoformat() for r in cur.fetchall()]
 
     return {

@@ -208,8 +208,8 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
   <select id="tl-speed"><option value="1000">1x</option><option value="500">2x</option><option value="200">5x</option><option value="100">10x</option></select>
   <div class="tl-slider"><input type="range" id="tl-slider" min="0" max="0" value="0"></div>
   <span class="tl-label" id="tl-timestamp">--</span>
-  <input type="datetime-local" id="tl-start" title="Start">
-  <input type="datetime-local" id="tl-end" title="End">
+  <input type="datetime-local" id="tl-start" title="Start (UTC)">
+  <input type="datetime-local" id="tl-end" title="End (UTC)">
   <select id="tl-granularity"><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
   <div class="tl-presets">
     <button data-hours="24">24h</button>
@@ -241,9 +241,9 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;width:340px">
     <h3 style="margin-bottom:6px;font-size:15px">Export Vessel Positions</h3>
     <div id="pe-region" style="font-size:11px;color:var(--text-dim);margin-bottom:10px"></div>
-    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">Start</label>
+    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">Start (UTC)</label>
     <input id="pe-start" type="datetime-local" style="width:100%">
-    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">End</label>
+    <label style="display:block;font-size:12px;color:var(--text-dim);margin:8px 0 3px">End (UTC)</label>
     <input id="pe-end" type="datetime-local" style="width:100%">
     <div class="dialog-btns">
       <button id="pe-cancel">Cancel</button>
@@ -282,6 +282,21 @@ const S = {
 /* ━━ DOM refs ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+/* ━━ Time helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+// The dashboard treats every <input type="datetime-local"> as UTC.
+// We display the input's UTC components in the widget (so "05:55" means
+// 05:55 UTC regardless of the user's OS timezone) and re-parse the entered
+// string as UTC on read by appending 'Z'. The default datetime-local
+// semantics (local time) would otherwise shift every range by the user's
+// UTC offset and silently push the latest cycle outside the query window.
+const utcIsoToDtLocal = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+};
+const dtLocalToUtcIso = (local) => local ? new Date(local + 'Z').toISOString() : '';
 
 /* ━━ Toast ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function toast(msg, type='info') {
@@ -565,7 +580,12 @@ async function loadVessels(timestamp) {
     S.vessels = d.vessels;
     updateVesselLayer();
     if (d.timestamp) {
-      $('#last-updated').textContent = 'Data: ' + new Date(d.timestamp).toLocaleString();
+      const cov = d.coverage;
+      const partial = cov && cov.regions_expected > 1
+        && cov.regions_returned < cov.regions_expected
+        ? ` (${cov.regions_returned}/${cov.regions_expected} regions)` : '';
+      $('#last-updated').textContent =
+        'Data: ' + new Date(d.timestamp).toLocaleString() + partial;
     }
   } catch(e) {}
 }
@@ -575,10 +595,10 @@ async function loadTimeline() {
     const d = await api('/api/timeline');
     S.rawSnapshots = (d.snapshots || []).reverse(); // chronological
     if (d.earliest) {
-      $('#tl-start').value = d.earliest.slice(0,16);
+      $('#tl-start').value = utcIsoToDtLocal(d.earliest);
     }
     if (d.latest) {
-      $('#tl-end').value = d.latest.slice(0,16);
+      $('#tl-end').value = utcIsoToDtLocal(d.latest);
     }
     rebuildTimelineSteps();
   } catch(e) {}
@@ -593,9 +613,10 @@ function rebuildTimelineSteps() {
     // Use raw snapshots directly
     S.snapshots = S.rawSnapshots || [];
   } else {
-    // Generate synthetic date/week steps between start and end
-    const start = new Date(startVal);
-    const end = new Date(endVal);
+    // Generate synthetic date/week steps between start and end.
+    // Inputs hold UTC components — interpret with explicit 'Z'.
+    const start = new Date(startVal + 'Z');
+    const end = new Date(endVal + 'Z');
     const stepMs = gran === 'daily' ? 86400000 : 604800000;
     const steps = [];
     for (let t = start.getTime(); t <= end.getTime(); t += stepMs) {
@@ -777,8 +798,8 @@ async function openAnalytics(code, name) {
   $('#analytics').classList.add('open');
 
   const gran = $('#tl-granularity').value;
-  const start = $('#tl-start').value ? new Date($('#tl-start').value).toISOString() : '';
-  const end = $('#tl-end').value ? new Date($('#tl-end').value).toISOString() : '';
+  const start = dtLocalToUtcIso($('#tl-start').value);
+  const end = dtLocalToUtcIso($('#tl-end').value);
 
   let url = `/api/regions/${code}/analytics?granularity=${gran}`;
   if (start) url += `&start=${start}`;
@@ -959,9 +980,8 @@ function openPositionsDialog() {
   const tlEnd = $('#tl-end').value;
   const now = new Date();
   const yesterday = new Date(now.getTime() - 24*60*60*1000);
-  const fmt = (d) => d.toISOString().slice(0,16);
-  $('#pe-start').value = tlStart || fmt(yesterday);
-  $('#pe-end').value = tlEnd || fmt(now);
+  $('#pe-start').value = tlStart || utcIsoToDtLocal(yesterday.toISOString());
+  $('#pe-end').value = tlEnd || utcIsoToDtLocal(now.toISOString());
   $('#pe-region').textContent = 'Region: ' + S.selectedRegion;
   $('#positions-dialog-overlay').style.display = 'flex';
 }
@@ -974,7 +994,9 @@ async function exportPositions() {
   const start = $('#pe-start').value;
   const end = $('#pe-end').value;
   if (!start || !end) { toast('Start and end required', 'error'); return; }
-  if (new Date(start) >= new Date(end)) { toast('End must be after start', 'error'); return; }
+  const startIso = dtLocalToUtcIso(start);
+  const endIso = dtLocalToUtcIso(end);
+  if (new Date(startIso) >= new Date(endIso)) { toast('End must be after start', 'error'); return; }
 
   const btn = $('#pe-export');
   const origText = btn.textContent;
@@ -983,8 +1005,8 @@ async function exportPositions() {
   try {
     const params = new URLSearchParams({
       region: S.selectedRegion,
-      start: new Date(start).toISOString(),
-      end: new Date(end).toISOString(),
+      start: startIso,
+      end: endIso,
     });
     const ft = $('#filter-type').value;
     const fm = $('#filter-motion').value;
@@ -1174,8 +1196,9 @@ $$('.tl-presets button').forEach(btn => {
     const hours = parseInt(btn.dataset.hours);
     const end = new Date();
     const start = new Date(end.getTime() - hours * 3600000);
-    $('#tl-start').value = start.toISOString().slice(0,16);
-    $('#tl-end').value = end.toISOString().slice(0,16);
+    $('#tl-start').value = utcIsoToDtLocal(start.toISOString());
+    $('#tl-end').value = utcIsoToDtLocal(end.toISOString());
+    rebuildTimelineSteps();
     // Reload analytics if open
     if (S.selectedRegion) {
       openAnalytics(S.selectedRegion, S.regions.find(r=>r.code===S.selectedRegion)?.name);
