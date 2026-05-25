@@ -271,6 +271,185 @@ def hide_ui_overlays(page):
     """)
 
 
+# --- Vessel-type filter (Option A: UI click) ---------------------------------
+# Uncheck non-cargo/tanker categories in MarineTraffic's filter panel so the
+# OpenCV pipeline sees fewer overlapping markers (and therefore fewer
+# contour-merge undercounts). Applied once per worker after Cloudflare/cookie
+# setup; filter state then persists across all regions that reuse the page.
+
+_DROP_VESSEL_LABELS = (
+    "passenger", "high-speed", "high speed", "tug", "special craft",
+    "fishing", "pleasure", "navigation aid", "unspecified",
+)
+_KEEP_VESSEL_LABELS = ("cargo", "tanker")
+
+
+def set_vessel_filter(page):
+    """Open MarineTraffic's vessel-type filter and uncheck everything except
+    cargo and tankers. Best-effort — never raises; logs detailed status so a
+    silent regression (e.g. filter UI selectors changed) is visible.
+    """
+    # page.evaluate's second argument is forwarded as the JS function's only
+    # parameter — cleaner than f-string interpolation because we don't have
+    # to double-escape JS braces. The dict is JSON-serialized by Playwright
+    # and destructured by the async arrow on the JS side.
+    try:
+        result = page.evaluate(
+            """
+            async ({dropLabels, keepLabels}) => {
+                const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+                const visible = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const s = getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden';
+                };
+
+                const textOf = (el) => {
+                    if (!el) return '';
+                    return ((el.textContent || '') + ' ' +
+                            (el.getAttribute('aria-label') || '') + ' ' +
+                            (el.getAttribute('title') || '') + ' ' +
+                            (el.getAttribute('data-tooltip') || '')).toLowerCase();
+                };
+
+                const isChecked = (input) =>
+                    input.checked !== undefined
+                        ? input.checked
+                        : input.getAttribute('aria-checked') === 'true';
+
+                const allVesselLabels = [...dropLabels, ...keepLabels];
+
+                // Open the filter panel. Match exact "Filter"/"Filters" text
+                // or aria-label only — broader matches hit unrelated UI.
+                const triggers = [...document.querySelectorAll(
+                    'button, [role="button"], a, [tabindex]'
+                )].filter(el => {
+                    if (!visible(el)) return false;
+                    const txt = (el.textContent || '').trim().toLowerCase();
+                    if (['filter', 'filters', 'vessel filter',
+                         'filter vessels'].includes(txt)) return true;
+                    const aria = ((el.getAttribute('aria-label') || '') + ' ' +
+                                  (el.getAttribute('title') || '')).toLowerCase().trim();
+                    return /^(filter[s]?|vessel filter|filter vessel[s]?)$/.test(aria);
+                });
+
+                const tried = [];
+                for (const t of triggers.slice(0, 3)) {
+                    try {
+                        t.click();
+                        await sleep(350);
+                        tried.push((t.tagName + '.' +
+                            (t.className || '').toString().slice(0, 40)).slice(0, 60));
+                    } catch(e) {}
+                }
+                await sleep(150);
+
+                const inputs = [...document.querySelectorAll(
+                    'input[type="checkbox"], input[type="radio"], ' +
+                    '[role="checkbox"], [role="switch"]'
+                )].filter(visible);
+
+                const found = new Set();
+                const dropped = new Set();
+                const kept = new Set();
+                const errors = [];
+
+                for (const input of inputs) {
+                    // Walk ancestors until we hit one whose text mentions
+                    // any vessel label — that's the row/label container.
+                    // Stops us from picking up panel-header text that lists
+                    // every category at once.
+                    let labelText = '';
+                    let el = input;
+                    for (let i = 0; i < 5 && el; i++) {
+                        const t = textOf(el);
+                        if (allVesselLabels.some(l => t.includes(l))) {
+                            labelText = t; break;
+                        }
+                        el = el.parentElement;
+                    }
+                    if (!labelText && input.id) {
+                        const lbl = document.querySelector(
+                            'label[for="' + CSS.escape(input.id) + '"]');
+                        if (lbl) {
+                            const t = textOf(lbl);
+                            if (allVesselLabels.some(l => t.includes(l))) labelText = t;
+                        }
+                    }
+                    if (!labelText) continue;
+
+                    const drop = dropLabels.find(l => labelText.includes(l));
+                    const keep = keepLabels.find(l => labelText.includes(l));
+
+                    if (drop && !keep) {
+                        found.add(drop);
+                        if (isChecked(input)) {
+                            try {
+                                input.click();
+                                await sleep(40);
+                                if (isChecked(input) && input.id) {
+                                    const lbl = document.querySelector(
+                                        'label[for="' + CSS.escape(input.id) + '"]');
+                                    if (lbl) { lbl.click(); await sleep(40); }
+                                }
+                                if (!isChecked(input)) dropped.add(drop);
+                                else errors.push(drop + ': did not toggle');
+                            } catch(e) {
+                                errors.push(drop + ': ' + e.message);
+                            }
+                        }
+                    } else if (keep) {
+                        kept.add(keep);
+                        if (!isChecked(input)) {
+                            try { input.click(); } catch(e) {}
+                        }
+                    }
+                }
+
+                return {
+                    tried_triggers: tried,
+                    total_inputs: inputs.length,
+                    found_types: [...found],
+                    dropped_types: [...dropped],
+                    kept_types: [...kept],
+                    errors: errors,
+                };
+            }
+            """,
+            {"dropLabels": list(_DROP_VESSEL_LABELS),
+             "keepLabels": list(_KEEP_VESSEL_LABELS)},
+        )
+    except Exception as e:
+        logger.warning("  Vessel filter: page.evaluate failed: %s", e)
+        return False
+
+    if not result:
+        logger.warning("  Vessel filter: no result returned")
+        return False
+
+    if result.get("dropped_types"):
+        logger.info(
+            "  Vessel filter applied: dropped=%s kept=%s "
+            "(triggers=%s, %d inputs scanned)",
+            result["dropped_types"], result.get("kept_types", []),
+            result.get("tried_triggers", []), result.get("total_inputs", 0),
+        )
+        return True
+
+    logger.warning(
+        "  Vessel filter: nothing changed — triggers=%s, found_types=%s, "
+        "total_inputs=%d, errors=%s",
+        result.get("tried_triggers", []),
+        result.get("found_types", []),
+        result.get("total_inputs", 0),
+        result.get("errors", []),
+    )
+    return False
+
+
 def wait_for_map_tiles(page, timeout_ms=8000):
     """Wait for map canvas to render actual tile imagery."""
     try:
@@ -1051,6 +1230,7 @@ def capture_worker(region_queue, timestamp_str):
                 if page_ready:
                     wait_for_map_tiles(page)
                     dismiss_cookie_banner(page)
+                    set_vessel_filter(page)
                     hide_ui_overlays(page)
                     _discover_leaflet_map(page)
             except Exception as e:
