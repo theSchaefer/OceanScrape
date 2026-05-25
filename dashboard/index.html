@@ -296,7 +296,17 @@ const utcIsoToDtLocal = (iso) => {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
 };
-const dtLocalToUtcIso = (local) => local ? new Date(local + 'Z').toISOString() : '';
+// `endInclusive` pads the value to :59.999 so a range like
+// `<= tl-end` covers the entire selected minute. Without this,
+// captured_at values past the displayed minute (e.g. 16:00:41 when
+// tl-end shows "16:00") fall outside `captured_at <= 16:00:00Z`
+// and the latest cycle silently disappears from charts and CSVs.
+const dtLocalToUtcIso = (local, endInclusive = false) => {
+  if (!local) return '';
+  const d = new Date(local + 'Z');
+  if (endInclusive) d.setUTCSeconds(59, 999);
+  return d.toISOString();
+};
 
 /* ━━ Toast ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function toast(msg, type='info') {
@@ -799,7 +809,7 @@ async function openAnalytics(code, name) {
 
   const gran = $('#tl-granularity').value;
   const start = dtLocalToUtcIso($('#tl-start').value);
-  const end = dtLocalToUtcIso($('#tl-end').value);
+  const end = dtLocalToUtcIso($('#tl-end').value, true);
 
   let url = `/api/regions/${code}/analytics?granularity=${gran}`;
   if (start) url += `&start=${start}`;
@@ -995,7 +1005,7 @@ async function exportPositions() {
   const end = $('#pe-end').value;
   if (!start || !end) { toast('Start and end required', 'error'); return; }
   const startIso = dtLocalToUtcIso(start);
-  const endIso = dtLocalToUtcIso(end);
+  const endIso = dtLocalToUtcIso(end, true);
   if (new Date(startIso) >= new Date(endIso)) { toast('End must be after start', 'error'); return; }
 
   const btn = $('#pe-export');

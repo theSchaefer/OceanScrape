@@ -751,8 +751,12 @@ def get_vessels(
                 regions_expected = len(valid)
                 if timestamp:
                     ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    # No DISTINCT: Postgres rejects `SELECT DISTINCT … ORDER BY <expr>`
+                    # when the expression isn't in the select list. Picking a single
+                    # row from the closest cycle yields the same captured_at as any
+                    # other row in that cycle, so the column is read uniformly.
                     cur.execute("""
-                        SELECT DISTINCT captured_at
+                        SELECT captured_at
                         FROM captures
                         WHERE region = ANY(%s)
                         ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
