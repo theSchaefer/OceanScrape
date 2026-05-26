@@ -997,13 +997,26 @@ def _per_region_init(page, region_name, region_idx):
     }
 
     try:
-        # 1. Leaflet handle (cheap, idempotent — short-circuits if already set)
-        _discover_leaflet_map(page)
+        # 1. Wait for the map canvas to actually render tiles. Essential for
+        #    the first region right after page.goto (Leaflet's constructor
+        #    may not have fired yet); cheap no-op for stolen regions where
+        #    the previous capture left the canvas already populated.
+        tile_wait_ms = 8000 if region_idx == 0 else 3000
+        wait_for_map_tiles(page, timeout_ms=tile_wait_ms)
 
-        # 2. Stolen-region tile wait. First region's pre-init flow (page.goto
-        #    + Cloudflare) already gates on this, so skip to save ~250 ms.
-        if region_idx > 0:
-            wait_for_map_tiles(page, timeout_ms=4000)
+        # 2. Acquire Leaflet handle, then poll for window.__mtMap. The
+        #    init-script hook (_inject_map_hooks) usually populates it the
+        #    instant L.Map's constructor runs, but on the first region we
+        #    can race the bundle load. Re-run discovery each iteration so a
+        #    late-arriving map gets picked up.
+        center_offset = None
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            _discover_leaflet_map(page)
+            center_offset = _get_map_center_offset(page)
+            if center_offset is not None:
+                break
+            time.sleep(0.15)
 
         # 3. Filter check (cheap probe) + repair only if regressed
         probe = _probe_vessel_filter_state(page)
@@ -1014,7 +1027,9 @@ def _per_region_init(page, region_name, region_idx):
             ok = set_vessel_filter(page)
             status["filter_repaired"] = bool(ok)
 
-        # 4. Re-hide overlays — idempotent DOM mutation
+        # 4. Re-hide overlays — idempotent DOM mutation. Run AFTER the
+        #    filter step because set_vessel_filter opens a panel which the
+        #    overlay-hider then needs to suppress.
         hide_ui_overlays(page)
 
         # 5. Canvas + overlay-pane readiness
@@ -1023,15 +1038,21 @@ def _per_region_init(page, region_name, region_idx):
             status["reason"] = f"canvas:{canvas_state}"
             return status
 
-        # 6. Fresh map dimensions and Leaflet centre anchor
+        # 6. Fresh map dimensions. center_offset was obtained in step 2; if
+        #    it's still None after the 5-second poll then Leaflet really
+        #    didn't initialise and this region is unrecoverable on this page.
         map_dims = _get_map_dimensions(page)
-        center_offset = _get_map_center_offset(page)
         status["map_dims"] = map_dims
-        status["center_offset"] = center_offset
+
         if center_offset is None:
             status["reason"] = "no_center_offset"
             return status
 
+        # Re-query the center offset AFTER hide_ui_overlays — the layout may
+        # have shifted by tens of pixels when we hid sidebars, and a stale
+        # anchor would bias every marker on the upcoming capture.
+        center_offset = _get_map_center_offset(page) or center_offset
+        status["center_offset"] = center_offset
         status["dpr"] = center_offset.get("dpr")
         status["ok"] = True
         return status
