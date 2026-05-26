@@ -972,6 +972,38 @@ def _probe_vessel_filter_state(page):
 # --- Per-region init / re-validation -----------------------------------------
 
 
+def _dump_missing_offset_diagnostics(page, region_name, region_idx):
+    """One-shot diagnostic dump when center_offset is unavailable.
+
+    Logs whether window.__mtMap is set, the map_canvas bounding rect, and
+    devicePixelRatio. Helps decide whether to widen the poll window or
+    investigate the init hook injection. WARNING level — capture still
+    proceeds in fallback mode.
+    """
+    try:
+        info = page.evaluate("""
+        () => {
+            const mc = document.getElementById('map_canvas');
+            const rect = mc ? mc.getBoundingClientRect() : null;
+            const lc = document.querySelector('.leaflet-container');
+            return {
+                mtMap_set: !!window.__mtMap,
+                mtMap_hasSetView: !!(window.__mtMap && window.__mtMap.setView),
+                map_canvas_present: !!mc,
+                map_canvas_rect: rect ? {x: rect.x, y: rect.y,
+                                          w: rect.width, h: rect.height} : null,
+                leaflet_container_present: !!lc,
+                dpr: window.devicePixelRatio || 1,
+                ua: navigator.userAgent.slice(0, 80),
+            };
+        }
+        """)
+    except Exception as e:
+        info = {"_diag_error": str(e)}
+    logger.warning("[region %s | idx=%d] offset-missing diagnostics: %s",
+                   region_name, region_idx, info)
+
+
 def _per_region_init(page, region_name, region_idx):
     """Validate and refresh per-region browser state before capture.
 
@@ -989,6 +1021,7 @@ def _per_region_init(page, region_name, region_idx):
         "crash": False,
         "map_dims": None,
         "center_offset": None,
+        "center_offset_missing": False,
         "dpr": None,
         "filter_regressed": False,
         "filter_repaired": False,
@@ -1008,9 +1041,11 @@ def _per_region_init(page, region_name, region_idx):
         #    init-script hook (_inject_map_hooks) usually populates it the
         #    instant L.Map's constructor runs, but on the first region we
         #    can race the bundle load. Re-run discovery each iteration so a
-        #    late-arriving map gets picked up.
+        #    late-arriving map gets picked up. First region gets a longer
+        #    window because it includes bundle-load time.
         center_offset = None
-        deadline = time.time() + 5.0
+        poll_timeout_s = 8.0 if region_idx == 0 else 5.0
+        deadline = time.time() + poll_timeout_s
         while time.time() < deadline:
             _discover_leaflet_map(page)
             center_offset = _get_map_center_offset(page)
@@ -1039,13 +1074,30 @@ def _per_region_init(page, region_name, region_idx):
             return status
 
         # 6. Fresh map dimensions. center_offset was obtained in step 2; if
-        #    it's still None after the 5-second poll then Leaflet really
-        #    didn't initialise and this region is unrecoverable on this page.
+        #    it's still None after the poll then Leaflet's init hook hasn't
+        #    populated window.__mtMap (race with bundle load on slow proxies).
+        #    Don't abort — the capture path falls back to requested lat/lon
+        #    and seer falls back to image-center anchor. Better to ingest with
+        #    degraded projection than lose the whole run.
         map_dims = _get_map_dimensions(page)
         status["map_dims"] = map_dims
 
         if center_offset is None:
-            status["reason"] = "no_center_offset"
+            # One last try: maybe the map showed up between the poll exit and
+            # now (filter clicks + hide_ui_overlays do micro-pauses).
+            _discover_leaflet_map(page)
+            center_offset = _get_map_center_offset(page)
+
+        if center_offset is None:
+            status["center_offset_missing"] = True
+            status["reason"] = "no_center_offset"  # advisory only
+            _dump_missing_offset_diagnostics(page, region_name, region_idx)
+            logger.warning(
+                "[region %s | idx=%d] center_offset unavailable — "
+                "capturing in fallback projection mode",
+                region_name, region_idx,
+            )
+            status["ok"] = True
             return status
 
         # Re-query the center offset AFTER hide_ui_overlays — the layout may
@@ -1070,11 +1122,14 @@ def _per_region_init(page, region_name, region_idx):
         dims = status.get("map_dims") or {}
         dim_str = (f"{int(dims['width'])}x{int(dims['height'])}"
                    if dims.get("width") and dims.get("height") else "?")
+        if status["ok"]:
+            outcome = "ok (fallback)" if status["center_offset_missing"] else "ok"
+        else:
+            outcome = f"FAIL({status['reason']})"
         logger.info(
             "[region %s | idx=%d] init: %s, filter_regressed=%s, "
             "filter_repaired=%s, dims=%s, dpr=%s, %dms",
-            region_name, region_idx,
-            "ok" if status["ok"] else f"FAIL({status['reason']})",
+            region_name, region_idx, outcome,
             status["filter_regressed"], status["filter_repaired"],
             dim_str, status["dpr"], status["init_ms"],
         )
@@ -1110,6 +1165,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
     all_markers = []
     tiles_ok = 0
     tiles_failed = 0
+    tiles_fallback = 0
     total_tankers = 0
     total_cargos = 0
     total_moving_tankers = 0
@@ -1150,6 +1206,8 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
 
             # Query actual map-centre pixel (accounts for UI chrome + DPR)
             center_offset = _get_map_center_offset(page)
+            if center_offset is None:
+                tiles_fallback += 1
 
             # Inline ship detection + geo-coordinate extraction.
             # Anchor the projection on the *actual* map state read from
@@ -1291,9 +1349,12 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
         region_idx=region_idx,
     )
 
-    logger.info("Region %s (idx=%d): %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
+    fallback_note = (f" [{tiles_fallback}/{tiles_ok} tiles in fallback]"
+                     if tiles_fallback else "")
+    logger.info("Region %s (idx=%d): %d tankers (%d mov), %d cargo (%d mov)"
+                " (from %d tiles)%s",
                 region_name, region_idx, total_tankers, total_moving_tankers,
-                total_cargos, total_moving_cargos, tiles_ok)
+                total_cargos, total_moving_cargos, tiles_ok, fallback_note)
 
     return {
         "region": region_name,
