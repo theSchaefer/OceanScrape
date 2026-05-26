@@ -21,6 +21,13 @@
 }
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
   font-size:13px;color:var(--text);background:var(--bg);overflow:hidden}
+
+/* ── Entry transition (from landing page) ───────────────────────────── */
+#app.entering{opacity:0}
+#app.enter-ready{opacity:1;transition:opacity .6s ease}
+#enter-veil{position:fixed;inset:0;background:var(--bg);z-index:9998;
+  pointer-events:none;opacity:1;transition:opacity .55s ease}
+#enter-veil.fade{opacity:0}
 button{cursor:pointer;font:inherit;color:var(--text);background:var(--surface2);
   border:1px solid var(--border);border-radius:4px;padding:4px 10px}
 button:hover{border-color:var(--accent);background:var(--surface)}
@@ -140,6 +147,22 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
 </style>
 </head>
 <body>
+<script>
+  // Smooth entry from the landing page. Set up before paint to avoid flash.
+  (function(){
+    if (sessionStorage.getItem('oceanscrape:entering') === '1') {
+      sessionStorage.removeItem('oceanscrape:entering');
+      window.__oceanscrapeEntering = true;
+      document.addEventListener('DOMContentLoaded', () => {
+        const app = document.getElementById('app');
+        if (app) app.classList.add('entering');
+        const veil = document.createElement('div');
+        veil.id = 'enter-veil';
+        document.body.appendChild(veil);
+      });
+    }
+  })();
+</script>
 <div id="app">
 
 <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
@@ -374,7 +397,27 @@ function initMap(token) {
     addMapSources();
     addMapLayers();
     loadAll();
+    if (window.__oceanscrapeEntering) {
+      map.once('idle', revealApp);
+      // Safety fallback if 'idle' is delayed by slow tile fetches
+      setTimeout(revealApp, 1500);
+    }
   });
+}
+
+function revealApp() {
+  if (!window.__oceanscrapeEntering) return;
+  window.__oceanscrapeEntering = false;
+  const app = document.getElementById('app');
+  const veil = document.getElementById('enter-veil');
+  if (app) {
+    app.classList.add('enter-ready');
+    app.classList.remove('entering');
+  }
+  if (veil) {
+    veil.classList.add('fade');
+    setTimeout(() => veil.remove(), 700);
+  }
 }
 
 function addMapSources() {
