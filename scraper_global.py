@@ -551,37 +551,168 @@ def _inject_stealth_scripts(page, geo: GeoProfile):
 
 
 def _inject_map_hooks(page):
-    """Hook Leaflet.Map to disable inertia and capture the map instance."""
+    """Capture the Leaflet map instance through multiple paths.
+
+    MarineTraffic bundles Leaflet in a closure/ESM module: ``window.L`` is
+    never assigned, container DOM elements carry no ``_leaflet_*`` properties,
+    and a deep window-graph walk finds nothing with map methods (confirmed
+    via discover_map.py output). The single ``window.L`` setter that earlier
+    versions relied on therefore never fires.
+
+    We install three independent capture strategies so a single one succeeding
+    is enough. Each strategy assigns to ``window.__mtMap`` exactly once and
+    short-circuits afterwards.
+
+      1. ``window.L`` setter — kept for sites/forks that DO expose L.
+      2. ``Function.prototype.bind`` interceptor — Leaflet binds event handlers
+         (e.g. ``_onResize``, drag handlers) to the Map instance. Any call to
+         ``fn.bind(thisArg, ...)`` where ``thisArg`` has setView/getCenter/getZoom
+         IS the map. This works regardless of bundler scoping because it
+         intercepts a native primitive every Leaflet event registration
+         eventually goes through.
+      3. MutationObserver on ``.leaflet-pane`` insertion — when Leaflet adds
+         its first pane to the DOM, we know construction is done and the
+         container is live. We then aggressively scan the container, every
+         ancestor up to body, and every element under ``#map_canvas`` for
+         own-properties and Symbols pointing to a map-like object.
+
+    Also disables inertia options whenever L is reachable.
+    """
     page.add_init_script("""
     (function() {
+        if (window.__mtMapHookInstalled) return;
+        window.__mtMapHookInstalled = true;
         window.__mtMap = null;
 
-        function patchLeaflet(L) {
-            if (!L || !L.Map) return;
-            if (L.Map.mergeOptions) {
-                L.Map.mergeOptions({
-                    inertia: false,
-                    inertiaDeceleration: 99999,
-                    inertiaMaxSpeed: 0,
-                });
+        const MAP_METHODS = ['setView', 'getCenter', 'getZoom',
+                             'latLngToContainerPoint', 'getContainer'];
+
+        function isMap(obj) {
+            if (!obj || typeof obj !== 'object') return false;
+            for (let i = 0; i < MAP_METHODS.length; i++) {
+                if (typeof obj[MAP_METHODS[i]] !== 'function') return false;
             }
-            var _origInit = L.Map.prototype.initialize;
-            L.Map.prototype.initialize = function() {
-                _origInit.apply(this, arguments);
-                window.__mtMap = this;
-            };
+            return true;
         }
 
-        var _L = window.L;
-        if (_L) patchLeaflet(_L);
-        Object.defineProperty(window, 'L', {
-            get: function() { return _L; },
-            set: function(v) {
-                _L = v;
-                patchLeaflet(v);
-            },
-            configurable: true,
-        });
+        function captureMap(obj, source) {
+            if (window.__mtMap || !isMap(obj)) return false;
+            try {
+                if (obj.options) {
+                    obj.options.inertia = false;
+                    obj.options.inertiaDeceleration = 99999;
+                    obj.options.inertiaMaxSpeed = 0;
+                }
+            } catch (e) {}
+            window.__mtMap = obj;
+            window.__mtMapSource = source;
+            return true;
+        }
+
+        // --- Strategy 1: window.L setter ------------------------------------
+        function patchL(L) {
+            if (!L || !L.Map) return;
+            try {
+                if (L.Map.mergeOptions) {
+                    L.Map.mergeOptions({
+                        inertia: false,
+                        inertiaDeceleration: 99999,
+                        inertiaMaxSpeed: 0,
+                    });
+                }
+                const _origInit = L.Map.prototype.initialize;
+                L.Map.prototype.initialize = function() {
+                    _origInit.apply(this, arguments);
+                    captureMap(this, 'L.Map.prototype.initialize');
+                };
+            } catch (e) {}
+        }
+
+        let _L = window.L;
+        if (_L) patchL(_L);
+        try {
+            Object.defineProperty(window, 'L', {
+                get: function() { return _L; },
+                set: function(v) { _L = v; patchL(v); },
+                configurable: true,
+            });
+        } catch (e) {}
+
+        // --- Strategy 2: Function.prototype.bind interceptor ----------------
+        // Leaflet calls .bind(mapInstance, ...) for event handlers. We catch
+        // every bind and check whether thisArg is a Leaflet Map.
+        try {
+            const origBind = Function.prototype.bind;
+            Function.prototype.bind = function() {
+                if (!window.__mtMap && arguments.length > 0) {
+                    try { captureMap(arguments[0], 'bind'); } catch (e) {}
+                }
+                return origBind.apply(this, arguments);
+            };
+        } catch (e) {}
+
+        // --- Strategy 3: MutationObserver on leaflet panes ------------------
+        function scanForMap() {
+            if (window.__mtMap) return true;
+            try {
+                const containers = document.querySelectorAll(
+                    '#map_canvas, .leaflet-container');
+                for (const c of containers) {
+                    // Walk container, its ancestors, and its descendants.
+                    const targets = [c];
+                    let p = c.parentElement;
+                    for (let d = 0; d < 6 && p; d++) {
+                        targets.push(p);
+                        p = p.parentElement;
+                    }
+                    for (const child of c.querySelectorAll('*')) {
+                        targets.push(child);
+                    }
+                    for (const el of targets) {
+                        const keys = Object.getOwnPropertyNames(el);
+                        for (const k of keys) {
+                            try {
+                                if (isMap(el[k])) {
+                                    captureMap(el[k], 'dom-scan:' + k);
+                                    return true;
+                                }
+                            } catch (e) {}
+                        }
+                        const syms = Object.getOwnPropertySymbols(el);
+                        for (const s of syms) {
+                            try {
+                                if (isMap(el[s])) {
+                                    captureMap(el[s], 'dom-scan-sym:' + s.toString());
+                                    return true;
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } catch (e) {}
+            return false;
+        }
+
+        function installObserver() {
+            try {
+                const mo = new MutationObserver(() => {
+                    if (window.__mtMap) { mo.disconnect(); return; }
+                    if (document.querySelector('.leaflet-pane,'
+                            + ' .leaflet-tile-container,'
+                            + ' .leaflet-container')) {
+                        if (scanForMap()) mo.disconnect();
+                    }
+                });
+                mo.observe(document.documentElement,
+                           { childList: true, subtree: true });
+            } catch (e) {}
+        }
+        if (document.documentElement) {
+            installObserver();
+        } else {
+            document.addEventListener('readystatechange', installObserver,
+                                      { once: true });
+        }
     })();
     """)
 
@@ -872,22 +1003,49 @@ def _filter_markers_to_polygon(markers, polygon):
 
 
 def _discover_leaflet_map(page):
-    """Try to find the Leaflet map instance if the init hook missed it."""
+    """Last-resort scan for the Leaflet map instance.
+
+    The MutationObserver in ``_inject_map_hooks`` performs the same scan, but
+    this is callable on demand from Python — useful right before reading the
+    center offset, in case a late-arriving map missed the observer window.
+    """
     return page.evaluate("""
     () => {
         if (window.__mtMap) return true;
-        const containers = document.querySelectorAll('.leaflet-container');
+        const MAP_METHODS = ['setView', 'getCenter', 'getZoom',
+                             'latLngToContainerPoint', 'getContainer'];
+        const isMap = (o) => {
+            if (!o || typeof o !== 'object') return false;
+            for (const m of MAP_METHODS) {
+                if (typeof o[m] !== 'function') return false;
+            }
+            return true;
+        };
+        const containers = document.querySelectorAll(
+            '#map_canvas, .leaflet-container');
         for (const c of containers) {
-            for (const key of Object.keys(c)) {
-                const val = c[key];
-                if (val && typeof val === 'object'
-                    && typeof val.setView === 'function'
-                    && typeof val.getCenter === 'function') {
-                    window.__mtMap = val;
-                    val.options.inertia = false;
-                    val.options.inertiaDeceleration = 99999;
-                    val.options.inertiaMaxSpeed = 0;
-                    return true;
+            const targets = [c];
+            let p = c.parentElement;
+            for (let d = 0; d < 6 && p; d++) { targets.push(p); p = p.parentElement; }
+            for (const child of c.querySelectorAll('*')) targets.push(child);
+            for (const el of targets) {
+                for (const k of Object.getOwnPropertyNames(el)) {
+                    try {
+                        if (isMap(el[k])) {
+                            window.__mtMap = el[k];
+                            window.__mtMapSource = 'discover:' + k;
+                            return true;
+                        }
+                    } catch (e) {}
+                }
+                for (const s of Object.getOwnPropertySymbols(el)) {
+                    try {
+                        if (isMap(el[s])) {
+                            window.__mtMap = el[s];
+                            window.__mtMapSource = 'discover-sym:' + s.toString();
+                            return true;
+                        }
+                    } catch (e) {}
                 }
             }
         }
@@ -1021,7 +1179,6 @@ def _per_region_init(page, region_name, region_idx):
         "crash": False,
         "map_dims": None,
         "center_offset": None,
-        "center_offset_missing": False,
         "dpr": None,
         "filter_regressed": False,
         "filter_repaired": False,
@@ -1074,11 +1231,13 @@ def _per_region_init(page, region_name, region_idx):
             return status
 
         # 6. Fresh map dimensions. center_offset was obtained in step 2; if
-        #    it's still None after the poll then Leaflet's init hook hasn't
-        #    populated window.__mtMap (race with bundle load on slow proxies).
-        #    Don't abort — the capture path falls back to requested lat/lon
-        #    and seer falls back to image-center anchor. Better to ingest with
-        #    degraded projection than lose the whole run.
+        #    it's still None after the poll then __mtMap never resolved.
+        #    HARD FAIL: without center_offset we have no Leaflet handle for
+        #    setView panning, and seer's image-center fallback can't guarantee
+        #    valid projection because tile centers don't equal the URL-loaded
+        #    polygon center (see grid.get_tile_centers). Ingesting in that
+        #    state produced visibly wrong counts (e.g. 0 tankers across all
+        #    regions). Surface as retryable instead.
         map_dims = _get_map_dimensions(page)
         status["map_dims"] = map_dims
 
@@ -1089,15 +1248,8 @@ def _per_region_init(page, region_name, region_idx):
             center_offset = _get_map_center_offset(page)
 
         if center_offset is None:
-            status["center_offset_missing"] = True
-            status["reason"] = "no_center_offset"  # advisory only
+            status["reason"] = "no_center_offset"
             _dump_missing_offset_diagnostics(page, region_name, region_idx)
-            logger.warning(
-                "[region %s | idx=%d] center_offset unavailable — "
-                "capturing in fallback projection mode",
-                region_name, region_idx,
-            )
-            status["ok"] = True
             return status
 
         # Re-query the center offset AFTER hide_ui_overlays — the layout may
@@ -1122,16 +1274,17 @@ def _per_region_init(page, region_name, region_idx):
         dims = status.get("map_dims") or {}
         dim_str = (f"{int(dims['width'])}x{int(dims['height'])}"
                    if dims.get("width") and dims.get("height") else "?")
-        if status["ok"]:
-            outcome = "ok (fallback)" if status["center_offset_missing"] else "ok"
-        else:
-            outcome = f"FAIL({status['reason']})"
+        try:
+            map_source = page.evaluate("() => window.__mtMapSource || null")
+        except Exception:
+            map_source = None
+        outcome = "ok" if status["ok"] else f"FAIL({status['reason']})"
         logger.info(
             "[region %s | idx=%d] init: %s, filter_regressed=%s, "
-            "filter_repaired=%s, dims=%s, dpr=%s, %dms",
+            "filter_repaired=%s, dims=%s, dpr=%s, map_src=%s, %dms",
             region_name, region_idx, outcome,
             status["filter_regressed"], status["filter_repaired"],
-            dim_str, status["dpr"], status["init_ms"],
+            dim_str, status["dpr"], map_source, status["init_ms"],
         )
 
 
@@ -1165,7 +1318,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
     all_markers = []
     tiles_ok = 0
     tiles_failed = 0
-    tiles_fallback = 0
     total_tankers = 0
     total_cargos = 0
     total_moving_tankers = 0
@@ -1204,10 +1356,16 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
                 screenshot_args["quality"] = SCREENSHOT_QUALITY
             img_bytes = map_locator.screenshot(**screenshot_args)
 
-            # Query actual map-centre pixel (accounts for UI chrome + DPR)
+            # Query actual map-centre pixel (accounts for UI chrome + DPR).
+            # _per_region_init has already verified this is non-None at the
+            # start of the region. If it becomes None mid-region, Leaflet
+            # was torn down — raise so the worker's crash handler marks the
+            # remaining tiles retryable rather than projecting against a
+            # stale anchor.
             center_offset = _get_map_center_offset(page)
             if center_offset is None:
-                tiles_fallback += 1
+                raise RuntimeError(
+                    "center_offset lost mid-region (map handle torn down)")
 
             # Inline ship detection + geo-coordinate extraction.
             # Anchor the projection on the *actual* map state read from
@@ -1349,12 +1507,10 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
         region_idx=region_idx,
     )
 
-    fallback_note = (f" [{tiles_fallback}/{tiles_ok} tiles in fallback]"
-                     if tiles_fallback else "")
     logger.info("Region %s (idx=%d): %d tankers (%d mov), %d cargo (%d mov)"
-                " (from %d tiles)%s",
+                " (from %d tiles)",
                 region_name, region_idx, total_tankers, total_moving_tankers,
-                total_cargos, total_moving_cargos, tiles_ok, fallback_note)
+                total_cargos, total_moving_cargos, tiles_ok)
 
     return {
         "region": region_name,
