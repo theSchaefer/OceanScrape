@@ -81,6 +81,21 @@ def _is_crash_error(exc: Exception) -> bool:
     return any(p in msg for p in _CRASH_PATTERNS)
 
 
+# --- Canvas readiness probe (shared between init + capture) ------------------
+
+_CANVAS_READY_JS = """
+() => {
+    const mc = document.getElementById('map_canvas');
+    if (!mc) return 'canvas_missing';
+    const rect = mc.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return 'canvas_zero_size';
+    const overlay = document.querySelector('.leaflet-overlay-pane');
+    if (!overlay) return 'overlay_pane_missing';
+    return 'ok';
+}
+"""
+
+
 # --- Tile grid cache ----------------------------------------------------------
 # Polygons, zoom levels, and viewport dims are constant across scrape cycles,
 # so tile grids only need to be computed once per region.
@@ -881,10 +896,174 @@ def _discover_leaflet_map(page):
     """)
 
 
+# --- Filter-state probe ------------------------------------------------------
+
+
+def _probe_vessel_filter_state(page):
+    """Cheap, read-only check of MarineTraffic's vessel-filter panel state.
+
+    Returns ``{"regressed": bool, "still_checked_drops": list[str]}``.
+    ``regressed=True`` means at least one label in ``_DROP_VESSEL_LABELS`` is
+    currently checked — i.e. the filter is no longer suppressing it, and the
+    OpenCV pipeline would see overlapping markers again. On any error, returns
+    ``regressed=True`` so the caller re-applies (fail-safe).
+    """
+    try:
+        return page.evaluate(
+            """
+            ({dropLabels}) => {
+                const visible = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const s = getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden';
+                };
+                const textOf = (el) => {
+                    if (!el) return '';
+                    return ((el.textContent || '') + ' ' +
+                            (el.getAttribute('aria-label') || '') + ' ' +
+                            (el.getAttribute('title') || '') + ' ' +
+                            (el.getAttribute('data-tooltip') || '')).toLowerCase();
+                };
+                const isChecked = (input) =>
+                    input.checked !== undefined
+                        ? input.checked
+                        : input.getAttribute('aria-checked') === 'true';
+
+                const inputs = [...document.querySelectorAll(
+                    'input[type="checkbox"], input[type="radio"], ' +
+                    '[role="checkbox"], [role="switch"]'
+                )].filter(visible);
+
+                const stillChecked = new Set();
+                for (const input of inputs) {
+                    let labelText = '';
+                    let el = input;
+                    for (let i = 0; i < 5 && el; i++) {
+                        const t = textOf(el);
+                        if (dropLabels.some(l => t.includes(l))) {
+                            labelText = t; break;
+                        }
+                        el = el.parentElement;
+                    }
+                    if (!labelText && input.id) {
+                        const lbl = document.querySelector(
+                            'label[for="' + CSS.escape(input.id) + '"]');
+                        if (lbl) {
+                            const t = textOf(lbl);
+                            if (dropLabels.some(l => t.includes(l))) labelText = t;
+                        }
+                    }
+                    if (!labelText) continue;
+                    const drop = dropLabels.find(l => labelText.includes(l));
+                    if (drop && isChecked(input)) stillChecked.add(drop);
+                }
+                return {still_checked_drops: [...stillChecked]};
+            }
+            """,
+            {"dropLabels": list(_DROP_VESSEL_LABELS)},
+        ) or {"still_checked_drops": []}
+    except Exception as e:
+        logger.debug("  Filter probe failed: %s (will treat as regressed)", e)
+        return {"still_checked_drops": list(_DROP_VESSEL_LABELS), "_probe_error": str(e)}
+
+
+# --- Per-region init / re-validation -----------------------------------------
+
+
+def _per_region_init(page, region_name, region_idx):
+    """Validate and refresh per-region browser state before capture.
+
+    Runs idempotent setup steps (Leaflet handle, tile-wait for stolen regions,
+    filter check + repair-if-regressed, overlay hide, canvas readiness, fresh
+    map_dims + center_offset). Returns a status dict; the caller treats
+    ``ok=False`` as a retryable failure rather than ingesting bad data.
+    """
+    t0 = time.perf_counter()
+    status = {
+        "ok": False,
+        "region": region_name,
+        "idx": region_idx,
+        "reason": None,
+        "crash": False,
+        "map_dims": None,
+        "center_offset": None,
+        "dpr": None,
+        "filter_regressed": False,
+        "filter_repaired": False,
+        "filter_still_checked": [],
+        "init_ms": 0,
+    }
+
+    try:
+        # 1. Leaflet handle (cheap, idempotent — short-circuits if already set)
+        _discover_leaflet_map(page)
+
+        # 2. Stolen-region tile wait. First region's pre-init flow (page.goto
+        #    + Cloudflare) already gates on this, so skip to save ~250 ms.
+        if region_idx > 0:
+            wait_for_map_tiles(page, timeout_ms=4000)
+
+        # 3. Filter check (cheap probe) + repair only if regressed
+        probe = _probe_vessel_filter_state(page)
+        still_checked = probe.get("still_checked_drops", []) or []
+        status["filter_still_checked"] = still_checked
+        if still_checked:
+            status["filter_regressed"] = True
+            ok = set_vessel_filter(page)
+            status["filter_repaired"] = bool(ok)
+
+        # 4. Re-hide overlays — idempotent DOM mutation
+        hide_ui_overlays(page)
+
+        # 5. Canvas + overlay-pane readiness
+        canvas_state = page.evaluate(_CANVAS_READY_JS)
+        if canvas_state != "ok":
+            status["reason"] = f"canvas:{canvas_state}"
+            return status
+
+        # 6. Fresh map dimensions and Leaflet centre anchor
+        map_dims = _get_map_dimensions(page)
+        center_offset = _get_map_center_offset(page)
+        status["map_dims"] = map_dims
+        status["center_offset"] = center_offset
+        if center_offset is None:
+            status["reason"] = "no_center_offset"
+            return status
+
+        status["dpr"] = center_offset.get("dpr")
+        status["ok"] = True
+        return status
+
+    except Exception as e:
+        if _is_crash_error(e):
+            status["reason"] = f"crash:{e}"
+            status["crash"] = True
+        else:
+            status["reason"] = f"error:{e}"
+        return status
+
+    finally:
+        status["init_ms"] = int((time.perf_counter() - t0) * 1000)
+        dims = status.get("map_dims") or {}
+        dim_str = (f"{int(dims['width'])}x{int(dims['height'])}"
+                   if dims.get("width") and dims.get("height") else "?")
+        logger.info(
+            "[region %s | idx=%d] init: %s, filter_regressed=%s, "
+            "filter_repaired=%s, dims=%s, dpr=%s, %dms",
+            region_name, region_idx,
+            "ok" if status["ok"] else f"FAIL({status['reason']})",
+            status["filter_regressed"], status["filter_repaired"],
+            dim_str, status["dpr"], status["init_ms"],
+        )
+
+
 # --- Core capture (single region, given a page) ------------------------------
 
 
-def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
+def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims,
+                          region_idx=0):
     """Capture all tiles for a region using an already-setup page.
 
     Returns dict with capture results: tankers, cargos, markers, file paths.
@@ -901,8 +1080,9 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     tiles, grid_info = _get_tile_grid(region_name, config)
     n_rows = grid_info["n_rows"]
     n_cols = grid_info["n_cols"]
-    logger.info("Region %s (%s): %d tiles (%dx%d), zoom %d",
-                region_name, region_display, len(tiles), n_rows, n_cols, zoom)
+    logger.info("Region %s (%s | idx=%d): %d tiles (%dx%d), zoom %d",
+                region_name, region_display, region_idx,
+                len(tiles), n_rows, n_cols, zoom)
 
     tile_images = {}
     tile_detections = []
@@ -917,21 +1097,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     center_lat, center_lon = _polygon_center(polygon)
     current_lat, current_lon = center_lat, center_lon
     map_locator = page.locator('#map_canvas')
-
-    # Verify map canvas is present before capturing tiles
-    canvas_state = page.evaluate("""
-    () => {
-        const mc = document.getElementById('map_canvas');
-        if (!mc) return 'canvas_missing';
-        const rect = mc.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return 'canvas_zero_size';
-        const overlay = document.querySelector('.leaflet-overlay-pane');
-        if (!overlay) return 'overlay_pane_missing';
-        return 'ok';
-    }
-    """)
-    if canvas_state != "ok":
-        logger.warning("Region %s: map not ready — %s", region_name, canvas_state)
 
     # Guard: if tile filtering removed everything, skip this region
     if not tiles:
@@ -1102,10 +1267,11 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         moving_tankers=total_moving_tankers,
         moving_cargos=total_moving_cargos,
         markers=all_markers,
+        region_idx=region_idx,
     )
 
-    logger.info("Region %s: %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
-                region_name, total_tankers, total_moving_tankers,
+    logger.info("Region %s (idx=%d): %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
+                region_name, region_idx, total_tankers, total_moving_tankers,
                 total_cargos, total_moving_cargos, tiles_ok)
 
     return {
@@ -1216,34 +1382,31 @@ def capture_worker(region_queue, timestamp_str):
                         first_name, config.get("name", first_name), config["zoom"])
             page.goto(url, wait_until="domcontentloaded")
 
-            # Setup: Cloudflare, overlays, map discovery
-            page_ready = True
+            # One-shot setup: Cloudflare + cookie banner. Per-region validation
+            # (filter, overlays, Leaflet handle, map_dims) is delegated to
+            # _per_region_init below so the stolen-region path gets the same
+            # treatment as the first one.
+            setup_failed_retryable = False
             try:
                 if _wait_for_cloudflare(page):
                     logger.info("  [%s] Cloudflare passed", first_name)
                 elif _is_cloudflare_blocked(page):
-                    logger.error("  [%s] Cloudflare block", first_name)
-                    _log_json(timestamp_str, first_name, "", 0, 0, 0, 0.0, 0, 0,
-                              config["zoom"], [])
-                    page_ready = False
-
-                if page_ready:
-                    wait_for_map_tiles(page)
+                    logger.error("  [%s] Cloudflare block — marking retryable",
+                                 first_name)
+                    setup_failed_retryable = True
+                if not setup_failed_retryable:
                     dismiss_cookie_banner(page)
-                    set_vessel_filter(page)
-                    hide_ui_overlays(page)
-                    _discover_leaflet_map(page)
             except Exception as e:
                 if _is_crash_error(e):
-                    logger.error("  [%s] Setup crashed (retryable): %s", first_name, e)
-                    retryable.append(first_name)
+                    logger.error("  [%s] Setup crashed (retryable): %s",
+                                 first_name, e)
                 else:
-                    logger.error("  [%s] Setup failed: %s", first_name, e)
-                _log_json(timestamp_str, first_name, "", 0, 0, 0, 0.0, 0, 0,
-                          config["zoom"], [])
-                page_ready = False
+                    logger.error("  [%s] Setup failed (retryable): %s",
+                                 first_name, e)
+                setup_failed_retryable = True
 
-            if not page_ready:
+            if setup_failed_retryable:
+                retryable.append(first_name)
                 context.close()
                 browser.close()
                 # Put remaining regions back as retryable so they aren't lost
@@ -1255,12 +1418,28 @@ def capture_worker(region_queue, timestamp_str):
                 results["_retryable"] = retryable
                 return results
 
-            map_dims = _get_map_dimensions(page)
+            # Per-region init for the first region (idx=0).
+            init = _per_region_init(page, first_name, region_idx=0)
+            if not init["ok"]:
+                logger.warning("Region %s init failed: %s — marking retryable",
+                               first_name, init["reason"])
+                retryable.append(first_name)
+                if init.get("crash"):
+                    while True:
+                        try:
+                            retryable.append(region_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                context.close()
+                browser.close()
+                results["_retryable"] = retryable
+                return results
 
             # Capture first region
             try:
                 result = _capture_region_tiles(
-                    first_name, REGIONS[first_name], timestamp_str, page, map_dims,
+                    first_name, REGIONS[first_name], timestamp_str, page,
+                    init["map_dims"], region_idx=0,
                 )
                 results[first_name] = result
             except Exception as e:
@@ -1280,20 +1459,42 @@ def capture_worker(region_queue, timestamp_str):
                 else:
                     logger.error("Region %s capture failed: %s", first_name, e)
                     _log_json(timestamp_str, first_name, "", 0, 0, 1, 0.0, 0, 0,
-                              REGIONS[first_name]["zoom"], [])
+                              REGIONS[first_name]["zoom"], [], region_idx=0)
 
-            # Work-stealing loop: pull more regions from the shared queue
+            # Work-stealing loop: pull more regions from the shared queue.
+            # Each stolen region gets its own _per_region_init pass — if it
+            # fails the region is marked retryable rather than ingested with
+            # corrupted data.
+            region_idx = 1
             while True:
                 try:
                     name = region_queue.get_nowait()
                 except queue.Empty:
                     break
 
-                logger.info("  [worker] Stealing region %s (%s)",
-                            name, REGIONS[name].get("name", name))
+                logger.info("  [worker] Stealing region %s (%s) [idx=%d]",
+                            name, REGIONS[name].get("name", name), region_idx)
+
+                init = _per_region_init(page, name, region_idx=region_idx)
+                if not init["ok"]:
+                    logger.warning("Region %s init failed: %s — retryable",
+                                   name, init["reason"])
+                    retryable.append(name)
+                    if init.get("crash"):
+                        # Browser-level crash — drain queue and abandon worker
+                        while True:
+                            try:
+                                retryable.append(region_queue.get_nowait())
+                            except queue.Empty:
+                                break
+                        break
+                    region_idx += 1
+                    continue
+
                 try:
                     result = _capture_region_tiles(
-                        name, REGIONS[name], timestamp_str, page, map_dims,
+                        name, REGIONS[name], timestamp_str, page,
+                        init["map_dims"], region_idx=region_idx,
                     )
                     results[name] = result
                 except Exception as e:
@@ -1310,7 +1511,9 @@ def capture_worker(region_queue, timestamp_str):
                     else:
                         logger.error("Region %s capture failed: %s", name, e)
                         _log_json(timestamp_str, name, "", 0, 0, 1, 0.0, 0, 0,
-                                  REGIONS[name]["zoom"], [])
+                                  REGIONS[name]["zoom"], [],
+                                  region_idx=region_idx)
+                region_idx += 1
 
             context.close()
             browser.close()
@@ -1346,7 +1549,8 @@ _log_lock = threading.Lock()
 
 def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
               tankers=0, cargos=0, zoom=None, detections=None,
-              moving_tankers=0, moving_cargos=0, markers=None):
+              moving_tankers=0, moving_cargos=0, markers=None,
+              region_idx=None):
     """Append a single JSON line to captures_log.jsonl (thread-safe)."""
     Path("./data").mkdir(parents=True, exist_ok=True)
 
@@ -1378,6 +1582,8 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
         "markers": markers or [],
         "detections": detections or [],
     }
+    if region_idx is not None:
+        entry["region_idx"] = region_idx
 
     jsonl_path = Path("./data") / "captures_log.jsonl"
     with _log_lock:
