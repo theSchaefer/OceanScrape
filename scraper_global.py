@@ -286,10 +286,27 @@ _DROP_VESSEL_LABELS = (
     "fishing", "pleasure", "sailing", "navigation aid", "unspecified",
     "other", "unknown",
 )
-_KEEP_VESSEL_LABELS = ("cargo", "oil tanker", "tanker")
+_KEEP_VESSEL_LABELS = (
+    "cargo", "cargo vessels", "oil tanker", "tanker", "tankers",
+)
+_MT_SHIP_TYPE_CHECKBOXES = {
+    # MarineTraffic ship type ids observed in the map filter panel.
+    # Keep only cargo vessels and tankers; hide every other AIS category.
+    "0": ("unspecified ships", False),
+    "1": ("navigation aids", False),
+    "2": ("fishing", False),
+    "3": ("tugs/special craft", False),
+    "4": ("high speed craft", False),
+    "6": ("passenger vessels", False),
+    "7": ("cargo vessels", True),
+    "8": ("tankers", True),
+    "9": ("pleasure craft", False),
+}
 _DARK_MAP_RESOURCE_HINTS = (
     # Observed in map_discovery.json as the active MarineTraffic base style.
     "mapbox-official/clmoxc5z401zg01quhmvh97xj",
+    # Current MarineTraffic dark Mapbox style observed in the live DOM.
+    "mapbox-official/clmowmvem022a01r76lwl43e1",
     # Static asset requests carry bd:1 when the dark base is active.
     "/bd:1",
     "dark-v",
@@ -575,6 +592,110 @@ def _page_has_dark_map_resources(page):
         return False
 
 
+def _page_has_dark_map_dom(page):
+    """Read-only probe for dark-map classes when resources are unavailable."""
+    try:
+        return page.evaluate(
+            """
+            () => Boolean(
+                document.querySelector(
+                    '.leaflet-control-mouseposition-dark, ' +
+                    '#map_canvas .leaflet-control-mouseposition-dark'
+                )
+            )
+            """
+        )
+    except Exception:
+        return False
+
+
+def _click_dark_map_option_after_open(page):
+    """Open the MarineTraffic map type panel and select a dark base map."""
+    if _click_first_visible(
+        page,
+        [
+            "#mapButton",
+            "button#mapButton",
+            "button[aria-label='Map type']",
+            "[aria-label='Map type']",
+        ],
+        "Opened map type",
+        timeout_ms=1200,
+        pause_s=0.45,
+    ):
+        direct_selectors = [
+            "button:has-text('Dark')",
+            "label:has-text('Dark')",
+            "[role='button']:has-text('Dark')",
+            "[role='menuitem']:has-text('Dark')",
+            "[role='option']:has-text('Dark')",
+            "text=/^\\s*Dark( mode| map)?\\s*$/i",
+            "[aria-label*='Dark' i]",
+            "[title*='Dark' i]",
+            "input[value*='dark' i]",
+        ]
+        if _click_first_visible(
+            page, direct_selectors, "Dark map option",
+            timeout_ms=1000, pause_s=0.75,
+        ):
+            return True
+
+        try:
+            result = page.evaluate(
+                """
+                async () => {
+                    const sleep = ms => new Promise(r => setTimeout(r, ms));
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        const s = getComputedStyle(el);
+                        return s.display !== 'none' && s.visibility !== 'hidden';
+                    };
+                    const textOf = (el) => [
+                        el.textContent || '',
+                        el.getAttribute('aria-label') || '',
+                        el.getAttribute('title') || '',
+                        el.getAttribute('value') || '',
+                        el.getAttribute('data-value') || '',
+                    ].join(' ').toLowerCase();
+
+                    const candidates = [
+                        ...document.querySelectorAll(
+                            'button, [role="button"], [role="menuitem"], ' +
+                            '[role="option"], label, li, input'
+                        )
+                    ].filter(visible);
+
+                    for (const el of candidates) {
+                        const t = textOf(el);
+                        if (!/\\b(dark|night)\\b/.test(t)) continue;
+                        if (el.matches('input')) {
+                            const label = el.closest('label') ||
+                                document.querySelector(
+                                    'label[for="' + CSS.escape(el.id || '') + '"]'
+                                );
+                            (label || el).click();
+                        } else {
+                            el.click();
+                        }
+                        await sleep(650);
+                        return { clicked: true, text: t.slice(0, 80) };
+                    }
+                    return { clicked: false };
+                }
+                """
+            )
+            if result and result.get("clicked"):
+                logger.info("  Dark map option via DOM scan: %s",
+                            result.get("text"))
+                return True
+        except Exception as e:
+            logger.debug("  Dark map DOM scan failed: %s", e)
+
+    return False
+
+
 def set_dark_mode(page):
     """Enable MarineTraffic dark map style using UI clicks only."""
     if _page_has_dark_theme(page):
@@ -583,11 +704,22 @@ def set_dark_mode(page):
     if _page_has_dark_map_resources(page):
         logger.info("  Dark map layer already active")
         return True
+    if _page_has_dark_map_dom(page):
+        logger.info("  Dark map UI already active")
+        return True
+
+    if _click_dark_map_option_after_open(page):
+        if (_page_has_dark_theme(page) or _page_has_dark_map_resources(page)
+                or _page_has_dark_map_dom(page)):
+            logger.info("  Dark map applied")
+            return True
 
     direct_selectors = [
         "button:has-text('Dark')",
+        "label:has-text('Dark')",
         "[role='button']:has-text('Dark')",
         "[role='menuitem']:has-text('Dark')",
+        "[role='option']:has-text('Dark')",
         "text=/^\\s*Dark( mode| map)?\\s*$/i",
         "[aria-label*='Dark' i]",
         "[title*='Dark' i]",
@@ -596,16 +728,23 @@ def set_dark_mode(page):
         return True
 
     opener_selectors = [
+        "#mapButton",
+        "button#mapButton",
+        "button[aria-label='Map type']",
         "button:has-text('Map style')",
         "button:has-text('Map Style')",
+        "button:has-text('Map type')",
         "button:has-text('Layers')",
         "button:has-text('Settings')",
+        "[role='button']:has-text('Map type')",
         "[role='button']:has-text('Map style')",
         "[role='button']:has-text('Layers')",
         "[aria-label*='map style' i]",
+        "[aria-label*='map type' i]",
         "[aria-label*='layers' i]",
         "[aria-label*='settings' i]",
         "[title*='map style' i]",
+        "[title*='map type' i]",
         "[title*='layers' i]",
         "[title*='settings' i]",
     ]
@@ -627,14 +766,179 @@ def set_dark_mode(page):
     if _page_has_dark_map_resources(page):
         logger.info("  Dark map layer active after menu interaction")
         return True
+    if _page_has_dark_map_dom(page):
+        logger.info("  Dark map UI active after menu interaction")
+        return True
 
     logger.info("  Dark mode control not found (openers=%s)", tried)
     return False
 
 
+def _set_marine_traffic_ship_type_filter(page):
+    """Use stable MarineTraffic ids from the filter DOM when available."""
+    desired = {
+        name: checked for name, (_label, checked) in _MT_SHIP_TYPE_CHECKBOXES.items()
+    }
+
+    try:
+        result = page.evaluate(
+            """
+            async ({ desired }) => {
+                const sleep = ms => new Promise(r => setTimeout(r, ms));
+                const visible = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const s = getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden';
+                };
+
+                let accordion = document.querySelector('#shipTypeAccordion');
+                if (!accordion) {
+                    const trigger = document.querySelector(
+                        '#filtersButton, button[aria-label="Vessel filters"], ' +
+                        '[aria-label="Vessel filters"]'
+                    );
+                    if (trigger) {
+                        trigger.click();
+                        await sleep(450);
+                    }
+                    const deadline = Date.now() + 2500;
+                    while (!accordion && Date.now() < deadline) {
+                        accordion = document.querySelector('#shipTypeAccordion');
+                        if (!accordion) await sleep(100);
+                    }
+                }
+                if (!accordion) {
+                    return { ok: false, reason: 'shipTypeAccordion missing' };
+                }
+
+                const summary = accordion.querySelector('button[aria-expanded]');
+                if (summary && summary.getAttribute('aria-expanded') === 'false') {
+                    summary.click();
+                    await sleep(300);
+                }
+
+                const setter =
+                    Object.getOwnPropertyDescriptor(
+                        HTMLInputElement.prototype, 'checked'
+                    ).set;
+                const changed = [];
+                const states = {};
+                const missing = [];
+                const errors = [];
+
+                async function setInput(input, want) {
+                    if (input.checked === want) return false;
+                    const targets = [
+                        input,
+                        input.parentElement,
+                        input.closest('label'),
+                        input.closest('button'),
+                    ].filter(Boolean);
+                    const uniqueTargets = [...new Set(targets)];
+
+                    for (const target of uniqueTargets) {
+                        try {
+                            target.click();
+                            await sleep(90);
+                            if (input.checked === want) return true;
+                        } catch (e) {}
+                    }
+
+                    try {
+                        setter.call(input, want);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                        await sleep(90);
+                    } catch (e) {
+                        errors.push((input.name || '?') + ': ' + e.message);
+                    }
+                    return input.checked === want;
+                }
+
+                for (const [name, want] of Object.entries(desired)) {
+                    const selector = 'input[type="checkbox"][name="' +
+                        CSS.escape(name) + '"]';
+                    const input = accordion.querySelector(selector);
+                    if (!input) {
+                        missing.push(name);
+                        continue;
+                    }
+                    if (input.disabled) {
+                        errors.push(name + ': disabled');
+                        states[name] = input.checked;
+                        continue;
+                    }
+                    const before = input.checked;
+                    await setInput(input, want);
+                    states[name] = input.checked;
+                    if (before !== input.checked) changed.push(name);
+                }
+
+                const keptOk = states['7'] === true && states['8'] === true;
+                const droppedOk = Object.keys(desired)
+                    .filter(name => name !== '7' && name !== '8')
+                    .every(name => states[name] === false);
+
+                return {
+                    ok: keptOk && droppedOk && missing.length === 0 && errors.length === 0,
+                    kept_ok: keptOk,
+                    dropped_ok: droppedOk,
+                    changed,
+                    states,
+                    missing,
+                    errors,
+                    visible: visible(accordion),
+                };
+            }
+            """,
+            {"desired": desired},
+        )
+    except Exception as e:
+        logger.debug("  Vessel filter exact DOM path failed: %s", e)
+        return False
+
+    if not result:
+        return False
+
+    if result.get("ok"):
+        kept = [
+            _MT_SHIP_TYPE_CHECKBOXES[name][0]
+            for name, checked in desired.items() if checked
+        ]
+        disabled = [
+            _MT_SHIP_TYPE_CHECKBOXES[name][0]
+            for name, checked in desired.items() if not checked
+        ]
+        logger.info(
+            "  Vessel filter applied via exact DOM: kept=%s disabled=%s changed=%s",
+            kept, disabled, result.get("changed", []),
+        )
+        return True
+
+    logger.warning(
+        "  Vessel filter exact DOM path failed: reason=%s kept_ok=%s "
+        "dropped_ok=%s missing=%s errors=%s states=%s",
+        result.get("reason"),
+        result.get("kept_ok"),
+        result.get("dropped_ok"),
+        result.get("missing"),
+        result.get("errors"),
+        result.get("states"),
+    )
+    return False
+
+
 def set_vessel_filter(page):
     """Keep only cargo and oil tanker/tanker vessel types using UI clicks."""
+    if _set_marine_traffic_ship_type_filter(page):
+        return True
+
     trigger_selectors = [
+        "#filtersButton",
+        "button#filtersButton",
+        "button[aria-label='Vessel filters']",
         "button:has-text('Filter')",
         "button:has-text('Filters')",
         "[role='button']:has-text('Filter')",
