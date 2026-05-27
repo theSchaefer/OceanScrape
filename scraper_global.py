@@ -42,7 +42,10 @@ from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
-from grid import get_tile_centers, polygon_to_pixel_coords, _point_in_polygon
+from grid import (
+    get_tile_centers, polygon_to_pixel_coords, _point_in_polygon,
+    lat_to_pixel_y,
+)
 from regions import REGIONS, REGION_TIERS
 from update_database import process_log
 
@@ -66,6 +69,7 @@ SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.arg
 # Screenshot format: jpeg is ~5x smaller and ~2x faster to encode than png
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
 SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
+MAX_DRAG_PX = 800  # max single-drag distance to avoid Leaflet inertia
 
 # Crash retry settings
 MAX_REGION_RETRIES = 2
@@ -1381,7 +1385,7 @@ def _pan_map_js(page, target_lat, target_lon, zoom):
     return page.evaluate(f"""
     () => {{
         const map = window.__mtMap;
-        if (!map || !map.setView) return false;
+        if (!map || typeof map.setView !== 'function') return false;
         map.setView([{target_lat}, {target_lon}], {zoom}, {{animate: false}});
         return true;
     }}
@@ -1390,7 +1394,7 @@ def _pan_map_js(page, target_lat, target_lon, zoom):
 
 def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
              map_center=None, timeout_ms=5000):
-    """Pan the map with Leaflet setView only."""
+    """Pan the map with Leaflet setView, falling back to mouse drag."""
 
     _discover_leaflet_map(page)
     if _pan_map_js(page, target_lat, target_lon, zoom):
@@ -1400,8 +1404,49 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
         _wait_for_ais_markers(page, timeout_ms=2000)
         return True
 
-    raise RuntimeError(
-        "setView unavailable; tile navigation requires Leaflet setView")
+    logger.warning(
+        "  LOW-CONFIDENCE FALLBACK active: setView unavailable; "
+        "using mouse_drag pan to (%.5f, %.5f)",
+        target_lat, target_lon,
+    )
+
+    total_pixels = 256 * (2 ** zoom)
+    dx = (target_lon - cur_lon) * total_pixels / 360.0
+    dy = lat_to_pixel_y(target_lat, zoom) - lat_to_pixel_y(cur_lat, zoom)
+    drag_x = -dx
+    drag_y = -dy
+
+    if abs(drag_x) < 1 and abs(drag_y) < 1:
+        return True
+
+    if map_center:
+        cx, cy = map_center
+    else:
+        cx = VIEWPORT_WIDTH // 2
+        cy = VIEWPORT_HEIGHT // 2
+
+    steps_needed = max(
+        1,
+        int(abs(drag_x) / MAX_DRAG_PX) + (1 if abs(drag_x) % MAX_DRAG_PX > 0 else 0),
+        int(abs(drag_y) / MAX_DRAG_PX) + (1 if abs(drag_y) % MAX_DRAG_PX > 0 else 0),
+    )
+    step_dx = drag_x / steps_needed
+    step_dy = drag_y / steps_needed
+
+    for _ in range(steps_needed):
+        page.mouse.move(cx, cy)
+        page.mouse.down()
+        page.mouse.move(cx + step_dx, cy + step_dy, steps=20)
+        page.mouse.up()
+        if steps_needed > 1:
+            time.sleep(0.05)
+
+    logger.info("  Panned via mouse_drag fallback (dx=%.0f dy=%.0f, %d step(s))",
+                drag_x, drag_y, steps_needed)
+    time.sleep(0.05)
+    _wait_for_tiles_after_pan(page, timeout_ms)
+    _wait_for_ais_markers(page, timeout_ms=2000)
+    return True
 
 
 def _wait_for_tiles_after_pan(page, timeout_ms=5000):
@@ -1581,6 +1626,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     total_cargos = 0
     total_moving_tankers = 0
     total_moving_cargos = 0
+    center_offset_fallback_logged = False
 
     center_lat, center_lon = _polygon_center(polygon)
     current_lat, current_lon = center_lat, center_lon
@@ -1634,6 +1680,14 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
 
             # Query actual map-centre pixel (accounts for UI chrome + DPR)
             center_offset = _get_map_center_offset(page) or pre_capture_center_offset
+            if not center_offset and not center_offset_fallback_logged:
+                logger.warning(
+                    "Region %s: LOW-CONFIDENCE FALLBACK active: "
+                    "center_offset unavailable during capture; using requested "
+                    "tile centers and fallback projection",
+                    region_name,
+                )
+                center_offset_fallback_logged = True
 
             # Inline ship detection + geo-coordinate extraction.
             # Anchor the projection on the *actual* map state read from
@@ -1932,21 +1986,18 @@ def capture_worker(region_name, timestamp_str):
             map_dims = _get_map_dimensions(page)
             center_offset = _wait_for_map_center_offset(page, timeout_ms=6000)
             if not center_offset:
-                logger.error(
-                    "[worker=%s region=%s] setup failed (retryable): "
-                    "center_offset/setView unavailable",
+                logger.warning(
+                    "[worker=%s region=%s] LOW-CONFIDENCE FALLBACK active: "
+                    "center_offset unavailable; continuing with requested "
+                    "tile centers and fallback projection",
                     worker_id, region_name,
                 )
-                retryable.append(region_name)
-                context.close()
-                browser.close()
-                results["_retryable"] = retryable
-                return results
 
             logger.info(
-                "[worker=%s region=%s] setup ok: map_dims=%dx%d "
+                "[worker=%s region=%s] setup ok: mode=%s map_dims=%dx%d "
                 "center_offset=%s source=%s dark=%s filter=%s",
                 worker_id, region_name,
+                "normal" if center_offset else "low-confidence-fallback",
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
                 center_offset.get("source") if center_offset else None,
