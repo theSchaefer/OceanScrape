@@ -22,18 +22,20 @@ scraper_global.py  →  seer.py (inline OpenCV)  →  captures_log.jsonl  →  u
    browser workers      in memory detection         counts + markers       psycopg2 batch insert       FastAPI       Leaflet UI
 ```
 
-1. **Scrape.** `scraper_global.py` launches a small pool of Patchright browser workers (an undetected Playwright fork). Each worker visits MarineTraffic once, then pans the Leaflet map to every assigned region using `setView()` so the same Cloudflare pass is reused. Regions are pulled from a shared queue with work stealing and processed largest first to flatten tail latency.
+1. **Scrape.** `scraper_global.py` launches a small pool of Patchright browser workers (an undetected Playwright fork). Each worker owns one region, loads MarineTraffic once, and traverses bbox-generated tiles with mouse-drag panning. Leaflet `setView()` discovery remains an optional optimization, not a required control path.
 2. **Detect.** Each rendered tile is passed in memory to `seer.py`, which uses HSV color masking and contour analysis in OpenCV to find ship markers. Triangles (three vertices via `approxPolyDP`) are classified as moving ships, circles (high circularity ratio) as stationary. Color separates tankers from cargo vessels.
-3. **Project.** Marker pixel positions are converted to real world coordinates using a Web Mercator inverse projection in `grid.py`, so every detected ship has a latitude and longitude tied to its tile and timestamp.
+3. **Project.** Marker pixel positions are converted to real world coordinates using a Web Mercator inverse projection in `grid.py`. When Natural Earth land polygons are available, coastline mask registration estimates screenshot offset and corrects marker projection without depending on an exposed Leaflet map object.
 4. **Persist.** `update_database.py` reads the JSONL capture log and batch inserts into two PostgreSQL tables: `captures` (per region snapshot with counts and metadata as JSONB) and `vessel_positions` (one row per detected marker, joined to its capture). Writes are idempotent through `ON CONFLICT`.
 5. **Serve.** `api.py` exposes the database through a FastAPI service, and `dashboard/index.html` renders a live Leaflet map with time scrubbing, vessel type and motion filters, per region drill down, and aggregate charts (see the screenshot above).
 
 ## Key features
 
 * **Anti detection by design.** Patchright with the real Chrome channel, headless new mode, rotating residential proxies via Decodo, and full geo profile spoofing (timezone, locale, geolocation, Accept Language) derived from the proxy IP.
-* **Browser reuse.** One `page.goto()` per worker followed by Leaflet panning for all subsequent regions and tiles, which avoids repeated Cloudflare challenges.
-* **High resolution capture.** Default viewport is 8K (7680 by 4320), so most regions fit in a single tile and detection runs once per region instead of stitching.
-* **Zoom tiered coverage.** Five zoom levels (z9 through z13) are assigned per region: narrow canals at z13 for marker separation, open ocean lanes at z9 for area coverage.
+* **Region-isolated capture.** One fresh browser/page handles one region, then exits. Within that region, tile traversal uses mouse-drag panning by default.
+* **BBox-first capture.** Regions expose a normalized bbox schema derived from the existing polygons, so tile coverage is deterministic and no longer depends on hand-filtering polygon centers.
+* **High resolution capture.** Default viewport is 8K (7680 by 4320), so most regions use only a small deterministic tile grid.
+* **Static crowdedness zooms.** Region zoom is derived from `low`, `medium`, or `high` crowdedness; default production mapping is z9, z10, and z12.
+* **Cross-zoom QA.** Sampled tiles can be recaptured at zoom+1 and written to `data/qa/` with under-resolution flags.
 * **CLI filters.** Run all regions, a single region, a tier, a zoom level, or any combination (`--tier=1 --zoom=9`, `--regions=N,S,P`, and so on).
 * **Inline detection.** Tiles are analyzed in memory by default; images are only written to disk when `--save-images` is set.
 * **Dashboard with history.** The frontend supports time scrubbing across the full database, marker deduplication in overlapping regions, tile boundary visualization, vessel type and motion filters, and CSV export of positions.
@@ -56,6 +58,8 @@ Other common invocations:
 python scraper_global.py --list-regions     # show every region code, zoom, and tier
 python scraper_global.py --tier=original    # only the 34 original chokepoint regions
 python scraper_global.py --regions=N,S,P    # Suez North, Suez South, Panama only
+python scraper_global.py --regions=BS --once --no-ingest
+                                           # validation pass, no DB insert
 python seer.py path/to/tile.jpg             # run detection on a single image (CLI mode)
 python discover_map.py                      # one shot JS introspection of MarineTraffic
 uvicorn api:app --reload                    # serve the dashboard API locally
@@ -72,7 +76,23 @@ SCREENSHOT_FORMAT / QUALITY         Default jpeg / 85
 SCRAPE_INTERVAL_MINUTES             Default 60
 JITTER_SECONDS                      Default 300
 DATABASE_URL                        e.g. postgresql://user:pass@localhost:5432/marinescraper
+COASTLINE_DATA_PATH / COASTLINE_GEOJSON
+                                    Optional Natural Earth land .geojson/.shp/.zip path
+COASTLINE_ALIGNMENT                 Default 1; set 0 to disable coastline offset fitting
+USE_BBOX_TILING                     Default 1; bbox-first tile coverage
+BBOX_OVERLAP_PX                     Default 128 screenshot-pixel overlap between tiles
+ENABLE_CROSS_ZOOM_QA                Default 1; write cross-zoom QA artifacts
+QA_SAMPLE_RATE / QA_MAX_SAMPLES     Default 0.10 / 3 sampled baseline tiles per region
+ENABLE_COASTLINE_CALIBRATION        Default 1 only when coastline data is configured/present
+USE_SETVIEW_OPTIMIZATION            Default 0; set 1 to allow optional Leaflet setView panning
+LEAFLET_DIAGNOSTICS                 Default 0; set 1 to emit Leaflet/frame probes
 ```
+
+Coastline alignment uses Natural Earth land polygons, preferably
+`ne_10m_land.geojson` or the official `ne_10m_land.zip` at `data/coastline/`,
+or a custom `COASTLINE_DATA_PATH` path. Natural Earth was chosen over GSHHG
+because it is public domain, compact enough for anchor-tile registration, and
+the land polygons are sufficient for aligning the MarineTraffic basemap.
 
 Region polygons are also overridable from `.env` (for example `NORTH_POLYGON="lat,lon;lat,lon;..."`) without touching code.
 
@@ -80,10 +100,11 @@ Region polygons are also overridable from `.env` (for example `NORTH_POLYGON="la
 
 | File | Role |
 | --- | --- |
-| `scraper_global.py` | Main scraper. Browser pool, work stealing region queue, inline detection. |
+| `scraper_global.py` | Main scraper. Single-region browser workers, drag traversal, inline detection. |
+| `coastline_alignment.py` | Natural Earth coastline mask registration for projection offset correction. |
 | `seer.py` | OpenCV ship counter and marker extractor (HSV mask, contours, shape classification). |
-| `grid.py` | Web Mercator projection helpers and tile grid generation. |
-| `regions.py` | All 79 region polygons, zoom assignments, and tier classifications. |
+| `grid.py` | Web Mercator projection helpers, bbox tiling, and legacy polygon grids. |
+| `regions.py` | All 79 region definitions plus normalized bbox/crowdedness loading. |
 | `geo_profile.py` | Proxy IP geolocation lookup and locale, timezone, language mapping. |
 | `update_database.py` | PostgreSQL schema bootstrap and batch insert from `captures_log.jsonl`. |
 | `api.py` | FastAPI service that powers the dashboard. |

@@ -150,6 +150,103 @@ def get_tile_centers(polygon, zoom, viewport_width, viewport_height):
     return tiles, grid_info
 
 
+def _bbox_values(bbox):
+    """Normalize bbox input to min_lat, min_lon, max_lat, max_lon."""
+    if isinstance(bbox, dict):
+        return (
+            float(bbox["min_lat"]),
+            float(bbox["min_lon"]),
+            float(bbox["max_lat"]),
+            float(bbox["max_lon"]),
+        )
+    min_lat, min_lon, max_lat, max_lon = bbox
+    return float(min_lat), float(min_lon), float(max_lat), float(max_lon)
+
+
+def tile_id(region_code, zoom, row, col):
+    """Return the deterministic production tile id."""
+    return f"{region_code}_z{int(zoom)}_r{int(row)}_c{int(col)}"
+
+
+def get_bbox_tile_centers(
+    bbox,
+    zoom,
+    viewport_width,
+    viewport_height,
+    overlap_px=0,
+    region_code=None,
+):
+    """Compute viewport centers that fully cover a geographic bbox.
+
+    The grid is generated in Web Mercator pixel space. Adjacent centers are
+    separated by viewport size minus ``overlap_px`` so neighboring screenshots
+    share a small margin for QA and edge-marker stability.
+    """
+    min_lat, min_lon, max_lat, max_lon = _bbox_values(bbox)
+    if min_lat > max_lat:
+        min_lat, max_lat = max_lat, min_lat
+    if min_lon > max_lon:
+        min_lon, max_lon = max_lon, min_lon
+
+    west_x = lon_to_pixel_x(min_lon, zoom)
+    east_x = lon_to_pixel_x(max_lon, zoom)
+    north_y = lat_to_pixel_y(max_lat, zoom)
+    south_y = lat_to_pixel_y(min_lat, zoom)
+
+    bbox_w = max(0.0, east_x - west_x)
+    bbox_h = max(0.0, south_y - north_y)
+    stride_x = max(1.0, float(viewport_width - max(0, overlap_px)))
+    stride_y = max(1.0, float(viewport_height - max(0, overlap_px)))
+
+    def _centers(start_px, end_px, span_px, viewport_px, stride_px):
+        if span_px <= viewport_px:
+            return [(start_px + end_px) / 2.0]
+        count = int(math.ceil((span_px - viewport_px) / stride_px)) + 1
+        centers = []
+        max_center = end_px - viewport_px / 2.0
+        for idx in range(count):
+            center = start_px + viewport_px / 2.0 + idx * stride_px
+            centers.append(min(center, max_center))
+        return centers
+
+    x_centers = _centers(west_x, east_x, bbox_w, viewport_width, stride_x)
+    y_centers = _centers(north_y, south_y, bbox_h, viewport_height, stride_y)
+
+    tiles = []
+    for row, center_y in enumerate(y_centers):
+        cols = range(len(x_centers)) if row % 2 == 0 else range(len(x_centers) - 1, -1, -1)
+        for col in cols:
+            center_x = x_centers[col]
+            tile = (row, col, pixel_y_to_lat(center_y, zoom), pixel_x_to_lon(center_x, zoom))
+            if region_code:
+                tile = tile + (tile_id(region_code, zoom, row, col),)
+            tiles.append(tile)
+
+    grid_info = {
+        "mode": "bbox",
+        "n_rows": len(y_centers),
+        "n_cols": len(x_centers),
+        "y_top": north_y,
+        "lon_min": min_lon,
+        "lon_span": viewport_width * 360.0 / (256 * (2 ** zoom)),
+        "total_bbox_tiles": len(tiles),
+        "bbox": {
+            "min_lat": min_lat,
+            "min_lon": min_lon,
+            "max_lat": max_lat,
+            "max_lon": max_lon,
+        },
+        "overlap_px": int(max(0, overlap_px)),
+        "stride_x": stride_x,
+        "stride_y": stride_y,
+        "west_x": west_x,
+        "east_x": east_x,
+        "north_y": north_y,
+        "south_y": south_y,
+    }
+    return tiles, grid_info
+
+
 def polygon_to_pixel_coords(polygon, grid_info, zoom):
     """
     Convert polygon vertices (lat, lon) to pixel coordinates

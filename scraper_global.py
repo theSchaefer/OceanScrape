@@ -21,6 +21,7 @@ Usage:
 """
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -41,13 +42,15 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
-from debug_map_probe import run_map_probe
+from coastline_alignment import CoastlineOffsetTracker, coastline_source_status
+from debug_map_probe import run_map_probe, write_frame_scan
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import (
-    get_tile_centers, polygon_to_pixel_coords, _point_in_polygon,
-    lat_to_pixel_y,
+    get_tile_centers, get_bbox_tile_centers, polygon_to_pixel_coords,
+    tile_id as make_tile_id, _point_in_polygon,
+    lat_to_pixel_y, lon_to_pixel_x, pixel_x_to_lon, pixel_y_to_lat,
 )
-from regions import REGIONS, REGION_TIERS
+from regions import REGIONS, REGION_TIERS, load_bbox_regions
 from update_database import process_log
 
 load_dotenv()
@@ -71,6 +74,37 @@ SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.arg
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
 SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
 MAX_DRAG_PX = 800  # max single-drag distance to avoid Leaflet inertia
+USE_SETVIEW_OPTIMIZATION = os.getenv("USE_SETVIEW_OPTIMIZATION", "0") == "1"
+LEAFLET_DIAGNOSTICS = os.getenv("LEAFLET_DIAGNOSTICS", "0") == "1"
+LEAFLET_PROJECTION_FALLBACK = os.getenv("LEAFLET_PROJECTION_FALLBACK", "0") == "1"
+USE_BBOX_TILING = os.getenv("USE_BBOX_TILING", "1") == "1"
+BBOX_OVERLAP_PX = int(os.getenv("BBOX_OVERLAP_PX", "128"))
+ENABLE_CROSS_ZOOM_QA = os.getenv("ENABLE_CROSS_ZOOM_QA", "1") == "1"
+QA_SAMPLE_RATE = float(os.getenv("QA_SAMPLE_RATE", "0.10"))
+QA_MIN_SAMPLES = int(os.getenv("QA_MIN_SAMPLES", "1"))
+QA_MAX_SAMPLES = int(os.getenv("QA_MAX_SAMPLES", "3"))
+QA_TOTAL_RATIO_THRESHOLD = float(os.getenv("QA_TOTAL_RATIO_THRESHOLD", "1.35"))
+QA_TYPE_RATIO_THRESHOLD = float(os.getenv("QA_TYPE_RATIO_THRESHOLD", "1.50"))
+QA_ABS_DELTA_THRESHOLD = int(os.getenv("QA_ABS_DELTA_THRESHOLD", "5"))
+
+
+def _default_coastline_calibration_enabled():
+    if os.getenv("COASTLINE_DATA_PATH") or os.getenv("COASTLINE_GEOJSON"):
+        return True
+    base = Path("./data/coastline")
+    return any(
+        (base / name).exists()
+        for name in ("ne_10m_land.geojson", "ne_10m_land.zip", "ne_10m_land.shp")
+    )
+
+
+ENABLE_COASTLINE_CALIBRATION = (
+    os.getenv(
+        "ENABLE_COASTLINE_CALIBRATION",
+        "1" if _default_coastline_calibration_enabled() else "0",
+    ) == "1"
+)
+ACTIVE_REGIONS = load_bbox_regions(use_bbox_tiling=USE_BBOX_TILING)
 
 # Crash retry settings
 MAX_REGION_RETRIES = 2
@@ -99,11 +133,47 @@ _tile_grid_cache = {}
 
 def _get_tile_grid(region_name, config):
     """Return (tiles, grid_info) for a region, computing only on first call."""
-    if region_name not in _tile_grid_cache:
-        _tile_grid_cache[region_name] = get_tile_centers(
-            config["polygon"], config["zoom"], VIEWPORT_WIDTH, VIEWPORT_HEIGHT
+    cache_key = (
+        region_name,
+        config.get("zoom"),
+        VIEWPORT_WIDTH,
+        VIEWPORT_HEIGHT,
+        USE_BBOX_TILING,
+        BBOX_OVERLAP_PX,
+    )
+    if cache_key not in _tile_grid_cache:
+        if USE_BBOX_TILING and config.get("bbox"):
+            _tile_grid_cache[cache_key] = get_bbox_tile_centers(
+                config["bbox"],
+                config["zoom"],
+                VIEWPORT_WIDTH,
+                VIEWPORT_HEIGHT,
+                overlap_px=BBOX_OVERLAP_PX,
+                region_code=region_name,
+            )
+        else:
+            _tile_grid_cache[cache_key] = get_tile_centers(
+                config["polygon"], config["zoom"], VIEWPORT_WIDTH, VIEWPORT_HEIGHT
+            )
+    return _tile_grid_cache[cache_key]
+
+
+def _region_center(config):
+    """Return the startup center for bbox-first or legacy polygon regions."""
+    bbox = config.get("bbox")
+    if USE_BBOX_TILING and bbox:
+        return (
+            (bbox["min_lat"] + bbox["max_lat"]) / 2,
+            (bbox["min_lon"] + bbox["max_lon"]) / 2,
         )
-    return _tile_grid_cache[region_name]
+    return _polygon_center(config["polygon"])
+
+
+def _unpack_tile(tile, region_name=None, zoom=None):
+    """Accept legacy 4-tuples and bbox 5-tuples with deterministic tile ids."""
+    row, col, lat, lon = tile[:4]
+    tid = tile[4] if len(tile) > 4 else make_tile_id(region_name or "tile", zoom or 0, row, col)
+    return row, col, lat, lon, tid
 
 
 # --- Logging ------------------------------------------------------------------
@@ -113,6 +183,38 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_frame_scan_lock = threading.Lock()
+_frame_scan_emitted = set()
+
+
+def _emit_frame_scan(page, timestamp_str, region_name, reason, worker_id=None):
+    """Best-effort diagnostic dump; never changes scraper control flow."""
+    worker = worker_id or threading.current_thread().name
+    key = (id(page), timestamp_str, region_name, reason)
+    with _frame_scan_lock:
+        if key in _frame_scan_emitted:
+            return None
+        _frame_scan_emitted.add(key)
+
+    try:
+        path = write_frame_scan(
+            page,
+            timestamp_str=timestamp_str,
+            region_name=region_name,
+            reason=reason,
+        )
+        logger.warning(
+            "[worker=%s region=%s] frame_scan reason=%s path=%s",
+            worker, region_name, reason, path,
+        )
+        return path
+    except Exception as exc:
+        logger.warning(
+            "[worker=%s region=%s] frame_scan failed reason=%s error=%s",
+            worker, region_name, reason, exc,
+        )
+        return None
 
 # --- Proxies ------------------------------------------------------------------
 
@@ -1394,22 +1496,36 @@ def _pan_map_js(page, target_lat, target_lon, zoom):
 
 
 def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
-             map_center=None, timeout_ms=5000):
-    """Pan the map with Leaflet setView, falling back to mouse drag."""
+             map_center=None, timeout_ms=5000, region_name=None,
+             timestamp_str=None, worker_id=None):
+    """Pan the map using mouse drag by default.
 
-    _discover_leaflet_map(page)
-    if _pan_map_js(page, target_lat, target_lon, zoom):
-        logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
-        time.sleep(0.05)
-        _wait_for_tiles_after_pan(page, timeout_ms)
-        _wait_for_ais_markers(page, timeout_ms=2000)
-        return True
+    Leaflet setView remains an explicit optimization path. Production capture
+    does not require the map object and does not abort when it is unavailable.
+    Returns the navigation mode used: ``setView`` or ``mouse-drag``.
+    """
 
-    logger.warning(
-        "  LOW-CONFIDENCE FALLBACK active: setView unavailable; "
-        "using mouse_drag pan to (%.5f, %.5f)",
-        target_lat, target_lon,
-    )
+    if USE_SETVIEW_OPTIMIZATION:
+        setview_available = False
+        try:
+            setview_available = _discover_leaflet_map(page)
+            if setview_available and _pan_map_js(page, target_lat, target_lon, zoom):
+                logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
+                time.sleep(0.05)
+                _wait_for_tiles_after_pan(page, timeout_ms)
+                _wait_for_ais_markers(page, timeout_ms=2000)
+                return "setView"
+        except Exception as exc:
+            logger.debug("  setView optimization unavailable: %s", exc)
+
+        if LEAFLET_DIAGNOSTICS and not setview_available:
+            _emit_frame_scan(
+                page,
+                timestamp_str,
+                region_name or "unknown",
+                "setView_unavailable",
+                worker_id=worker_id,
+            )
 
     total_pixels = 256 * (2 ** zoom)
     dx = (target_lon - cur_lon) * total_pixels / 360.0
@@ -1418,7 +1534,7 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     drag_y = -dy
 
     if abs(drag_x) < 1 and abs(drag_y) < 1:
-        return True
+        return "mouse-drag"
 
     if map_center:
         cx, cy = map_center
@@ -1442,12 +1558,12 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
         if steps_needed > 1:
             time.sleep(0.05)
 
-    logger.info("  Panned via mouse_drag fallback (dx=%.0f dy=%.0f, %d step(s))",
+    logger.info("  Panned via mouse_drag (dx=%.0f dy=%.0f, %d step(s))",
                 drag_x, drag_y, steps_needed)
     time.sleep(0.05)
     _wait_for_tiles_after_pan(page, timeout_ms)
     _wait_for_ais_markers(page, timeout_ms=2000)
-    return True
+    return "mouse-drag"
 
 
 def _wait_for_tiles_after_pan(page, timeout_ms=5000):
@@ -1502,15 +1618,388 @@ def _filter_markers_to_polygon(markers, polygon):
     """Keep only markers whose lat/lon falls inside the region polygon."""
     filtered = [m for m in markers
                 if _point_in_polygon(m["lat"], m["lon"], polygon)]
+    return _count_markers_by_type(filtered), filtered
+
+
+def _count_markers_by_type(markers):
+    """Return seer-compatible counts for an already filtered marker list."""
     counts = {
         "stationary_tankers": 0, "moving_tankers": 0,
         "stationary_cargos": 0, "moving_cargos": 0,
     }
-    for m in filtered:
+    for m in markers:
         key = ("moving_" if m["motion"] == "moving" else "stationary_") + \
               ("tankers" if m["type"] == "tanker" else "cargos")
         counts[key] += 1
-    return counts, filtered
+    return counts
+
+
+def _shift_marker_by_pixels(marker, dx_px, dy_px, zoom):
+    """Shift a geolocated marker in Web Mercator pixel space."""
+    gx = lon_to_pixel_x(marker["lon"], zoom) + dx_px
+    gy = lat_to_pixel_y(marker["lat"], zoom) + dy_px
+    shifted = dict(marker)
+    shifted["lon"] = round(pixel_x_to_lon(gx, zoom), 5)
+    shifted["lat"] = round(pixel_y_to_lat(gy, zoom), 5)
+    return shifted
+
+
+def _projection_before_after(tile_markers, coast_fit, zoom, polygon):
+    """Estimate before/after impact of coastline projection correction.
+
+    Detection count is unchanged by projection correction, but polygon-filtered
+    marker counts can change when the coordinates move near a region boundary.
+    ``before`` is the requested-center projection estimate reconstructed from
+    the corrected coordinates.
+    """
+    if not coast_fit or not coast_fit.usable or not tile_markers:
+        return {
+            "positional_error_before_m": 0.0,
+            "positional_error_after_m": 0.0,
+            "markers_before_filter": len(tile_markers),
+            "markers_after_filter": len(tile_markers),
+        }
+
+    fallback_markers = [
+        _shift_marker_by_pixels(m, coast_fit.dx_px, coast_fit.dy_px, zoom)
+        for m in tile_markers
+    ]
+    if polygon:
+        before_counts, before_filtered = _filter_markers_to_polygon(
+            fallback_markers, polygon
+        )
+        after_counts, after_filtered = _filter_markers_to_polygon(tile_markers, polygon)
+    else:
+        before_counts = _count_markers_by_type(fallback_markers)
+        after_counts = _count_markers_by_type(tile_markers)
+        before_filtered = fallback_markers
+        after_filtered = tile_markers
+    residual_m = coast_fit.meters * max(0.0, 1.0 - coast_fit.confidence)
+    return {
+        "positional_error_before_m": round(coast_fit.meters, 1),
+        "positional_error_after_m": round(residual_m, 1),
+        "markers_before_filter": len(before_filtered),
+        "markers_after_filter": len(after_filtered),
+        "counts_before_filter": before_counts,
+        "counts_after_filter": after_counts,
+    }
+
+
+def _counts_compact(counts):
+    tankers = int(counts.get("stationary_tankers", 0)) + int(counts.get("moving_tankers", 0))
+    cargos = int(counts.get("stationary_cargos", 0)) + int(counts.get("moving_cargos", 0))
+    return {
+        "total": tankers + cargos,
+        "tankers": tankers,
+        "cargos": cargos,
+        "moving_tankers": int(counts.get("moving_tankers", 0)),
+        "moving_cargos": int(counts.get("moving_cargos", 0)),
+    }
+
+
+def _add_counts(target, counts):
+    for key, value in _counts_compact(counts).items():
+        target[key] = target.get(key, 0) + value
+
+
+def _nav_mode_summary(nav_counts):
+    if nav_counts.get("setView", 0) and nav_counts.get("mouse-drag", 0):
+        return "mixed"
+    if nav_counts.get("setView", 0):
+        return "setView"
+    return "mouse-drag"
+
+
+def _projection_mode_summary(tile_detections):
+    sources = {
+        (tile.get("proj") or {}).get("source")
+        for tile in tile_detections
+        if (tile.get("proj") or {}).get("source")
+    }
+    if not sources:
+        return "unknown"
+    if len(sources) == 1:
+        return next(iter(sources))
+    if any(str(s).startswith("coastline") for s in sources):
+        return "mixed-coastline"
+    return "mixed"
+
+
+def _write_json_artifact(kind, timestamp_str, region_name, payload):
+    out_dir = Path("./data") / kind
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{timestamp_str}_{region_name}.json"
+    payload["path"] = str(path)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    return str(path)
+
+
+def _select_qa_tiles(tiles, region_name, zoom):
+    if not ENABLE_CROSS_ZOOM_QA or not tiles:
+        return []
+    scored = []
+    for tile in tiles:
+        row, col, lat, lon, tid = _unpack_tile(tile, region_name, zoom)
+        digest = hashlib.sha1(tid.encode("utf-8")).hexdigest()
+        score = int(digest[:12], 16) / float(0xFFFFFFFFFFFF)
+        scored.append((score, (row, col, lat, lon, tid)))
+    selected = [tile for score, tile in scored if score <= QA_SAMPLE_RATE]
+    if len(selected) < QA_MIN_SAMPLES:
+        selected = [tile for _, tile in sorted(scored)[:QA_MIN_SAMPLES]]
+    if QA_MAX_SAMPLES > 0:
+        selected = selected[:QA_MAX_SAMPLES]
+    return selected
+
+
+def _qa_subtile_centers(center_lat, center_lon, base_zoom, qa_zoom, map_width, map_height):
+    center_x = lon_to_pixel_x(center_lon, qa_zoom)
+    center_y = lat_to_pixel_y(center_lat, qa_zoom)
+    offsets = [
+        (-map_width / 2, -map_height / 2),
+        (map_width / 2, -map_height / 2),
+        (map_width / 2, map_height / 2),
+        (-map_width / 2, map_height / 2),
+    ]
+    subtiles = []
+    for idx, (dx, dy) in enumerate(offsets):
+        subtiles.append({
+            "idx": idx,
+            "lat": pixel_y_to_lat(center_y + dy, qa_zoom),
+            "lon": pixel_x_to_lon(center_x + dx, qa_zoom),
+        })
+    return subtiles
+
+
+def _prepare_map_after_url_navigation(page, region_name):
+    wait_for_map_tiles(page)
+    dismiss_cookie_banner(page)
+    set_dark_mode(page)
+    filter_ok = set_vessel_filter(page)
+    hide_ui_overlays(page)
+    if not filter_ok:
+        logger.warning("Region %s QA: vessel filter unavailable after zoom reload", region_name)
+    return filter_ok
+
+
+def _run_cross_zoom_qa(
+    page,
+    region_name,
+    config,
+    timestamp_str,
+    tiles,
+    baseline_by_tile_id,
+    map_dims,
+    nav_mode_used,
+    projection_mode,
+):
+    """Recapture sampled baseline tiles at zoom+1 and write a QA artifact."""
+    zoom = int(config["zoom"])
+    qa_zoom = zoom + 1
+    nav_counts = {"mouse-drag": 0, "setView": 0}
+    samples = []
+    qa_flags = []
+
+    payload = {
+        "enabled": ENABLE_CROSS_ZOOM_QA,
+        "region": region_name,
+        "region_name": config.get("name", region_name),
+        "timestamp": timestamp_str,
+        "nav_mode": nav_mode_used,
+        "projection_mode": projection_mode,
+        "zoom_used": zoom,
+        "qa_zoom": qa_zoom,
+        "sample_rate": QA_SAMPLE_RATE,
+        "thresholds": {
+            "total_ratio": QA_TOTAL_RATIO_THRESHOLD,
+            "type_ratio": QA_TYPE_RATIO_THRESHOLD,
+            "abs_delta": QA_ABS_DELTA_THRESHOLD,
+        },
+        "samples": samples,
+        "qa_flags": qa_flags,
+        "qa_confidence": 1.0,
+    }
+
+    selected = _select_qa_tiles(tiles, region_name, zoom)
+    payload["selected_tiles"] = [t[4] for t in selected]
+    if not ENABLE_CROSS_ZOOM_QA:
+        payload["reason"] = "ENABLE_CROSS_ZOOM_QA=0"
+        payload["path"] = _write_json_artifact("qa", timestamp_str, region_name, payload)
+        return payload
+    if not selected:
+        payload["reason"] = "no_tiles_selected"
+        payload["path"] = _write_json_artifact("qa", timestamp_str, region_name, payload)
+        return payload
+
+    map_width = int(map_dims["width"])
+    map_height = int(map_dims["height"])
+    map_cx = int(map_dims["x"]) + map_width // 2
+    map_cy = int(map_dims["y"]) + map_height // 2
+    map_locator = page.locator("#map_canvas")
+
+    for row, col, lat, lon, tid in selected:
+        baseline = baseline_by_tile_id.get(tid, {})
+        baseline_counts = {
+            "total": int(baseline.get("tankers", 0)) + int(baseline.get("cargos", 0)),
+            "tankers": int(baseline.get("tankers", 0)),
+            "cargos": int(baseline.get("cargos", 0)),
+            "moving_tankers": int(baseline.get("moving_tankers", 0)),
+            "moving_cargos": int(baseline.get("moving_cargos", 0)),
+        }
+        high_counts = {
+            "total": 0,
+            "tankers": 0,
+            "cargos": 0,
+            "moving_tankers": 0,
+            "moving_cargos": 0,
+        }
+        sample_flags = []
+        subtile_results = []
+        subtiles = _qa_subtile_centers(
+            lat, lon, zoom, qa_zoom, map_width, map_height
+        )
+
+        try:
+            first = subtiles[0]
+            page.goto(build_url(first["lat"], first["lon"], qa_zoom), wait_until="domcontentloaded")
+            _prepare_map_after_url_navigation(page, region_name)
+            cur_lat, cur_lon = first["lat"], first["lon"]
+
+            for subtile in subtiles:
+                if subtile["idx"] > 0:
+                    nav_mode = _pan_map(
+                        page,
+                        cur_lat,
+                        cur_lon,
+                        subtile["lat"],
+                        subtile["lon"],
+                        qa_zoom,
+                        map_center=(map_cx, map_cy),
+                        region_name=region_name,
+                        timestamp_str=timestamp_str,
+                    )
+                    nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
+                    cur_lat, cur_lon = subtile["lat"], subtile["lon"]
+
+                screenshot_args = {"type": SCREENSHOT_FORMAT}
+                if SCREENSHOT_FORMAT == "jpeg":
+                    screenshot_args["quality"] = SCREENSHOT_QUALITY
+                img_bytes = map_locator.screenshot(**screenshot_args)
+                det, _markers, _shape = _detect_ships_inline(
+                    img_bytes,
+                    subtile["lat"],
+                    subtile["lon"],
+                    qa_zoom,
+                    map_width,
+                    map_height,
+                    center_offset=None,
+                )
+                compact = _counts_compact(det)
+                _add_counts(high_counts, det)
+                subtile_results.append({
+                    "idx": subtile["idx"],
+                    "center_lat": subtile["lat"],
+                    "center_lon": subtile["lon"],
+                    "counts": compact,
+                })
+        except Exception as exc:
+            sample_flags.append("qa_capture_failed")
+            if "qa_capture_failed" not in qa_flags:
+                qa_flags.append("qa_capture_failed")
+            subtile_results.append({"error": str(exc)})
+
+        metrics = {}
+        for key, ratio_threshold in (
+            ("total", QA_TOTAL_RATIO_THRESHOLD),
+            ("tankers", QA_TYPE_RATIO_THRESHOLD),
+            ("cargos", QA_TYPE_RATIO_THRESHOLD),
+        ):
+            base = baseline_counts[key]
+            high = high_counts[key]
+            delta = high - base
+            ratio = high / max(base, 1)
+            metrics[key] = {
+                "baseline": base,
+                "zoom_plus_1": high,
+                "delta": delta,
+                "ratio": round(ratio, 3),
+            }
+            if delta >= QA_ABS_DELTA_THRESHOLD and ratio >= ratio_threshold:
+                flag = f"under_resolved_{key}"
+                sample_flags.append(flag)
+                if flag not in qa_flags:
+                    qa_flags.append(flag)
+
+        samples.append({
+            "tile_id": tid,
+            "tile": [row, col],
+            "baseline_center": {"lat": lat, "lon": lon},
+            "baseline_counts": baseline_counts,
+            "zoom_plus_1_counts": high_counts,
+            "metrics": metrics,
+            "flags": sample_flags,
+            "subtiles": subtile_results,
+        })
+
+    flagged_samples = sum(1 for sample in samples if sample["flags"])
+    payload["qa_flags"] = qa_flags
+    payload["qa_confidence"] = round(
+        max(0.0, 1.0 - flagged_samples / max(len(samples), 1)),
+        3,
+    )
+    payload["decision"] = {
+        "under_resolved": any(flag.startswith("under_resolved") for flag in qa_flags),
+        "rerun_higher_zoom": any(flag.startswith("under_resolved") for flag in qa_flags),
+        "low_confidence_tag": payload["qa_confidence"] < 0.75,
+    }
+    payload["qa_nav_mode"] = _nav_mode_summary(nav_counts)
+    payload["qa_nav_counts"] = nav_counts
+    payload["path"] = _write_json_artifact("qa", timestamp_str, region_name, payload)
+    logger.info(
+        "Region %s QA: path=%s confidence=%.3f flags=%s",
+        region_name,
+        payload["path"],
+        payload["qa_confidence"],
+        qa_flags or [],
+    )
+    return payload
+
+
+def _write_calibration_artifact(timestamp_str, region_name, config, coastline_summary):
+    payload = {
+        "enabled": ENABLE_COASTLINE_CALIBRATION,
+        "region": region_name,
+        "region_name": config.get("name", region_name),
+        "timestamp": timestamp_str,
+        "zoom_used": config.get("zoom"),
+        "calibration": coastline_summary,
+    }
+    payload["path"] = _write_json_artifact("calibration", timestamp_str, region_name, payload)
+    return payload
+
+
+def _write_failure_qa_artifact(timestamp_str, region_name, config, reason, error):
+    payload = {
+        "enabled": ENABLE_CROSS_ZOOM_QA,
+        "region": region_name,
+        "region_name": config.get("name", region_name),
+        "timestamp": timestamp_str,
+        "nav_mode": None,
+        "projection_mode": None,
+        "zoom_used": config.get("zoom"),
+        "qa_zoom": (config.get("zoom") + 1) if config.get("zoom") is not None else None,
+        "samples": [],
+        "qa_flags": [reason],
+        "qa_confidence": 0.0,
+        "decision": {
+            "under_resolved": False,
+            "rerun_higher_zoom": False,
+            "low_confidence_tag": True,
+        },
+        "error": str(error),
+    }
+    payload["path"] = _write_json_artifact("qa", timestamp_str, region_name, payload)
+    return payload
 
 
 # --- Leaflet map discovery ----------------------------------------------------
@@ -1603,9 +2092,10 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
 
     Returns dict with capture results: tankers, cargos, markers, file paths.
     """
-    polygon = config["polygon"]
+    polygon = config.get("polygon")
     zoom = config["zoom"]
     region_display = config.get("name", region_name)
+    tiling_mode = "bbox" if USE_BBOX_TILING and config.get("bbox") else "polygon"
 
     map_width = int(map_dims["width"])
     map_height = int(map_dims["height"])
@@ -1615,8 +2105,9 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     tiles, grid_info = _get_tile_grid(region_name, config)
     n_rows = grid_info["n_rows"]
     n_cols = grid_info["n_cols"]
-    logger.info("Region %s (%s): %d tiles (%dx%d), zoom %d",
-                region_name, region_display, len(tiles), n_rows, n_cols, zoom)
+    logger.info("Region %s (%s): %d tiles (%dx%d), zoom %d mode=%s class=%s",
+                region_name, region_display, len(tiles), n_rows, n_cols, zoom,
+                tiling_mode, config.get("crowded_class"))
 
     tile_images = {}
     tile_detections = []
@@ -1627,9 +2118,27 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     total_cargos = 0
     total_moving_tankers = 0
     total_moving_cargos = 0
-    center_offset_fallback_logged = False
+    projection_fallback_logged = False
+    leaflet_diag_logged = False
+    nav_counts = {"mouse-drag": 0, "setView": 0}
+    coastline_tracker = CoastlineOffsetTracker(
+        region_name,
+        logger=logger,
+        enabled=ENABLE_COASTLINE_CALIBRATION,
+    )
+    coastline_status = coastline_tracker.source_status()
+    logger.info(
+        "Region %s: coastline alignment source=%s available=%s path=%s "
+        "polygons=%d reason=%s",
+        region_name,
+        coastline_status["source"],
+        coastline_status["available"],
+        coastline_status["path"],
+        coastline_status["polygons"],
+        coastline_status.get("reason") or "ok",
+    )
 
-    center_lat, center_lon = _polygon_center(polygon)
+    center_lat, center_lon = _region_center(config)
     current_lat, current_lon = center_lat, center_lon
     map_locator = page.locator('#map_canvas')
 
@@ -1659,46 +2168,106 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         }
 
     # Navigate to first tile
-    first_row, first_col, first_lat, first_lon = tiles[0]
-    _pan_map(page, center_lat, center_lon, first_lat, first_lon, zoom,
-             map_center=(map_cx, map_cy))
+    first_row, first_col, first_lat, first_lon, _first_tile_id = _unpack_tile(
+        tiles[0], region_name, zoom
+    )
+    nav_mode = _pan_map(
+        page, center_lat, center_lon, first_lat, first_lon, zoom,
+        map_center=(map_cx, map_cy), region_name=region_name,
+        timestamp_str=timestamp_str,
+    )
+    nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
     current_lat, current_lon = first_lat, first_lon
 
     # Capture tiles
-    for i, (row, col, lat, lon) in enumerate(tiles):
+    for i, tile in enumerate(tiles):
+        row, col, lat, lon, tid = _unpack_tile(tile, region_name, zoom)
         if i > 0:
-            _pan_map(page, current_lat, current_lon, lat, lon, zoom,
-                     map_center=(map_cx, map_cy))
+            nav_mode = _pan_map(
+                page, current_lat, current_lon, lat, lon, zoom,
+                map_center=(map_cx, map_cy), region_name=region_name,
+                timestamp_str=timestamp_str,
+            )
+            nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
             current_lat, current_lon = lat, lon
 
         try:
-            pre_capture_center_offset = _wait_for_map_center_offset(
-                page, timeout_ms=800)
+            pre_capture_center_offset = None
+            if LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+                pre_capture_center_offset = _wait_for_map_center_offset(
+                    page, timeout_ms=250)
             screenshot_args = {"type": SCREENSHOT_FORMAT}
             if SCREENSHOT_FORMAT == "jpeg":
                 screenshot_args["quality"] = SCREENSHOT_QUALITY
             img_bytes = map_locator.screenshot(**screenshot_args)
 
-            # Query actual map-centre pixel (accounts for UI chrome + DPR)
-            center_offset = _get_map_center_offset(page) or pre_capture_center_offset
-            if not center_offset and not center_offset_fallback_logged:
-                logger.warning(
-                    "Region %s: LOW-CONFIDENCE FALLBACK active: "
-                    "center_offset unavailable during capture; using requested "
-                    "tile centers and fallback projection",
-                    region_name,
-                )
-                center_offset_fallback_logged = True
+            leaflet_center_offset = None
+            if LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+                try:
+                    leaflet_center_offset = (
+                        _get_map_center_offset(page) or pre_capture_center_offset
+                    )
+                except Exception:
+                    leaflet_center_offset = pre_capture_center_offset
+                if (
+                    LEAFLET_DIAGNOSTICS
+                    and not leaflet_center_offset
+                    and not leaflet_diag_logged
+                ):
+                    scan_path = _emit_frame_scan(
+                        page,
+                        timestamp_str,
+                        region_name,
+                        "center_offset_capture_unavailable",
+                    )
+                    logger.warning(
+                        "Region %s: Leaflet center_offset unavailable; "
+                        "continuing with coastline/requested-center projection; "
+                        "frame_scan=%s",
+                        region_name,
+                        scan_path,
+                    )
+                    leaflet_diag_logged = True
 
-            # Inline ship detection + geo-coordinate extraction.
-            # Anchor the projection on the *actual* map state read from
-            # Leaflet (map.getCenter() / map.getZoom()), not the requested
-            # setView arguments. Guards against MarineTraffic rounding or
-            # clamping our pan/zoom calls.
-            proj_lat = center_offset["map_lat"] if center_offset else lat
-            proj_lon = center_offset["map_lng"] if center_offset else lon
-            proj_zoom = (center_offset.get("map_zoom") if center_offset
-                         else zoom) or zoom
+            coast_fit = coastline_tracker.estimate(
+                img_bytes, lat, lon, zoom, tile=(row, col)
+            )
+            center_offset = None
+            projection_source = "requested-center"
+            proj_lat = lat
+            proj_lon = lon
+            proj_zoom = zoom
+            if coast_fit.usable:
+                center_offset = coast_fit.as_center_offset(map_width, map_height, zoom)
+                projection_source = f"coastline-{coast_fit.source}"
+                if coast_fit.source == "fit":
+                    logger.info(
+                        "  Tile (%d,%d): coastline-fit conf=%.3f "
+                        "offset=(%.6f, %.6f; %.0fm) px=(%.0f, %.0f)",
+                        row, col, coast_fit.confidence,
+                        coast_fit.delta_lat, coast_fit.delta_lon,
+                        coast_fit.meters, coast_fit.dx_px, coast_fit.dy_px,
+                    )
+            elif LEAFLET_PROJECTION_FALLBACK and leaflet_center_offset:
+                center_offset = leaflet_center_offset
+                projection_source = "leaflet-fallback"
+                proj_lat = leaflet_center_offset.get("map_lat") or lat
+                proj_lon = leaflet_center_offset.get("map_lng") or lon
+                proj_zoom = leaflet_center_offset.get("map_zoom") or zoom
+            elif not projection_fallback_logged:
+                logger.warning(
+                    "Region %s: projection fallback active: coastline source=%s "
+                    "confidence=%.3f reason=%s; using requested tile centers",
+                    region_name,
+                    coast_fit.source,
+                    coast_fit.confidence,
+                    coast_fit.reason,
+                )
+                projection_fallback_logged = True
+
+            # Inline ship detection + geo-coordinate extraction. Coastline
+            # registration supplies a seer.py-compatible center_offset, so the
+            # marker projection is corrected without making Leaflet mandatory.
             logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
                          row, col, len(img_bytes))
             det, tile_markers, img_shape = _detect_ships_inline(
@@ -1706,9 +2275,19 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 map_width, map_height, center_offset=center_offset
             )
 
-            # Filter markers to region polygon boundary
+            # BBox mode keeps the full bbox; legacy mode preserves polygon filtering.
             raw_count = len(tile_markers)
-            det, tile_markers = _filter_markers_to_polygon(tile_markers, polygon)
+            filter_polygon = polygon if tiling_mode == "polygon" else None
+            projection_compare = _projection_before_after(
+                tile_markers,
+                coast_fit if coast_fit.usable else None,
+                zoom,
+                filter_polygon,
+            )
+            if filter_polygon:
+                det, tile_markers = _filter_markers_to_polygon(
+                    tile_markers, filter_polygon
+                )
             if raw_count != len(tile_markers):
                 logger.debug("  Tile (%d,%d): geo-filtered %d → %d markers",
                              row, col, raw_count, len(tile_markers))
@@ -1719,10 +2298,10 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             # Debug: warn if Leaflet's actual center/zoom drifted from the
             # requested setView arguments (would indicate MarineTraffic is
             # rounding, clamping, or otherwise mutating our pan calls).
-            if center_offset:
+            if leaflet_center_offset:
                 from seer import _debug_center_check
-                _debug_center_check(lat, lon, center_offset, row, col, logger)
-                act_zoom = center_offset.get("map_zoom")
+                _debug_center_check(lat, lon, leaflet_center_offset, row, col, logger)
+                act_zoom = leaflet_center_offset.get("map_zoom")
                 if act_zoom is not None and abs(act_zoom - zoom) > 1e-6:
                     logger.warning("  Tile (%d,%d): setZoom drift! "
                                    "requested %s, actual %s",
@@ -1742,9 +2321,12 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             all_markers.extend(tile_markers)
 
             tile_detections.append({
+                "tile_id": tid,
                 "tile": [row, col],
                 "center_lat": lat,
                 "center_lon": lon,
+                "zoom": zoom,
+                "tiling_mode": tiling_mode,
                 "tankers": tankers,
                 "cargos": cargos,
                 "moving_tankers": mt,
@@ -1755,14 +2337,20 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 # scraper saw at capture time.
                 "proj": {
                     "req_lat": lat, "req_lon": lon, "req_zoom": zoom,
-                    "act_lat": center_offset.get("map_lat") if center_offset else None,
-                    "act_lon": center_offset.get("map_lng") if center_offset else None,
-                    "act_zoom": center_offset.get("map_zoom") if center_offset else None,
+                    "source": projection_source,
+                    "act_lat": (leaflet_center_offset.get("map_lat")
+                                if leaflet_center_offset else None),
+                    "act_lon": (leaflet_center_offset.get("map_lng")
+                                if leaflet_center_offset else None),
+                    "act_zoom": (leaflet_center_offset.get("map_zoom")
+                                 if leaflet_center_offset else None),
                     "dpr": center_offset.get("dpr") if center_offset else None,
                     "img_h": int(img_shape[0]) if img_shape else None,
                     "img_w": int(img_shape[1]) if img_shape else None,
                     "center_x": center_offset.get("center_x") if center_offset else None,
                     "center_y": center_offset.get("center_y") if center_offset else None,
+                    "coastline": coast_fit.to_log_dict(),
+                    "before_after": projection_compare,
                 },
             })
 
@@ -1770,12 +2358,33 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 tile_images[(row, col)] = img_bytes
 
             tiles_ok += 1
-            logger.info("  Tile (%d,%d) [%d/%d]: %d tankers (%d mov), %d cargo (%d mov)",
-                        row, col, i + 1, len(tiles), tankers, mt, cargos, mc)
+            logger.info(
+                "  Tile (%d,%d) [%d/%d]: %d tankers (%d mov), "
+                "%d cargo (%d mov) projection=%s coast_conf=%.3f",
+                row, col, i + 1, len(tiles), tankers, mt, cargos, mc,
+                projection_source, coast_fit.confidence,
+            )
 
         except Exception as e:
             logger.error("  Tile (%d,%d) failed: %s", row, col, e)
             tiles_failed += 1
+
+    coastline_summary = coastline_tracker.summary()
+    last_fit = coastline_summary.get("last_fit") or {}
+    logger.info(
+        "Region %s navigation summary: nav=%s setView_opt=%s "
+        "coast_conf=%s offset=(dlat=%s dlon=%s meters=%s) "
+        "projection_fallbacks=%d coastline_stats=%s",
+        region_name,
+        nav_counts,
+        USE_SETVIEW_OPTIMIZATION,
+        last_fit.get("confidence"),
+        last_fit.get("delta_lat"),
+        last_fit.get("delta_lon"),
+        last_fit.get("meters"),
+        coastline_summary["stats"].get("fallback", 0),
+        coastline_summary["stats"],
+    )
 
     # --- Save composite image if requested ------------------------------------
     saved_path = ""
@@ -1796,19 +2405,22 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             tile_img = Image.open(io.BytesIO(img_bytes))
             composite.paste(tile_img, (c * map_width, r * map_height))
 
-        # Mask to polygon
-        pixel_coords = polygon_to_pixel_coords(polygon, grid_info, zoom)
-        mask = Image.new("L", composite.size, 0)
-        draw = ImageDraw.Draw(mask)
-        draw.polygon(pixel_coords, fill=255)
+        if tiling_mode == "polygon" and polygon:
+            # Mask to polygon only in legacy polygon mode.
+            pixel_coords = polygon_to_pixel_coords(polygon, grid_info, zoom)
+            mask = Image.new("L", composite.size, 0)
+            draw = ImageDraw.Draw(mask)
+            draw.polygon(pixel_coords, fill=255)
 
-        black = Image.new("RGB", composite.size, (0, 0, 0))
-        result = Image.composite(composite, black, mask)
+            black = Image.new("RGB", composite.size, (0, 0, 0))
+            result = Image.composite(composite, black, mask)
 
-        # Crop to polygon bounding box to reduce file size
-        bbox = mask.getbbox()
-        if bbox:
-            result = result.crop(bbox)
+            # Crop to polygon bounding box to reduce file size
+            bbox = mask.getbbox()
+            if bbox:
+                result = result.crop(bbox)
+        else:
+            result = composite
 
         if SCREENSHOT_FORMAT == "jpeg":
             result.save(str(output_path), quality=SCREENSHOT_QUALITY)
@@ -1819,6 +2431,46 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         saved_path = str(output_path)
         logger.info("Region %s: saved %s (%.1f KB)", region_name, filename, file_size_kb)
 
+    baseline_by_tile_id = {
+        tile.get("tile_id"): tile for tile in tile_detections if tile.get("tile_id")
+    }
+    nav_mode_used = _nav_mode_summary(nav_counts)
+    projection_mode = _projection_mode_summary(tile_detections)
+    try:
+        qa_summary = _run_cross_zoom_qa(
+            page,
+            region_name,
+            config,
+            timestamp_str,
+            tiles,
+            baseline_by_tile_id,
+            map_dims,
+            nav_mode_used,
+            projection_mode,
+        )
+    except Exception as exc:
+        qa_summary = {
+            "enabled": ENABLE_CROSS_ZOOM_QA,
+            "region": region_name,
+            "timestamp": timestamp_str,
+            "nav_mode": nav_mode_used,
+            "projection_mode": projection_mode,
+            "zoom_used": zoom,
+            "qa_flags": ["qa_failed"],
+            "qa_confidence": 0.0,
+            "error": str(exc),
+        }
+        qa_summary["path"] = _write_json_artifact(
+            "qa", timestamp_str, region_name, qa_summary
+        )
+        logger.warning("Region %s QA failed: %s", region_name, exc)
+    calibration_artifact = _write_calibration_artifact(
+        timestamp_str, region_name, config, coastline_summary
+    )
+
+    qa_flags = qa_summary.get("qa_flags", [])
+    qa_confidence = qa_summary.get("qa_confidence", 0.0)
+
     # --- Log results ----------------------------------------------------------
     _log_json(
         timestamp_str, region_name, saved_path,
@@ -1827,6 +2479,11 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         moving_tankers=total_moving_tankers,
         moving_cargos=total_moving_cargos,
         markers=all_markers,
+        nav_mode=nav_mode_used,
+        projection_mode=projection_mode,
+        zoom_used=zoom,
+        qa_flags=qa_flags,
+        qa_confidence=qa_confidence,
     )
 
     logger.info("Region %s: %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
@@ -1842,6 +2499,15 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         "tiles_ok": tiles_ok,
         "tiles_failed": tiles_failed,
         "detections": tile_detections,
+        "nav": nav_counts,
+        "nav_mode": nav_mode_used,
+        "projection_mode": projection_mode,
+        "zoom_used": zoom,
+        "qa": qa_summary,
+        "qa_flags": qa_flags,
+        "qa_confidence": qa_confidence,
+        "coastline": coastline_summary,
+        "calibration": calibration_artifact,
     }
 
 
@@ -1861,7 +2527,7 @@ def capture_worker(region_name, timestamp_str):
     the Cloudflare + setup cost, but starts from a known-clean state.
     """
     worker_id = threading.current_thread().name
-    config = REGIONS[region_name]
+    config = ACTIVE_REGIONS[region_name]
     zoom = config["zoom"]
     region_display = config.get("name", region_name)
 
@@ -1928,7 +2594,7 @@ def capture_worker(region_name, timestamp_str):
             _inject_stealth_scripts(page, geo)
             _inject_map_hooks(page)
 
-            center_lat, center_lon = _polygon_center(config["polygon"])
+            center_lat, center_lon = _region_center(config)
             url = build_url(center_lat, center_lon, zoom)
             logger.info(
                 "[worker=%s region=%s] loading url at zoom %d",
@@ -1961,7 +2627,8 @@ def capture_worker(region_name, timestamp_str):
                     if not filter_ok:
                         raise RuntimeError("required setup failed: vessel filter")
                     hide_ui_overlays(page)
-                    _discover_leaflet_map(page)
+                    if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+                        _discover_leaflet_map(page)
             except Exception as e:
                 retry_setup = (
                     _is_crash_error(e)
@@ -1985,36 +2652,49 @@ def capture_worker(region_name, timestamp_str):
                 return results
 
             map_dims = _get_map_dimensions(page)
-            center_offset = _wait_for_map_center_offset(page, timeout_ms=6000)
-            try:
-                map_probe = run_map_probe(page)
-                logger.info("%s", json.dumps({
-                    "event": "map_probe",
-                    "worker": worker_id,
-                    "region": region_name,
-                    "probe": map_probe,
-                }, sort_keys=True))
-            except Exception as e:
-                logger.warning(
-                    "[worker=%s region=%s] map probe failed: %s",
-                    worker_id, region_name, e,
-                )
-            if not center_offset:
-                logger.warning(
-                    "[worker=%s region=%s] LOW-CONFIDENCE FALLBACK active: "
-                    "center_offset unavailable; continuing with requested "
-                    "tile centers and fallback projection",
-                    worker_id, region_name,
-                )
+            center_offset = None
+            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+                center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
+                try:
+                    map_probe = run_map_probe(page)
+                    logger.info("%s", json.dumps({
+                        "event": "map_probe",
+                        "worker": worker_id,
+                        "region": region_name,
+                        "probe": map_probe,
+                    }, sort_keys=True))
+                except Exception as e:
+                    logger.warning(
+                        "[worker=%s region=%s] map probe failed: %s",
+                        worker_id, region_name, e,
+                    )
+                if LEAFLET_DIAGNOSTICS and not center_offset:
+                    scan_path = _emit_frame_scan(
+                        page,
+                        timestamp_str,
+                        region_name,
+                        "center_offset_setup_unavailable",
+                        worker_id=worker_id,
+                    )
+                    logger.warning(
+                        "[worker=%s region=%s] Leaflet center_offset unavailable; "
+                        "production capture continues with coastline/requested-center "
+                        "projection; frame_scan=%s",
+                        worker_id, region_name, scan_path,
+                    )
+            coast_status = coastline_source_status()
 
             logger.info(
-                "[worker=%s region=%s] setup ok: mode=%s map_dims=%dx%d "
-                "center_offset=%s source=%s dark=%s filter=%s",
+                "[worker=%s region=%s] setup ok: nav_default=mouse-drag "
+                "setView_opt=%s map_dims=%dx%d center_offset=%s source=%s "
+                "coastline_calibration=%s coastline_available=%s dark=%s filter=%s",
                 worker_id, region_name,
-                "normal" if center_offset else "low-confidence-fallback",
+                USE_SETVIEW_OPTIMIZATION,
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
                 center_offset.get("source") if center_offset else None,
+                ENABLE_COASTLINE_CALIBRATION,
+                coast_status.get("available"),
                 dark_state,
                 filter_state,
             )
@@ -2027,7 +2707,6 @@ def capture_worker(region_name, timestamp_str):
             except Exception as e:
                 retry_capture = (
                     _is_crash_error(e)
-                    or "setview unavailable" in str(e).lower()
                 )
                 if retry_capture:
                     logger.error("[worker=%s region=%s] capture failed (retryable): %s",
@@ -2051,6 +2730,18 @@ def capture_worker(region_name, timestamp_str):
         else:
             logger.error("[worker=%s region=%s] worker failed: %s",
                          worker_id, region_name, e)
+            qa_summary = _write_failure_qa_artifact(
+                timestamp_str, region_name, config, "capture_failed", e
+            )
+            _log_json(
+                timestamp_str, region_name, "", 0, 0, 1, 0.0, 0, 0,
+                zoom, [], zoom_used=zoom,
+                qa_flags=qa_summary.get("qa_flags", []),
+                qa_confidence=qa_summary.get("qa_confidence"),
+            )
+            qa_path = qa_summary["path"]
+            logger.info("[worker=%s region=%s] failure QA artifact=%s",
+                        worker_id, region_name, qa_path)
 
     results["_retryable"] = retryable
     return results
@@ -2069,11 +2760,14 @@ def capture_region(region_name, config, timestamp_str):
 # --- Logging ------------------------------------------------------------------
 
 _log_lock = threading.Lock()
+_capture_log_path = Path("./data") / "captures_log.jsonl"
 
 
 def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
               tankers=0, cargos=0, zoom=None, detections=None,
-              moving_tankers=0, moving_cargos=0, markers=None):
+              moving_tankers=0, moving_cargos=0, markers=None,
+              nav_mode=None, projection_mode=None, zoom_used=None,
+              qa_flags=None, qa_confidence=None):
     """Append a single JSON line to captures_log.jsonl (thread-safe)."""
     Path("./data").mkdir(parents=True, exist_ok=True)
 
@@ -2104,11 +2798,15 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
         "status": status,
         "markers": markers or [],
         "detections": detections or [],
+        "nav_mode": nav_mode,
+        "projection_mode": projection_mode,
+        "zoom_used": zoom_used or zoom or REGIONS.get(region, {}).get("zoom", DEFAULT_ZOOM_LEVEL),
+        "qa_flags": qa_flags or [],
+        "qa_confidence": qa_confidence,
     }
 
-    jsonl_path = Path("./data") / "captures_log.jsonl"
     with _log_lock:
-        with open(jsonl_path, "a") as f:
+        with open(_capture_log_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     logger.info("_log_json: region=%s status=%s tankers=%d cargos=%d "
@@ -2120,7 +2818,7 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
 # --- Orchestration ------------------------------------------------------------
 
 
-def capture_all_regions(region_filter=None):
+def capture_all_regions(region_filter=None, no_ingest=False):
     """Capture all (or filtered) regions in single-region-per-worker mode.
 
     Each region is submitted to a ThreadPoolExecutor as an atomic task; the
@@ -2128,25 +2826,33 @@ def capture_all_regions(region_filter=None):
     browser down. Concurrency is capped at MAX_BROWSERS. Regions are sorted
     largest-first so the tail of the run is dominated by smaller regions.
     """
+    global _capture_log_path
+
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     logger.info("Starting capture run: %s", timestamp_str)
+    previous_log_path = _capture_log_path
+    if no_ingest:
+        _capture_log_path = Path("./data") / f"captures_validation_{timestamp_str}.jsonl"
+        logger.info("Validation capture log: %s", _capture_log_path)
 
     # Determine which regions to capture
     if region_filter:
-        names = [n for n in region_filter if n in REGIONS]
+        names = [n for n in region_filter if n in ACTIVE_REGIONS]
     else:
-        names = list(REGIONS.keys())
+        names = list(ACTIVE_REGIONS.keys())
 
     # Compute tile counts and sort largest-first (reduces tail latency)
     tile_counts = {}
     total_tiles = 0
     for name in names:
-        config = REGIONS[name]
+        config = ACTIVE_REGIONS[name]
         tiles, info = _get_tile_grid(name, config)
         tile_counts[name] = len(tiles)
         total_tiles += len(tiles)
-        logger.info("  %s (%s): %d tiles, zoom %d",
-                    name, config.get("name", name), len(tiles), config["zoom"])
+        logger.info("  %s (%s): %d tiles, zoom %d class=%s mode=%s",
+                    name, config.get("name", name), len(tiles), config["zoom"],
+                    config.get("crowded_class"),
+                    "bbox" if USE_BBOX_TILING and config.get("bbox") else "polygon")
 
     names.sort(key=lambda n: tile_counts[n], reverse=True)
     logger.info("Total: %d regions, %d tiles (sorted largest-first)", len(names), total_tiles)
@@ -2229,13 +2935,19 @@ def capture_all_regions(region_filter=None):
         grand_tankers, grand_mov_t, grand_cargos, grand_mov_c,
     )
 
-    # Flush captures_log.jsonl into PostgreSQL
-    try:
-        logger.info("Ingesting captures log into database...")
-        process_log()
-        logger.info("Database ingestion complete")
-    except Exception as e:
-        logger.error("Database ingestion failed: %s (data preserved in captures_log.jsonl)", e)
+    # Flush captures_log.jsonl into PostgreSQL unless this is a validation run.
+    if no_ingest:
+        logger.info("Database ingestion skipped (--no-ingest)")
+    else:
+        try:
+            logger.info("Ingesting captures log into database...")
+            process_log()
+            logger.info("Database ingestion complete")
+        except Exception as e:
+            logger.error("Database ingestion failed: %s (data preserved in captures_log.jsonl)", e)
+
+    if no_ingest:
+        _capture_log_path = previous_log_path
 
     return all_results
 
@@ -2256,6 +2968,8 @@ def main():
     region_filter = None
     zoom_filter = None
     tier_filter = None
+    run_once = False
+    no_ingest = False
     for arg in sys.argv[1:]:
         if arg.startswith("--regions="):
             region_filter = arg.split("=", 1)[1].split(",")
@@ -2265,12 +2979,20 @@ def main():
             tier_filter = arg.split("=", 1)[1].split(",")
         elif arg == "--save-images":
             pass  # Already handled at module level via SAVE_IMAGES
+        elif arg == "--once":
+            run_once = True
+        elif arg == "--no-ingest":
+            no_ingest = True
         elif arg == "--list-regions":
-            print(f"{'Key':<6} {'Zoom':<5} {'Tier':<10} {'Name'}")
-            print("-" * 65)
-            for key, config in sorted(REGIONS.items()):
+            print(f"{'Key':<6} {'Zoom':<5} {'Class':<8} {'Tier':<10} {'Name'}")
+            print("-" * 78)
+            for key, config in sorted(ACTIVE_REGIONS.items()):
                 tier = REGION_TIERS.get(key, "?")
-                print(f"{key:<6} z{config['zoom']:<4} {tier:<10} {config.get('name', key)}")
+                print(
+                    f"{key:<6} z{config['zoom']:<4} "
+                    f"{config.get('crowded_class', '?'):<8} "
+                    f"{tier:<10} {config.get('name', key)}"
+                )
             return
         elif arg == "--help":
             print(__doc__)
@@ -2279,7 +3001,7 @@ def main():
     # Apply --zoom and --tier filters to build region_filter
     if zoom_filter or tier_filter:
         filtered = set()
-        for code, config in REGIONS.items():
+        for code, config in ACTIVE_REGIONS.items():
             zoom_ok = zoom_filter is None or config["zoom"] in zoom_filter
             tier_ok = tier_filter is None or REGION_TIERS.get(code) in tier_filter
             if zoom_ok and tier_ok:
@@ -2296,7 +3018,7 @@ def main():
 
     # Log region summary by zoom level
     zoom_groups = {}
-    for name, config in REGIONS.items():
+    for name, config in ACTIVE_REGIONS.items():
         z = config["zoom"]
         zoom_groups.setdefault(z, []).append(name)
 
@@ -2306,21 +3028,25 @@ def main():
                     ", ".join(regions_at_z))
 
     total_tiles = 0
-    for name in (region_filter or REGIONS.keys()):
-        if name not in REGIONS:
+    for name in (region_filter or ACTIVE_REGIONS.keys()):
+        if name not in ACTIVE_REGIONS:
             continue
-        config = REGIONS[name]
+        config = ACTIVE_REGIONS[name]
         tiles, info = _get_tile_grid(name, config)
         total_tiles += len(tiles)
 
-    active_count = len(region_filter) if region_filter else len(REGIONS)
+    active_count = len(region_filter) if region_filter else len(ACTIVE_REGIONS)
     logger.info("Total: %d regions, %d tiles | Viewport: %dx%d | "
-                "Max browsers: %d | Save images: %s",
+                "Max browsers: %d | Save images: %s | bbox=%s | cross_zoom_qa=%s "
+                "| coastline_calibration=%s | no_ingest=%s",
                 active_count, total_tiles, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
-                MAX_BROWSERS, SAVE_IMAGES)
+                MAX_BROWSERS, SAVE_IMAGES, USE_BBOX_TILING,
+                ENABLE_CROSS_ZOOM_QA, ENABLE_COASTLINE_CALIBRATION, no_ingest)
 
     # Run once immediately
-    capture_all_regions(region_filter)
+    capture_all_regions(region_filter, no_ingest=no_ingest)
+    if run_once:
+        return
 
     # Schedule future runs
     sched.every(SCRAPE_INTERVAL_MINUTES).minutes.do(scheduled_run)

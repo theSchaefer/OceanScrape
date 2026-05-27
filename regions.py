@@ -19,6 +19,80 @@ def _parse_polygon(env_key, default):
     return points
 
 
+def polygon_to_bbox(polygon):
+    """Return a bbox dict from a list of (lat, lon) polygon vertices."""
+    lats = [p[0] for p in polygon]
+    lons = [p[1] for p in polygon]
+    return {
+        "min_lat": min(lats),
+        "min_lon": min(lons),
+        "max_lat": max(lats),
+        "max_lon": max(lons),
+    }
+
+
+def bbox_to_polygon(bbox):
+    """Return a rectangular polygon for a bbox dict."""
+    return [
+        (bbox["max_lat"], bbox["min_lon"]),
+        (bbox["max_lat"], bbox["max_lon"]),
+        (bbox["min_lat"], bbox["max_lon"]),
+        (bbox["min_lat"], bbox["min_lon"]),
+    ]
+
+
+CROWDED_ZOOM_POLICY = {
+    "low": 9,
+    "medium": 10,
+    "high": 12,
+}
+
+
+def crowded_class_from_zoom(zoom):
+    """Map legacy fixed zooms to the new static crowdedness classes."""
+    if int(zoom) <= 9:
+        return "low"
+    if int(zoom) == 10:
+        return "medium"
+    return "high"
+
+
+def normalize_region(code, config, use_bbox_tiling=True):
+    """Expose the production region schema while preserving legacy REGIONS."""
+    polygon = config.get("polygon")
+    bbox = config.get("bbox")
+    if bbox is None and polygon:
+        bbox = polygon_to_bbox(polygon)
+    if polygon is None and bbox:
+        polygon = bbox_to_polygon(bbox)
+
+    legacy_zoom = int(config.get("zoom", CROWDED_ZOOM_POLICY["medium"]))
+    crowded_class = config.get("crowded_class") or crowded_class_from_zoom(legacy_zoom)
+    zoom = (
+        CROWDED_ZOOM_POLICY[crowded_class]
+        if use_bbox_tiling
+        else legacy_zoom
+    )
+
+    return {
+        "code": code,
+        "name": config.get("name", code),
+        "bbox": bbox,
+        "crowded_class": crowded_class,
+        "zoom": zoom,
+        "legacy_zoom": legacy_zoom,
+        "polygon": polygon,
+    }
+
+
+def load_bbox_regions(use_bbox_tiling=True):
+    """Return all regions in bbox-first normalized schema."""
+    return {
+        code: normalize_region(code, config, use_bbox_tiling=use_bbox_tiling)
+        for code, config in REGIONS.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Region definitions — per-region zoom, polygon, and human-readable name.
 #
