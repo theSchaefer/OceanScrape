@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
+from debug_map_probe import run_map_probe
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import (
     get_tile_centers, polygon_to_pixel_coords, _point_in_polygon,
@@ -1985,6 +1986,19 @@ def capture_worker(region_name, timestamp_str):
 
             map_dims = _get_map_dimensions(page)
             center_offset = _wait_for_map_center_offset(page, timeout_ms=6000)
+            try:
+                map_probe = run_map_probe(page)
+                logger.info("%s", json.dumps({
+                    "event": "map_probe",
+                    "worker": worker_id,
+                    "region": region_name,
+                    "probe": map_probe,
+                }, sort_keys=True))
+            except Exception as e:
+                logger.warning(
+                    "[worker=%s region=%s] map probe failed: %s",
+                    worker_id, region_name, e,
+                )
             if not center_offset:
                 logger.warning(
                     "[worker=%s region=%s] LOW-CONFIDENCE FALLBACK active: "
