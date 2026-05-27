@@ -27,6 +27,7 @@ import logging
 import os
 import platform
 import random
+import re
 import string
 import sys
 import threading
@@ -41,7 +42,7 @@ from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
-from grid import get_tile_centers, polygon_to_pixel_coords, lat_to_pixel_y, _point_in_polygon
+from grid import get_tile_centers, polygon_to_pixel_coords, _point_in_polygon
 from regions import REGIONS, REGION_TIERS
 from update_database import process_log
 
@@ -282,12 +283,13 @@ def hide_ui_overlays(page):
 
 _DROP_VESSEL_LABELS = (
     "passenger", "high-speed", "high speed", "tug", "special craft",
-    "fishing", "pleasure", "navigation aid", "unspecified",
+    "fishing", "pleasure", "sailing", "navigation aid", "unspecified",
+    "other", "unknown",
 )
-_KEEP_VESSEL_LABELS = ("cargo", "tanker")
+_KEEP_VESSEL_LABELS = ("cargo", "oil tanker", "tanker")
 
 
-def set_vessel_filter(page):
+def _legacy_set_vessel_filter_evaluate_unused(page):
     """Open MarineTraffic's vessel-type filter and uncheck everything except
     cargo and tankers. Best-effort — never raises; logs detailed status so a
     silent regression (e.g. filter UI selectors changed) is visible.
@@ -297,7 +299,7 @@ def set_vessel_filter(page):
     # to double-escape JS braces. The dict is JSON-serialized by Playwright
     # and destructured by the async arrow on the JS side.
     try:
-        result = page.evaluate(
+        result = page.__legacy_evaluate_disabled(
             """
             async ({dropLabels, keepLabels}) => {
                 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -449,6 +451,210 @@ def set_vessel_filter(page):
         result.get("found_types", []),
         result.get("total_inputs", 0),
         result.get("errors", []),
+    )
+    return False
+
+
+def _locator_is_visible(locator, timeout_ms=600):
+    try:
+        return locator.count() > 0 and locator.first.is_visible(timeout=timeout_ms)
+    except Exception:
+        return False
+
+
+def _click_first_visible(page, selectors, action_name, timeout_ms=1200,
+                         pause_s=0.35, required=False):
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.is_visible(timeout=timeout_ms):
+                loc.click(timeout=timeout_ms)
+                logger.info("  %s via: %s", action_name, sel)
+                time.sleep(pause_s)
+                return sel
+        except Exception:
+            continue
+    if required:
+        logger.warning("  %s: no visible selector matched", action_name)
+    return None
+
+
+def _check_state(locator):
+    try:
+        return locator.is_checked(timeout=800)
+    except Exception:
+        try:
+            return locator.get_attribute("aria-checked") == "true"
+        except Exception:
+            return None
+
+
+def _set_checkable_by_label(page, label, desired):
+    pattern = re.compile(r"\b" + re.escape(label).replace(r"\ ", r"\s+") + r"\b",
+                         re.I)
+    candidates = [
+        page.get_by_role("checkbox", name=pattern),
+        page.get_by_role("switch", name=pattern),
+        page.get_by_label(pattern),
+    ]
+
+    for group in candidates:
+        try:
+            count = min(group.count(), 5)
+        except Exception:
+            count = 0
+        for i in range(count):
+            loc = group.nth(i)
+            if not _locator_is_visible(loc):
+                continue
+            before = _check_state(loc)
+            if before is None:
+                continue
+            if before != desired:
+                loc.click(timeout=1200)
+                time.sleep(0.15)
+            after = _check_state(loc)
+            return {
+                "found": True,
+                "changed": before != after,
+                "ok": after == desired,
+                "before": before,
+                "after": after,
+            }
+
+    return {"found": False, "changed": False, "ok": False,
+            "before": None, "after": None}
+
+
+def _page_has_dark_theme(page):
+    dark_words = ("dark", "night")
+    for sel in ("html", "body"):
+        try:
+            loc = page.locator(sel).first
+            values = [
+                loc.get_attribute("class") or "",
+                loc.get_attribute("data-theme") or "",
+                loc.get_attribute("data-color-scheme") or "",
+            ]
+            if any(word in " ".join(values).lower() for word in dark_words):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def set_dark_mode(page):
+    """Enable MarineTraffic dark map style using UI clicks only."""
+    if _page_has_dark_theme(page):
+        logger.info("  Dark mode already active")
+        return True
+
+    direct_selectors = [
+        "button:has-text('Dark')",
+        "[role='button']:has-text('Dark')",
+        "[role='menuitem']:has-text('Dark')",
+        "text=/^\\s*Dark( mode| map)?\\s*$/i",
+        "[aria-label*='Dark' i]",
+        "[title*='Dark' i]",
+    ]
+    if _click_first_visible(page, direct_selectors, "Dark mode"):
+        return True
+
+    opener_selectors = [
+        "button:has-text('Map style')",
+        "button:has-text('Map Style')",
+        "button:has-text('Layers')",
+        "button:has-text('Settings')",
+        "[role='button']:has-text('Map style')",
+        "[role='button']:has-text('Layers')",
+        "[aria-label*='map style' i]",
+        "[aria-label*='layers' i]",
+        "[aria-label*='settings' i]",
+        "[title*='map style' i]",
+        "[title*='layers' i]",
+        "[title*='settings' i]",
+    ]
+    tried = []
+    for opener in opener_selectors:
+        clicked = _click_first_visible(
+            page, [opener], "Opened map style/menu",
+            timeout_ms=700, pause_s=0.35)
+        if not clicked:
+            continue
+        tried.append(clicked)
+        if _click_first_visible(page, direct_selectors, "Dark mode",
+                                timeout_ms=1000):
+            return True
+
+    if _page_has_dark_theme(page):
+        logger.info("  Dark mode active after menu interaction")
+        return True
+
+    logger.warning("  Dark mode: failed to find/click dark option (openers=%s)",
+                   tried)
+    return False
+
+
+def set_vessel_filter(page):
+    """Keep only cargo and oil tanker/tanker vessel types using UI clicks."""
+    trigger_selectors = [
+        "button:has-text('Filter')",
+        "button:has-text('Filters')",
+        "[role='button']:has-text('Filter')",
+        "[role='button']:has-text('Filters')",
+        "[aria-label='Filter']",
+        "[aria-label='Filters']",
+        "[aria-label*='vessel filter' i]",
+        "[title='Filter']",
+        "[title='Filters']",
+    ]
+    trigger = _click_first_visible(page, trigger_selectors, "Opened vessel filter",
+                                   required=True)
+    if not trigger:
+        return False
+
+    _click_first_visible(page, [
+        "button:has-text('Vessel Type')",
+        "button:has-text('Vessel type')",
+        "[role='button']:has-text('Vessel Type')",
+        "[role='tab']:has-text('Vessel Type')",
+        "text=/^\\s*Vessel types?\\s*$/i",
+    ], "Opened vessel type filter", timeout_ms=700)
+
+    kept = []
+    keep_errors = []
+    for label in _KEEP_VESSEL_LABELS:
+        state = _set_checkable_by_label(page, label, True)
+        if state["found"] and state["ok"]:
+            kept.append(label)
+        elif label in ("cargo", "oil tanker"):
+            keep_errors.append(label)
+
+    found_drop = []
+    disabled = []
+    disable_errors = []
+    for label in _DROP_VESSEL_LABELS:
+        state = _set_checkable_by_label(page, label, False)
+        if not state["found"]:
+            continue
+        found_drop.append(label)
+        if state["ok"]:
+            disabled.append(label)
+        else:
+            disable_errors.append(label)
+
+    cargo_ok = "cargo" in kept
+    tanker_ok = "oil tanker" in kept or "tanker" in kept
+    ok = cargo_ok and tanker_ok and bool(found_drop) and not disable_errors
+    if ok:
+        logger.info("  Vessel filter applied: kept=%s disabled=%s trigger=%s",
+                    kept, disabled, trigger)
+        return True
+
+    logger.warning(
+        "  Vessel filter failed: kept=%s keep_errors=%s found_drop=%s "
+        "disable_errors=%s trigger=%s",
+        kept, keep_errors, found_drop, disable_errors, trigger,
     )
     return False
 
@@ -767,10 +973,7 @@ def _wait_for_ais_markers(page, timeout_ms=3000):
     return False
 
 
-# --- Mouse-drag map panning ---------------------------------------------------
-
-
-MAX_DRAG_PX = 800
+# --- Leaflet setView map panning ---------------------------------------------
 
 
 def _get_map_dimensions(page):
@@ -846,8 +1049,9 @@ def _pan_map_js(page, target_lat, target_lon, zoom):
 
 def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
              map_center=None, timeout_ms=5000):
-    """Pan the map.  JS setView first, mouse-drag fallback."""
+    """Pan the map with Leaflet setView only."""
 
+    _discover_leaflet_map(page)
     if _pan_map_js(page, target_lat, target_lon, zoom):
         logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
         time.sleep(0.05)
@@ -855,54 +1059,8 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
         _wait_for_ais_markers(page, timeout_ms=2000)
         return True
 
-    _discover_leaflet_map(page)
-    if _pan_map_js(page, target_lat, target_lon, zoom):
-        logger.info("  Panned via setView (late map discovery) (%.5f, %.5f)",
-                    target_lat, target_lon)
-        time.sleep(0.05)
-        _wait_for_tiles_after_pan(page, timeout_ms)
-        _wait_for_ais_markers(page, timeout_ms=2000)
-        return True
-
-    # --- Mouse drag fallback ---
-    total_pixels = 256 * (2 ** zoom)
-    dx = (target_lon - cur_lon) * total_pixels / 360.0
-    dy = lat_to_pixel_y(target_lat, zoom) - lat_to_pixel_y(cur_lat, zoom)
-    drag_x = -dx
-    drag_y = -dy
-
-    if abs(drag_x) < 1 and abs(drag_y) < 1:
-        return True
-
-    if map_center:
-        cx, cy = map_center
-    else:
-        cx = VIEWPORT_WIDTH // 2
-        cy = VIEWPORT_HEIGHT // 2
-
-    steps_needed = max(
-        1,
-        int(abs(drag_x) / MAX_DRAG_PX) + (1 if abs(drag_x) % MAX_DRAG_PX > 0 else 0),
-        int(abs(drag_y) / MAX_DRAG_PX) + (1 if abs(drag_y) % MAX_DRAG_PX > 0 else 0),
-    )
-    step_dx = drag_x / steps_needed
-    step_dy = drag_y / steps_needed
-
-    for _ in range(steps_needed):
-        page.mouse.move(cx, cy)
-        page.mouse.down()
-        page.mouse.move(cx + step_dx, cy + step_dy, steps=20)
-        page.mouse.up()
-        if steps_needed > 1:
-            time.sleep(0.05)
-
-    logger.info("  Panned via mouse_drag (dx=%.0f dy=%.0f, %d step(s))",
-                drag_x, drag_y, steps_needed)
-
-    time.sleep(0.05)
-    _wait_for_tiles_after_pan(page, timeout_ms)
-    _wait_for_ais_markers(page, timeout_ms=2000)
-    return True
+    raise RuntimeError(
+        "setView unavailable; tile navigation requires Leaflet setView")
 
 
 def _wait_for_tiles_after_pan(page, timeout_ms=5000):
@@ -1385,6 +1543,7 @@ def capture_worker(region_name, timestamp_str):
             # Setup: Cloudflare, overlays, map discovery
             page_ready = True
             filter_state = "skipped"
+            dark_state = "skipped"
             try:
                 if _wait_for_cloudflare(page):
                     logger.info("[worker=%s region=%s] Cloudflare passed",
@@ -1399,20 +1558,30 @@ def capture_worker(region_name, timestamp_str):
                 if page_ready:
                     wait_for_map_tiles(page)
                     dismiss_cookie_banner(page)
+                    dark_ok = set_dark_mode(page)
+                    dark_state = "applied" if dark_ok else "failed"
+                    if not dark_ok:
+                        raise RuntimeError("required setup failed: dark mode")
                     filter_ok = set_vessel_filter(page)
-                    filter_state = "applied" if filter_ok else "best_effort"
+                    filter_state = "applied" if filter_ok else "failed"
+                    if not filter_ok:
+                        raise RuntimeError("required setup failed: vessel filter")
                     hide_ui_overlays(page)
                     _discover_leaflet_map(page)
             except Exception as e:
-                if _is_crash_error(e):
-                    logger.error("[worker=%s region=%s] setup crashed (retryable): %s",
+                retry_setup = (
+                    _is_crash_error(e)
+                    or "required setup failed" in str(e).lower()
+                )
+                if retry_setup:
+                    logger.error("[worker=%s region=%s] setup failed (retryable): %s",
                                  worker_id, region_name, e)
                     retryable.append(region_name)
                 else:
                     logger.error("[worker=%s region=%s] setup failed: %s",
                                  worker_id, region_name, e)
-                _log_json(timestamp_str, region_name, "", 0, 0, 0, 0.0, 0, 0,
-                          zoom, [])
+                    _log_json(timestamp_str, region_name, "", 0, 0, 0, 0.0, 0, 0,
+                              zoom, [])
                 page_ready = False
 
             if not page_ready:
@@ -1423,13 +1592,26 @@ def capture_worker(region_name, timestamp_str):
 
             map_dims = _get_map_dimensions(page)
             center_offset = _wait_for_map_center_offset(page, timeout_ms=6000)
+            if not center_offset:
+                logger.error(
+                    "[worker=%s region=%s] setup failed (retryable): "
+                    "center_offset/setView unavailable",
+                    worker_id, region_name,
+                )
+                retryable.append(region_name)
+                context.close()
+                browser.close()
+                results["_retryable"] = retryable
+                return results
+
             logger.info(
                 "[worker=%s region=%s] setup ok: map_dims=%dx%d "
-                "center_offset=%s source=%s filter=%s",
+                "center_offset=%s source=%s dark=%s filter=%s",
                 worker_id, region_name,
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
                 center_offset.get("source") if center_offset else None,
+                dark_state,
                 filter_state,
             )
 
@@ -1439,8 +1621,12 @@ def capture_worker(region_name, timestamp_str):
                 )
                 results[region_name] = result
             except Exception as e:
-                if _is_crash_error(e):
-                    logger.error("[worker=%s region=%s] capture crashed (retryable): %s",
+                retry_capture = (
+                    _is_crash_error(e)
+                    or "setview unavailable" in str(e).lower()
+                )
+                if retry_capture:
+                    logger.error("[worker=%s region=%s] capture failed (retryable): %s",
                                  worker_id, region_name, e)
                     retryable.append(region_name)
                 else:
@@ -1602,7 +1788,7 @@ def capture_all_regions(region_filter=None):
 
         backoff = RETRY_BACKOFF_BASE * attempt + random.uniform(0, 5)
         logger.info(
-            "Retry attempt %d/%d for %d crashed region(s): %s  "
+            "Retry attempt %d/%d for %d retryable region(s): %s  "
             "(backoff %.1fs)",
             attempt, MAX_REGION_RETRIES, len(retryable), retryable, backoff,
         )
