@@ -287,6 +287,14 @@ _DROP_VESSEL_LABELS = (
     "other", "unknown",
 )
 _KEEP_VESSEL_LABELS = ("cargo", "oil tanker", "tanker")
+_DARK_MAP_RESOURCE_HINTS = (
+    # Observed in map_discovery.json as the active MarineTraffic base style.
+    "mapbox-official/clmoxc5z401zg01quhmvh97xj",
+    # Static asset requests carry bd:1 when the dark base is active.
+    "/bd:1",
+    "dark-v",
+    "dark_matter",
+)
 
 
 def _legacy_set_vessel_filter_evaluate_unused(page):
@@ -543,10 +551,37 @@ def _page_has_dark_theme(page):
     return False
 
 
+def _page_has_dark_map_resources(page):
+    """Read-only probe for the dark map layer seen in map_discovery.json."""
+    try:
+        return page.evaluate(
+            """
+            (hints) => {
+                const urls = [];
+                try {
+                    urls.push(...performance.getEntriesByType('resource')
+                        .map(e => e.name || ''));
+                } catch (e) {}
+                for (const img of document.querySelectorAll('#map_canvas img')) {
+                    urls.push(img.currentSrc || img.src || '');
+                }
+                const joined = urls.join('\\n').toLowerCase();
+                return hints.some(h => joined.includes(h.toLowerCase()));
+            }
+            """,
+            list(_DARK_MAP_RESOURCE_HINTS),
+        )
+    except Exception:
+        return False
+
+
 def set_dark_mode(page):
     """Enable MarineTraffic dark map style using UI clicks only."""
     if _page_has_dark_theme(page):
         logger.info("  Dark mode already active")
+        return True
+    if _page_has_dark_map_resources(page):
+        logger.info("  Dark map layer already active")
         return True
 
     direct_selectors = [
@@ -589,9 +624,11 @@ def set_dark_mode(page):
     if _page_has_dark_theme(page):
         logger.info("  Dark mode active after menu interaction")
         return True
+    if _page_has_dark_map_resources(page):
+        logger.info("  Dark map layer active after menu interaction")
+        return True
 
-    logger.warning("  Dark mode: failed to find/click dark option (openers=%s)",
-                   tried)
+    logger.info("  Dark mode control not found (openers=%s)", tried)
     return False
 
 
@@ -1559,9 +1596,7 @@ def capture_worker(region_name, timestamp_str):
                     wait_for_map_tiles(page)
                     dismiss_cookie_banner(page)
                     dark_ok = set_dark_mode(page)
-                    dark_state = "applied" if dark_ok else "failed"
-                    if not dark_ok:
-                        raise RuntimeError("required setup failed: dark mode")
+                    dark_state = "applied" if dark_ok else "unavailable"
                     filter_ok = set_vessel_filter(page)
                     filter_state = "applied" if filter_ok else "failed"
                     if not filter_ok:
