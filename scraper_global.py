@@ -539,37 +539,134 @@ def _inject_stealth_scripts(page, geo: GeoProfile):
 
 
 def _inject_map_hooks(page):
-    """Hook Leaflet.Map to disable inertia and capture the map instance."""
+    """Capture the Leaflet map instance without making capture depend on it."""
     page.add_init_script("""
     (function() {
+        if (window.__mtMapHookInstalled) return;
+        window.__mtMapHookInstalled = true;
         window.__mtMap = null;
+        window.__mtMapSource = null;
 
-        function patchLeaflet(L) {
-            if (!L || !L.Map) return;
-            if (L.Map.mergeOptions) {
-                L.Map.mergeOptions({
-                    inertia: false,
-                    inertiaDeceleration: 99999,
-                    inertiaMaxSpeed: 0,
-                });
+        const MAP_METHODS = ['setView', 'getCenter', 'getZoom',
+                             'latLngToContainerPoint', 'getContainer'];
+
+        function isMap(obj) {
+            if (!obj || typeof obj !== 'object') return false;
+            for (let i = 0; i < MAP_METHODS.length; i++) {
+                if (typeof obj[MAP_METHODS[i]] !== 'function') return false;
             }
-            var _origInit = L.Map.prototype.initialize;
-            L.Map.prototype.initialize = function() {
-                _origInit.apply(this, arguments);
-                window.__mtMap = this;
-            };
+            return true;
         }
 
-        var _L = window.L;
+        function captureMap(obj, source) {
+            if (window.__mtMap || !isMap(obj)) return false;
+            try {
+                if (obj.options) {
+                    obj.options.inertia = false;
+                    obj.options.inertiaDeceleration = 99999;
+                    obj.options.inertiaMaxSpeed = 0;
+                }
+            } catch (e) {}
+            window.__mtMap = obj;
+            window.__mtMapSource = source;
+            return true;
+        }
+
+        function patchLeaflet(L) {
+            if (!L || !L.Map || !L.Map.prototype) return;
+            try {
+                if (L.Map.mergeOptions) {
+                    L.Map.mergeOptions({
+                        inertia: false,
+                        inertiaDeceleration: 99999,
+                        inertiaMaxSpeed: 0,
+                    });
+                }
+                if (!L.Map.prototype.__mtInitPatched) {
+                    const origInit = L.Map.prototype.initialize;
+                    L.Map.prototype.initialize = function() {
+                        origInit.apply(this, arguments);
+                        captureMap(this, 'L.Map.initialize');
+                    };
+                    L.Map.prototype.__mtInitPatched = true;
+                }
+            } catch (e) {}
+        }
+
+        let _L = window.L;
         if (_L) patchLeaflet(_L);
-        Object.defineProperty(window, 'L', {
-            get: function() { return _L; },
-            set: function(v) {
-                _L = v;
-                patchLeaflet(v);
-            },
-            configurable: true,
-        });
+        try {
+            Object.defineProperty(window, 'L', {
+                get: function() { return _L; },
+                set: function(v) { _L = v; patchLeaflet(v); },
+                configurable: true,
+            });
+        } catch (e) {}
+
+        try {
+            const origBind = Function.prototype.bind;
+            if (!origBind.__mtMapBindPatched) {
+                const patchedBind = function() {
+                    if (!window.__mtMap && arguments.length > 0) {
+                        try { captureMap(arguments[0], 'Function.bind'); } catch (e) {}
+                    }
+                    return origBind.apply(this, arguments);
+                };
+                patchedBind.__mtMapBindPatched = true;
+                Function.prototype.bind = patchedBind;
+            }
+        } catch (e) {}
+
+        function scanForMap() {
+            if (window.__mtMap) return true;
+            try {
+                const containers = document.querySelectorAll('#map_canvas, .leaflet-container');
+                for (const c of containers) {
+                    const targets = [c];
+                    let p = c.parentElement;
+                    for (let d = 0; d < 6 && p; d++) {
+                        targets.push(p);
+                        p = p.parentElement;
+                    }
+                    for (const child of c.querySelectorAll('*')) targets.push(child);
+
+                    for (const el of targets) {
+                        for (const k of Object.getOwnPropertyNames(el)) {
+                            try {
+                                if (captureMap(el[k], 'dom:' + k)) return true;
+                            } catch (e) {}
+                        }
+                        for (const s of Object.getOwnPropertySymbols(el)) {
+                            try {
+                                if (captureMap(el[s], 'dom-sym:' + s.toString())) return true;
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } catch (e) {}
+            return false;
+        }
+        window.__mtScanForMap = scanForMap;
+
+        function installObserver() {
+            try {
+                const mo = new MutationObserver(function() {
+                    if (window.__mtMap) {
+                        mo.disconnect();
+                        return;
+                    }
+                    if (document.querySelector('.leaflet-pane, .leaflet-container')) {
+                        if (scanForMap()) mo.disconnect();
+                    }
+                });
+                mo.observe(document.documentElement, { childList: true, subtree: true });
+            } catch (e) {}
+        }
+        if (document.documentElement) {
+            installObserver();
+        } else {
+            document.addEventListener('DOMContentLoaded', installObserver, { once: true });
+        }
     })();
     """)
 
@@ -711,20 +808,26 @@ def _get_map_center_offset(page):
     () => {
         const map = window.__mtMap;
         if (!map) return null;
-        const center = map.getCenter();
-        const centerPt = map.latLngToContainerPoint(center);
-        const mapEl = map.getContainer();
-        const mapRect = mapEl.getBoundingClientRect();
-        const canvas = document.getElementById('map_canvas');
-        const canvasRect = canvas.getBoundingClientRect();
-        return {
-            center_x: centerPt.x + (mapRect.x - canvasRect.x),
-            center_y: centerPt.y + (mapRect.y - canvasRect.y),
-            map_lat: center.lat,
-            map_lng: center.lng,
-            map_zoom: map.getZoom(),
-            dpr: window.devicePixelRatio || 1
-        };
+        try {
+            const center = map.getCenter();
+            const centerPt = map.latLngToContainerPoint(center);
+            const mapEl = map.getContainer();
+            const canvas = document.getElementById('map_canvas');
+            if (!mapEl || !canvas) return null;
+            const mapRect = mapEl.getBoundingClientRect();
+            const canvasRect = canvas.getBoundingClientRect();
+            return {
+                center_x: centerPt.x + (mapRect.x - canvasRect.x),
+                center_y: centerPt.y + (mapRect.y - canvasRect.y),
+                map_lat: center.lat,
+                map_lng: center.lng,
+                map_zoom: map.getZoom(),
+                dpr: window.devicePixelRatio || 1,
+                source: window.__mtMapSource || null
+            };
+        } catch (e) {
+            return null;
+        }
     }
     """)
 
@@ -747,6 +850,15 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
 
     if _pan_map_js(page, target_lat, target_lon, zoom):
         logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
+        time.sleep(0.05)
+        _wait_for_tiles_after_pan(page, timeout_ms)
+        _wait_for_ais_markers(page, timeout_ms=2000)
+        return True
+
+    _discover_leaflet_map(page)
+    if _pan_map_js(page, target_lat, target_lon, zoom):
+        logger.info("  Panned via setView (late map discovery) (%.5f, %.5f)",
+                    target_lat, target_lon)
         time.sleep(0.05)
         _wait_for_tiles_after_pan(page, timeout_ms)
         _wait_for_ais_markers(page, timeout_ms=2000)
@@ -864,24 +976,78 @@ def _discover_leaflet_map(page):
     return page.evaluate("""
     () => {
         if (window.__mtMap) return true;
-        const containers = document.querySelectorAll('.leaflet-container');
+        if (typeof window.__mtScanForMap === 'function'
+            && window.__mtScanForMap()) {
+            return true;
+        }
+
+        const methods = ['setView', 'getCenter', 'getZoom',
+                         'latLngToContainerPoint', 'getContainer'];
+        const isMap = (obj) => {
+            if (!obj || typeof obj !== 'object') return false;
+            for (const m of methods) {
+                if (typeof obj[m] !== 'function') return false;
+            }
+            return true;
+        };
+        const capture = (obj, source) => {
+            if (!isMap(obj)) return false;
+            try {
+                if (obj.options) {
+                    obj.options.inertia = false;
+                    obj.options.inertiaDeceleration = 99999;
+                    obj.options.inertiaMaxSpeed = 0;
+                }
+            } catch (e) {}
+            window.__mtMap = obj;
+            window.__mtMapSource = source;
+            return true;
+        };
+
+        const containers = document.querySelectorAll('#map_canvas, .leaflet-container');
         for (const c of containers) {
-            for (const key of Object.keys(c)) {
-                const val = c[key];
-                if (val && typeof val === 'object'
-                    && typeof val.setView === 'function'
-                    && typeof val.getCenter === 'function') {
-                    window.__mtMap = val;
-                    val.options.inertia = false;
-                    val.options.inertiaDeceleration = 99999;
-                    val.options.inertiaMaxSpeed = 0;
-                    return true;
+            const targets = [c];
+            let p = c.parentElement;
+            for (let d = 0; d < 6 && p; d++) {
+                targets.push(p);
+                p = p.parentElement;
+            }
+            for (const child of c.querySelectorAll('*')) targets.push(child);
+
+            for (const el of targets) {
+                for (const key of Object.getOwnPropertyNames(el)) {
+                    try {
+                        if (capture(el[key], 'discover:' + key)) return true;
+                    } catch (e) {}
+                }
+                for (const sym of Object.getOwnPropertySymbols(el)) {
+                    try {
+                        if (capture(el[sym], 'discover-sym:' + sym.toString())) {
+                            return true;
+                        }
+                    } catch (e) {}
                 }
             }
         }
         return false;
     }
     """)
+
+
+def _wait_for_map_center_offset(page, timeout_ms=5000):
+    """Best-effort wait for a Leaflet center offset; never hard-fails."""
+    deadline = time.time() + (timeout_ms / 1000)
+    last_offset = None
+    while time.time() < deadline:
+        try:
+            _discover_leaflet_map(page)
+            last_offset = _get_map_center_offset(page)
+            if last_offset:
+                return last_offset
+        except Exception:
+            pass
+        time.sleep(0.15)
+    return last_offset
 
 
 # --- Core capture (single region, given a page) ------------------------------
@@ -960,13 +1126,15 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             current_lat, current_lon = lat, lon
 
         try:
+            pre_capture_center_offset = _wait_for_map_center_offset(
+                page, timeout_ms=800)
             screenshot_args = {"type": SCREENSHOT_FORMAT}
             if SCREENSHOT_FORMAT == "jpeg":
                 screenshot_args["quality"] = SCREENSHOT_QUALITY
             img_bytes = map_locator.screenshot(**screenshot_args)
 
             # Query actual map-centre pixel (accounts for UI chrome + DPR)
-            center_offset = _get_map_center_offset(page)
+            center_offset = _get_map_center_offset(page) or pre_capture_center_offset
 
             # Inline ship detection + geo-coordinate extraction.
             # Anchor the projection on the *actual* map state read from
@@ -1254,13 +1422,14 @@ def capture_worker(region_name, timestamp_str):
                 return results
 
             map_dims = _get_map_dimensions(page)
-            center_offset = _get_map_center_offset(page)
+            center_offset = _wait_for_map_center_offset(page, timeout_ms=6000)
             logger.info(
                 "[worker=%s region=%s] setup ok: map_dims=%dx%d "
-                "center_offset=%s filter=%s",
+                "center_offset=%s source=%s filter=%s",
                 worker_id, region_name,
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
+                center_offset.get("source") if center_offset else None,
                 filter_state,
             )
 
