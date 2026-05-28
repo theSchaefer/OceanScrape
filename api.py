@@ -1994,6 +1994,18 @@ dashboard_dir = Path(__file__).parent / "dashboard"
 
 
 @app.get("/")
+def serve_landing():
+    landing = dashboard_dir / "landing.html"
+    if landing.exists():
+        return FileResponse(landing, media_type="text/html")
+    # Fallback to the dashboard if no landing page is present
+    index = dashboard_dir / "index.html"
+    if not index.exists():
+        raise HTTPException(404, "Dashboard not found. Create dashboard/index.html")
+    return FileResponse(index, media_type="text/html")
+
+
+@app.get("/app")
 def serve_dashboard():
     index = dashboard_dir / "index.html"
     if not index.exists():
