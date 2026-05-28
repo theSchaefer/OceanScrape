@@ -21,11 +21,17 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 
+from marker_dedup import count_markers_by_type, dedup_markers_spatial
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+MARKER_DEDUP_EPS_DEG = float(os.getenv(
+    "MARKER_DEDUP_EPS_DEG",
+    os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"),
+))
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS captures (
@@ -151,6 +157,29 @@ def _parse_datetime(date_str):
         return datetime.now(timezone.utc)
 
 
+def _dedup_entry_markers(entry):
+    """Return capture markers with overlapping-tile duplicates removed."""
+    return dedup_markers_spatial(entry.get("markers", []), MARKER_DEDUP_EPS_DEG)
+
+
+def _entry_counts(entry, markers):
+    """Prefer marker-derived counts so stored totals match the marker payload."""
+    if markers:
+        counts = count_markers_by_type(markers)
+        return {
+            "tankers": counts["stationary_tankers"] + counts["moving_tankers"],
+            "cargos": counts["stationary_cargos"] + counts["moving_cargos"],
+            "moving_tankers": counts["moving_tankers"],
+            "moving_cargos": counts["moving_cargos"],
+        }
+    return {
+        "tankers": int(entry.get("tankers", 0)),
+        "cargos": int(entry.get("cargos", 0)),
+        "moving_tankers": int(entry.get("moving_tankers", 0)),
+        "moving_cargos": int(entry.get("moving_cargos", 0)),
+    }
+
+
 def _entry_to_row(entry):
     """Convert a capture dict to a tuple matching _INSERT_SQL column order."""
     region = entry.get("region", "")
@@ -158,6 +187,9 @@ def _entry_to_row(entry):
         region = "N"
     if not region:
         region = "?"
+
+    markers = _dedup_entry_markers(entry)
+    counts = _entry_counts(entry, markers)
 
     return (
         region,
@@ -171,11 +203,11 @@ def _entry_to_row(entry):
         int(entry.get("tiles_total", 0)),
         int(entry.get("tiles_ok", 0)),
         int(entry.get("tiles_failed", 0)),
-        int(entry.get("tankers", 0)),
-        int(entry.get("cargos", 0)),
-        int(entry.get("moving_tankers", 0)),
-        int(entry.get("moving_cargos", 0)),
-        psycopg2.extras.Json(entry.get("markers", [])),
+        counts["tankers"],
+        counts["cargos"],
+        counts["moving_tankers"],
+        counts["moving_cargos"],
+        psycopg2.extras.Json(markers),
         psycopg2.extras.Json(entry.get("detections", [])),
     )
 
@@ -185,7 +217,7 @@ def _insert_markers(cur, capture_id, markers):
     if not markers:
         return 0
     inserted = 0
-    for m in markers:
+    for m in dedup_markers_spatial(markers, MARKER_DEDUP_EPS_DEG):
         lat = m.get("lat")
         lon = m.get("lon")
         if lat is None or lon is None:
@@ -197,7 +229,7 @@ def _insert_markers(cur, capture_id, markers):
             m.get("type", "unknown"),
             m.get("motion", "unknown"),
         ))
-        inserted += 1
+        inserted += cur.rowcount
     return inserted
 
 

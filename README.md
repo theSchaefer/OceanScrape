@@ -24,7 +24,7 @@ scraper_global.py  →  seer.py (inline OpenCV)  →  captures_log.jsonl  →  u
 
 1. **Scrape.** `scraper_global.py` launches a small pool of Patchright browser workers (an undetected Playwright fork). Each worker owns one region, loads MarineTraffic once, and traverses bbox-generated tiles with mouse-drag panning. Leaflet `setView()` discovery remains an optional optimization, not a required control path.
 2. **Detect.** Each rendered tile is passed in memory to `seer.py`, which uses HSV color masking and contour analysis in OpenCV to find ship markers. Triangles (three vertices via `approxPolyDP`) are classified as moving ships, circles (high circularity ratio) as stationary. Color separates tankers from cargo vessels.
-3. **Project.** Marker pixel positions are converted to real world coordinates using a Web Mercator inverse projection in `grid.py`. When Natural Earth land polygons are available, coastline mask registration estimates screenshot offset and corrects marker projection without depending on an exposed Leaflet map object.
+3. **Project.** Marker pixel positions are converted to real world coordinates using a Web Mercator inverse projection in `grid.py`. The scraper reads MarineTraffic's mouse-position DOM control at the center of `#map_canvas` to anchor projection without requiring Leaflet access.
 4. **Persist.** `update_database.py` reads the JSONL capture log and batch inserts into two PostgreSQL tables: `captures` (per region snapshot with counts and metadata as JSONB) and `vessel_positions` (one row per detected marker, joined to its capture). Writes are idempotent through `ON CONFLICT`.
 5. **Serve.** `api.py` exposes the database through a FastAPI service, and `dashboard/index.html` renders a live Leaflet map with time scrubbing, vessel type and motion filters, per region drill down, and aggregate charts (see the screenshot above).
 
@@ -76,23 +76,19 @@ SCREENSHOT_FORMAT / QUALITY         Default jpeg / 85
 SCRAPE_INTERVAL_MINUTES             Default 60
 JITTER_SECONDS                      Default 300
 DATABASE_URL                        e.g. postgresql://user:pass@localhost:5432/marinescraper
-COASTLINE_DATA_PATH / COASTLINE_GEOJSON
-                                    Optional Natural Earth land .geojson/.shp/.zip path
-COASTLINE_ALIGNMENT                 Default 1; set 0 to disable coastline offset fitting
 USE_BBOX_TILING                     Default 1; bbox-first tile coverage
 BBOX_OVERLAP_PX                     Default 128 screenshot-pixel overlap between tiles
+MARKER_DEDUP_EPS_DEG                Default 0.003; collapse near-duplicate markers
 ENABLE_CROSS_ZOOM_QA                Default 1; write cross-zoom QA artifacts
 QA_SAMPLE_RATE / QA_MAX_SAMPLES     Default 0.10 / 3 sampled baseline tiles per region
-ENABLE_COASTLINE_CALIBRATION        Default 1 only when coastline data is configured/present
 USE_SETVIEW_OPTIMIZATION            Default 0; set 1 to allow optional Leaflet setView panning
 LEAFLET_DIAGNOSTICS                 Default 0; set 1 to emit Leaflet/frame probes
 ```
 
-Coastline alignment uses Natural Earth land polygons, preferably
-`ne_10m_land.geojson` or the official `ne_10m_land.zip` at `data/coastline/`,
-or a custom `COASTLINE_DATA_PATH` path. Natural Earth was chosen over GSHHG
-because it is public domain, compact enough for anchor-tile registration, and
-the land polygons are sufficient for aligning the MarineTraffic basemap.
+Projection offset is derived from MarineTraffic's
+`.leaflet-control-mouseposition` DOM element. The scraper moves the mouse to
+the center of the map canvas, parses the precise `(lat, lon)` line, then hides
+cursor/hover UI before capture.
 
 Region polygons are also overridable from `.env` (for example `NORTH_POLYGON="lat,lon;lat,lon;..."`) without touching code.
 
@@ -101,7 +97,6 @@ Region polygons are also overridable from `.env` (for example `NORTH_POLYGON="la
 | File | Role |
 | --- | --- |
 | `scraper_global.py` | Main scraper. Single-region browser workers, drag traversal, inline detection. |
-| `coastline_alignment.py` | Natural Earth coastline mask registration for projection offset correction. |
 | `seer.py` | OpenCV ship counter and marker extractor (HSV mask, contours, shape classification). |
 | `grid.py` | Web Mercator projection helpers, bbox tiling, and legacy polygon grids. |
 | `regions.py` | All 79 region definitions plus normalized bbox/crowdedness loading. |

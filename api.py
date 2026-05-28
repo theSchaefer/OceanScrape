@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from grid import get_tile_bounds, get_tile_centers
+from marker_dedup import count_markers_by_type, dedup_markers_spatial
 from regions import REGIONS
 from update_database import _SCHEMA_SQL
 
@@ -41,7 +42,10 @@ VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "4320"))
 # at the equator — large enough to collapse the same ship detected by two
 # overlapping regions (different zooms ⇒ different pixel→latlon roundings),
 # small enough to keep neighboring distinct vessels separate.
-VESSEL_DEDUP_EPS_DEG = float(os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"))
+VESSEL_DEDUP_EPS_DEG = float(os.getenv(
+    "MARKER_DEDUP_EPS_DEG",
+    os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"),
+))
 
 app = FastAPI(title="MarineScraper Dashboard API")
 
@@ -797,13 +801,13 @@ def get_vessels(
                 "region": row["region"],
             })
 
-    # Cross-region dedup: only meaningful when the response spans more than
-    # one region (single-region requests are already polygon-filtered by the
-    # scraper, so no overlap is possible).
+    # Spatial dedup protects both cross-region overlap and within-region tile
+    # overlap from bbox capture margins. Applying it here also cleans up older
+    # capture rows that were stored before scraper-side marker dedup existed.
     raw_count = len(vessels)
-    if dedup and region is None:
+    if dedup:
         eps = dedup_eps if dedup_eps is not None else VESSEL_DEDUP_EPS_DEG
-        vessels = _dedup_markers_spatial(vessels, eps)
+        vessels = dedup_markers_spatial(vessels, eps)
 
     snapshot_iso = snapshot_ts.isoformat() if snapshot_ts else None
     return {
@@ -853,13 +857,15 @@ def get_vessels_history(
     frames = []
     for row in rows:
         markers = row["markers"] if isinstance(row["markers"], list) else json.loads(row["markers"])
+        markers = dedup_markers_spatial(markers, VESSEL_DEDUP_EPS_DEG)
+        counts = count_markers_by_type(markers)
         frames.append({
             "timestamp": row["captured_at"].isoformat(),
             "markers": markers,
-            "tankers": row["tankers"],
-            "cargos": row["cargos"],
-            "moving_tankers": row["moving_tankers"],
-            "moving_cargos": row["moving_cargos"],
+            "tankers": counts["stationary_tankers"] + counts["moving_tankers"],
+            "cargos": counts["stationary_cargos"] + counts["moving_cargos"],
+            "moving_tankers": counts["moving_tankers"],
+            "moving_cargos": counts["moving_cargos"],
         })
 
     return {"region": region, "frames": frames}

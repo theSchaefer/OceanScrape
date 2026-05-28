@@ -25,6 +25,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import platform
 import random
@@ -42,7 +43,6 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
-from coastline_alignment import CoastlineOffsetTracker, coastline_source_status
 from debug_map_probe import run_map_probe, write_frame_scan
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
 from grid import (
@@ -50,6 +50,7 @@ from grid import (
     tile_id as make_tile_id, _point_in_polygon,
     lat_to_pixel_y, lon_to_pixel_x, pixel_x_to_lon, pixel_y_to_lat,
 )
+from marker_dedup import dedup_markers_spatial
 from regions import REGIONS, REGION_TIERS, load_bbox_regions
 from update_database import process_log
 
@@ -76,9 +77,12 @@ SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
 MAX_DRAG_PX = 800  # max single-drag distance to avoid Leaflet inertia
 USE_SETVIEW_OPTIMIZATION = os.getenv("USE_SETVIEW_OPTIMIZATION", "0") == "1"
 LEAFLET_DIAGNOSTICS = os.getenv("LEAFLET_DIAGNOSTICS", "0") == "1"
-LEAFLET_PROJECTION_FALLBACK = os.getenv("LEAFLET_PROJECTION_FALLBACK", "0") == "1"
 USE_BBOX_TILING = os.getenv("USE_BBOX_TILING", "1") == "1"
 BBOX_OVERLAP_PX = int(os.getenv("BBOX_OVERLAP_PX", "128"))
+MARKER_DEDUP_EPS_DEG = float(os.getenv(
+    "MARKER_DEDUP_EPS_DEG",
+    os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"),
+))
 ENABLE_CROSS_ZOOM_QA = os.getenv("ENABLE_CROSS_ZOOM_QA", "1") == "1"
 QA_SAMPLE_RATE = float(os.getenv("QA_SAMPLE_RATE", "0.10"))
 QA_MIN_SAMPLES = int(os.getenv("QA_MIN_SAMPLES", "1"))
@@ -86,24 +90,6 @@ QA_MAX_SAMPLES = int(os.getenv("QA_MAX_SAMPLES", "3"))
 QA_TOTAL_RATIO_THRESHOLD = float(os.getenv("QA_TOTAL_RATIO_THRESHOLD", "1.35"))
 QA_TYPE_RATIO_THRESHOLD = float(os.getenv("QA_TYPE_RATIO_THRESHOLD", "1.50"))
 QA_ABS_DELTA_THRESHOLD = int(os.getenv("QA_ABS_DELTA_THRESHOLD", "5"))
-
-
-def _default_coastline_calibration_enabled():
-    if os.getenv("COASTLINE_DATA_PATH") or os.getenv("COASTLINE_GEOJSON"):
-        return True
-    base = Path("./data/coastline")
-    return any(
-        (base / name).exists()
-        for name in ("ne_10m_land.geojson", "ne_10m_land.zip", "ne_10m_land.shp")
-    )
-
-
-ENABLE_COASTLINE_CALIBRATION = (
-    os.getenv(
-        "ENABLE_COASTLINE_CALIBRATION",
-        "1" if _default_coastline_calibration_enabled() else "0",
-    ) == "1"
-)
 ACTIVE_REGIONS = load_bbox_regions(use_bbox_tiling=USE_BBOX_TILING)
 
 # Crash retry settings
@@ -354,6 +340,8 @@ def hide_ui_overlays(page):
         ];
         const elements = document.querySelectorAll(selectors.join(', '));
         for (const el of elements) {
+            if (el.matches && el.matches('.leaflet-control-mouseposition')) continue;
+            if (el.querySelector && el.querySelector('.leaflet-control-mouseposition')) continue;
             if (el.tagName.toLowerCase() === 'canvas') continue;
             if (el.querySelector('canvas')) continue;
             if (el.closest('.leaflet-pane')) continue;
@@ -380,6 +368,59 @@ def hide_ui_overlays(page):
         });
     }
     """)
+
+
+def install_capture_visibility_css(page):
+    """Hide cursor/hover chrome without disabling mouseposition DOM updates."""
+    page.evaluate("""
+    () => {
+        const id = 'marinescraper-capture-visibility';
+        let style = document.getElementById(id);
+        if (!style) {
+            style = document.createElement('style');
+            style.id = id;
+            document.head.appendChild(style);
+        }
+        style.textContent = `
+            #map_canvas, #map_canvas * { cursor: none !important; }
+            .leaflet-control-mouseposition {
+                opacity: 0 !important;
+                pointer-events: none !important;
+                color: transparent !important;
+                text-shadow: none !important;
+            }
+            .leaflet-popup,
+            .leaflet-tooltip,
+            [class*="tooltip"],
+            [class*="Tooltip"],
+            [class*="popover"],
+            [class*="Popover"] {
+                display: none !important;
+                visibility: hidden !important;
+                opacity: 0 !important;
+            }
+        `;
+    }
+    """)
+
+
+def hide_hover_artifacts(page):
+    """Best-effort cleanup after moving the mouse over the map."""
+    try:
+        page.evaluate("""
+        () => {
+            for (const el of document.querySelectorAll(
+                '.leaflet-popup, .leaflet-tooltip, [class*="tooltip"], ' +
+                '[class*="Tooltip"], [class*="popover"], [class*="Popover"]'
+            )) {
+                el.style.setProperty('display', 'none', 'important');
+                el.style.setProperty('visibility', 'hidden', 'important');
+                el.style.setProperty('opacity', '0', 'important');
+            }
+        }
+        """)
+    except Exception:
+        pass
 
 
 # --- Vessel-type filter (Option A: UI click) ---------------------------------
@@ -1634,54 +1675,180 @@ def _count_markers_by_type(markers):
     return counts
 
 
-def _shift_marker_by_pixels(marker, dx_px, dy_px, zoom):
-    """Shift a geolocated marker in Web Mercator pixel space."""
-    gx = lon_to_pixel_x(marker["lon"], zoom) + dx_px
-    gy = lat_to_pixel_y(marker["lat"], zoom) + dy_px
-    shifted = dict(marker)
-    shifted["lon"] = round(pixel_x_to_lon(gx, zoom), 5)
-    shifted["lat"] = round(pixel_y_to_lat(gy, zoom), 5)
-    return shifted
+def _parse_mouseposition_text(text):
+    """Parse MarineTraffic mouseposition text into (lat, lon)."""
+    if not text:
+        return None
+    raw = str(text).replace("\xa0", " ").strip()
+    paren = re.search(
+        r"\(\s*([+-]?\d+(?:[.,]\d+)?)\s*,\s*([+-]?\d+(?:[.,]\d+)?)\s*\)",
+        raw,
+    )
+    if paren:
+        return (
+            float(paren.group(1).replace(",", ".")),
+            float(paren.group(2).replace(",", ".")),
+        )
+
+    for line in reversed(raw.splitlines()):
+        if "," not in line or "°" in line:
+            continue
+        match = re.search(
+            r"([+-]?\d+(?:[.,]\d+)?)\s*,\s*([+-]?\d+(?:[.,]\d+)?)",
+            line,
+        )
+        if match:
+            return (
+                float(match.group(1).replace(",", ".")),
+                float(match.group(2).replace(",", ".")),
+            )
+    return None
 
 
-def _projection_before_after(tile_markers, coast_fit, zoom, polygon):
-    """Estimate before/after impact of coastline projection correction.
+def _haversine_m(lat1, lon1, lat2, lon2):
+    radius_m = 6371008.8
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return radius_m * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a)))
 
-    Detection count is unchanged by projection correction, but polygon-filtered
-    marker counts can change when the coordinates move near a region boundary.
-    ``before`` is the requested-center projection estimate reconstructed from
-    the corrected coordinates.
+
+def _projection_delta(req_lat, req_lon, obs_lat, obs_lon, zoom):
+    req_x = lon_to_pixel_x(req_lon, zoom)
+    req_y = lat_to_pixel_y(req_lat, zoom)
+    obs_x = lon_to_pixel_x(obs_lon, zoom)
+    obs_y = lat_to_pixel_y(obs_lat, zoom)
+    return {
+        "delta_lat": obs_lat - req_lat,
+        "delta_lon": obs_lon - req_lon,
+        "dx_px": obs_x - req_x,
+        "dy_px": obs_y - req_y,
+        "meters": _haversine_m(req_lat, req_lon, obs_lat, obs_lon),
+    }
+
+
+def _read_mouseposition_dom(page):
+    """Read the mouseposition control from the top frame or child frames."""
+    script = """
+    () => {
+        const selectors = [
+            '.leaflet-control-mouseposition.leaflet-control',
+            '.leaflet-control-mouseposition'
+        ];
+        for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (!el) continue;
+            const rect = el.getBoundingClientRect();
+            return {
+                selector,
+                raw: el.innerText || el.textContent || '',
+                visible: rect.width > 0 && rect.height > 0,
+                rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
+                href: location.href,
+                origin: location.origin
+            };
+        }
+        return null;
+    }
     """
-    if not coast_fit or not coast_fit.usable or not tile_markers:
+    frames = [page.main_frame] + [f for f in page.frames if f is not page.main_frame]
+    for frame in frames:
+        try:
+            result = frame.evaluate(script)
+        except Exception:
+            continue
+        if result:
+            parsed = _parse_mouseposition_text(result.get("raw"))
+            result["parsed_lat"] = parsed[0] if parsed else None
+            result["parsed_lon"] = parsed[1] if parsed else None
+            result["frame_url"] = getattr(frame, "url", None)
+            return result
+    return None
+
+
+def _mouseposition_center_offset(map_width, map_height, obs_lat, obs_lon, zoom):
+    return {
+        "center_x": map_width / 2,
+        "center_y": map_height / 2,
+        "map_lat": obs_lat,
+        "map_lng": obs_lon,
+        "map_zoom": zoom,
+        "dpr": 1.0,
+        "source": "mouseposition-dom",
+    }
+
+
+def _read_mouseposition_anchor(
+    page,
+    map_dims,
+    req_lat,
+    req_lon,
+    zoom,
+    region_name,
+    tile_id=None,
+    timeout_ms=1200,
+):
+    """Move mouse to map center, read DOM lat/lon, then move away."""
+    map_width = float(map_dims["width"])
+    map_height = float(map_dims["height"])
+    center_x = float(map_dims["x"]) + map_width / 2
+    center_y = float(map_dims["y"]) + map_height / 2
+    deadline = time.time() + timeout_ms / 1000
+    last = None
+
+    page.mouse.move(center_x, center_y)
+    time.sleep(0.08)
+    while time.time() < deadline:
+        last = _read_mouseposition_dom(page)
+        if last and last.get("parsed_lat") is not None and last.get("parsed_lon") is not None:
+            break
+        time.sleep(0.08)
+
+    safe_x = max(1, int(float(map_dims["x"]) + 4))
+    safe_y = max(1, int(float(map_dims["y"]) + 4))
+    try:
+        page.mouse.move(safe_x, safe_y)
+    except Exception:
+        pass
+    hide_hover_artifacts(page)
+
+    if not last or last.get("parsed_lat") is None or last.get("parsed_lon") is None:
         return {
-            "positional_error_before_m": 0.0,
-            "positional_error_after_m": 0.0,
-            "markers_before_filter": len(tile_markers),
-            "markers_after_filter": len(tile_markers),
+            "available": False,
+            "source": "mouseposition-dom",
+            "reason": "mouseposition_unavailable",
+            "raw": last.get("raw") if last else None,
+            "selector": last.get("selector") if last else None,
         }
 
-    fallback_markers = [
-        _shift_marker_by_pixels(m, coast_fit.dx_px, coast_fit.dy_px, zoom)
-        for m in tile_markers
-    ]
-    if polygon:
-        before_counts, before_filtered = _filter_markers_to_polygon(
-            fallback_markers, polygon
-        )
-        after_counts, after_filtered = _filter_markers_to_polygon(tile_markers, polygon)
-    else:
-        before_counts = _count_markers_by_type(fallback_markers)
-        after_counts = _count_markers_by_type(tile_markers)
-        before_filtered = fallback_markers
-        after_filtered = tile_markers
-    residual_m = coast_fit.meters * max(0.0, 1.0 - coast_fit.confidence)
+    obs_lat = float(last["parsed_lat"])
+    obs_lon = float(last["parsed_lon"])
+    delta = _projection_delta(req_lat, req_lon, obs_lat, obs_lon, zoom)
     return {
-        "positional_error_before_m": round(coast_fit.meters, 1),
-        "positional_error_after_m": round(residual_m, 1),
-        "markers_before_filter": len(before_filtered),
-        "markers_after_filter": len(after_filtered),
-        "counts_before_filter": before_counts,
-        "counts_after_filter": after_counts,
+        "available": True,
+        "source": "mouseposition-dom",
+        "reason": "ok",
+        "selector": last.get("selector"),
+        "raw": last.get("raw"),
+        "frame_url": last.get("frame_url"),
+        "href": last.get("href"),
+        "origin": last.get("origin"),
+        "visible": last.get("visible"),
+        "tile_id": tile_id,
+        "req_lat": req_lat,
+        "req_lon": req_lon,
+        "obs_lat": obs_lat,
+        "obs_lon": obs_lon,
+        "delta_lat": delta["delta_lat"],
+        "delta_lon": delta["delta_lon"],
+        "dx_px": delta["dx_px"],
+        "dy_px": delta["dy_px"],
+        "meters": delta["meters"],
+        "center_x": map_width / 2,
+        "center_y": map_height / 2,
+        "dpr": 1.0,
     }
 
 
@@ -1720,8 +1887,6 @@ def _projection_mode_summary(tile_detections):
         return "unknown"
     if len(sources) == 1:
         return next(iter(sources))
-    if any(str(s).startswith("coastline") for s in sources):
-        return "mixed-coastline"
     return "mixed"
 
 
@@ -1777,6 +1942,7 @@ def _prepare_map_after_url_navigation(page, region_name):
     set_dark_mode(page)
     filter_ok = set_vessel_filter(page)
     hide_ui_overlays(page)
+    install_capture_visibility_css(page)
     if not filter_ok:
         logger.warning("Region %s QA: vessel filter unavailable after zoom reload", region_name)
     return filter_ok
@@ -1965,19 +2131,6 @@ def _run_cross_zoom_qa(
     return payload
 
 
-def _write_calibration_artifact(timestamp_str, region_name, config, coastline_summary):
-    payload = {
-        "enabled": ENABLE_COASTLINE_CALIBRATION,
-        "region": region_name,
-        "region_name": config.get("name", region_name),
-        "timestamp": timestamp_str,
-        "zoom_used": config.get("zoom"),
-        "calibration": coastline_summary,
-    }
-    payload["path"] = _write_json_artifact("calibration", timestamp_str, region_name, payload)
-    return payload
-
-
 def _write_failure_qa_artifact(timestamp_str, region_name, config, reason, error):
     payload = {
         "enabled": ENABLE_CROSS_ZOOM_QA,
@@ -2121,26 +2274,12 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     projection_fallback_logged = False
     leaflet_diag_logged = False
     nav_counts = {"mouse-drag": 0, "setView": 0}
-    coastline_tracker = CoastlineOffsetTracker(
-        region_name,
-        logger=logger,
-        enabled=ENABLE_COASTLINE_CALIBRATION,
-    )
-    coastline_status = coastline_tracker.source_status()
-    logger.info(
-        "Region %s: coastline alignment source=%s available=%s path=%s "
-        "polygons=%d reason=%s",
-        region_name,
-        coastline_status["source"],
-        coastline_status["available"],
-        coastline_status["path"],
-        coastline_status["polygons"],
-        coastline_status.get("reason") or "ok",
-    )
+    mouseposition_stats = {"ok": 0, "fallback": 0}
 
     center_lat, center_lon = _region_center(config)
     current_lat, current_lon = center_lat, center_lon
     map_locator = page.locator('#map_canvas')
+    install_capture_visibility_css(page)
 
     # Verify map canvas is present before capturing tiles
     canvas_state = page.evaluate("""
@@ -2193,16 +2332,12 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
 
         try:
             pre_capture_center_offset = None
-            if LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+            if LEAFLET_DIAGNOSTICS:
                 pre_capture_center_offset = _wait_for_map_center_offset(
                     page, timeout_ms=250)
-            screenshot_args = {"type": SCREENSHOT_FORMAT}
-            if SCREENSHOT_FORMAT == "jpeg":
-                screenshot_args["quality"] = SCREENSHOT_QUALITY
-            img_bytes = map_locator.screenshot(**screenshot_args)
 
             leaflet_center_offset = None
-            if LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+            if LEAFLET_DIAGNOSTICS:
                 try:
                     leaflet_center_offset = (
                         _get_map_center_offset(page) or pre_capture_center_offset
@@ -2222,52 +2357,65 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                     )
                     logger.warning(
                         "Region %s: Leaflet center_offset unavailable; "
-                        "continuing with coastline/requested-center projection; "
+                        "continuing with mouseposition/requested-center projection; "
                         "frame_scan=%s",
                         region_name,
                         scan_path,
                     )
                     leaflet_diag_logged = True
 
-            coast_fit = coastline_tracker.estimate(
-                img_bytes, lat, lon, zoom, tile=(row, col)
-            )
             center_offset = None
             projection_source = "requested-center"
             proj_lat = lat
             proj_lon = lon
             proj_zoom = zoom
-            if coast_fit.usable:
-                center_offset = coast_fit.as_center_offset(map_width, map_height, zoom)
-                projection_source = f"coastline-{coast_fit.source}"
-                if coast_fit.source == "fit":
-                    logger.info(
-                        "  Tile (%d,%d): coastline-fit conf=%.3f "
-                        "offset=(%.6f, %.6f; %.0fm) px=(%.0f, %.0f)",
-                        row, col, coast_fit.confidence,
-                        coast_fit.delta_lat, coast_fit.delta_lon,
-                        coast_fit.meters, coast_fit.dx_px, coast_fit.dy_px,
+            mouse_anchor = _read_mouseposition_anchor(
+                page, map_dims, lat, lon, zoom, region_name, tile_id=tid
+            )
+            if mouse_anchor.get("available"):
+                proj_lat = mouse_anchor["obs_lat"]
+                proj_lon = mouse_anchor["obs_lon"]
+                center_offset = _mouseposition_center_offset(
+                    map_width, map_height, proj_lat, proj_lon, zoom
+                )
+                projection_source = "mouseposition-dom"
+                mouseposition_stats["ok"] += 1
+                logger.info(
+                    "  Tile (%d,%d): mouseposition center obs=(%.6f, %.6f) "
+                    "req=(%.6f, %.6f) delta=(%.6f, %.6f; %.0fm) px=(%.1f, %.1f)",
+                    row, col,
+                    mouse_anchor["obs_lat"], mouse_anchor["obs_lon"],
+                    lat, lon,
+                    mouse_anchor["delta_lat"], mouse_anchor["delta_lon"],
+                    mouse_anchor["meters"],
+                    mouse_anchor["dx_px"], mouse_anchor["dy_px"],
+                )
+            else:
+                mouseposition_stats["fallback"] += 1
+                if not projection_fallback_logged:
+                    logger.warning(
+                        "Region %s: mouseposition DOM unavailable (%s); "
+                        "using requested tile centers",
+                        region_name,
+                        mouse_anchor.get("reason"),
                     )
-            elif LEAFLET_PROJECTION_FALLBACK and leaflet_center_offset:
-                center_offset = leaflet_center_offset
-                projection_source = "leaflet-fallback"
-                proj_lat = leaflet_center_offset.get("map_lat") or lat
-                proj_lon = leaflet_center_offset.get("map_lng") or lon
-                proj_zoom = leaflet_center_offset.get("map_zoom") or zoom
-            elif not projection_fallback_logged:
+                    projection_fallback_logged = True
+
+            screenshot_args = {"type": SCREENSHOT_FORMAT}
+            if SCREENSHOT_FORMAT == "jpeg":
+                screenshot_args["quality"] = SCREENSHOT_QUALITY
+            img_bytes = map_locator.screenshot(**screenshot_args)
+
+            if projection_source != "mouseposition-dom" and not projection_fallback_logged:
                 logger.warning(
-                    "Region %s: projection fallback active: coastline source=%s "
-                    "confidence=%.3f reason=%s; using requested tile centers",
+                    "Region %s: projection fallback active; using requested tile centers",
                     region_name,
-                    coast_fit.source,
-                    coast_fit.confidence,
-                    coast_fit.reason,
                 )
                 projection_fallback_logged = True
 
-            # Inline ship detection + geo-coordinate extraction. Coastline
-            # registration supplies a seer.py-compatible center_offset, so the
-            # marker projection is corrected without making Leaflet mandatory.
+            # Inline ship detection + geo-coordinate extraction. The
+            # mouseposition DOM anchor supplies the real map coordinate under
+            # the screenshot center without requiring Leaflet access.
             logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
                          row, col, len(img_bytes))
             det, tile_markers, img_shape = _detect_ships_inline(
@@ -2278,12 +2426,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             # BBox mode keeps the full bbox; legacy mode preserves polygon filtering.
             raw_count = len(tile_markers)
             filter_polygon = polygon if tiling_mode == "polygon" else None
-            projection_compare = _projection_before_after(
-                tile_markers,
-                coast_fit if coast_fit.usable else None,
-                zoom,
-                filter_polygon,
-            )
             if filter_polygon:
                 det, tile_markers = _filter_markers_to_polygon(
                     tile_markers, filter_polygon
@@ -2338,19 +2480,21 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                 "proj": {
                     "req_lat": lat, "req_lon": lon, "req_zoom": zoom,
                     "source": projection_source,
-                    "act_lat": (leaflet_center_offset.get("map_lat")
-                                if leaflet_center_offset else None),
-                    "act_lon": (leaflet_center_offset.get("map_lng")
-                                if leaflet_center_offset else None),
-                    "act_zoom": (leaflet_center_offset.get("map_zoom")
-                                 if leaflet_center_offset else None),
+                    "obs_lat": mouse_anchor.get("obs_lat"),
+                    "obs_lon": mouse_anchor.get("obs_lon"),
+                    "delta_lat": mouse_anchor.get("delta_lat"),
+                    "delta_lon": mouse_anchor.get("delta_lon"),
+                    "dx_px": mouse_anchor.get("dx_px"),
+                    "dy_px": mouse_anchor.get("dy_px"),
+                    "meters": mouse_anchor.get("meters"),
+                    "mouseposition_raw": mouse_anchor.get("raw"),
+                    "mouseposition_selector": mouse_anchor.get("selector"),
+                    "mouseposition_frame": mouse_anchor.get("frame_url"),
                     "dpr": center_offset.get("dpr") if center_offset else None,
                     "img_h": int(img_shape[0]) if img_shape else None,
                     "img_w": int(img_shape[1]) if img_shape else None,
                     "center_x": center_offset.get("center_x") if center_offset else None,
                     "center_y": center_offset.get("center_y") if center_offset else None,
-                    "coastline": coast_fit.to_log_dict(),
-                    "before_after": projection_compare,
                 },
             })
 
@@ -2360,31 +2504,45 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             tiles_ok += 1
             logger.info(
                 "  Tile (%d,%d) [%d/%d]: %d tankers (%d mov), "
-                "%d cargo (%d mov) projection=%s coast_conf=%.3f",
+                "%d cargo (%d mov) projection=%s mouseposition=%s",
                 row, col, i + 1, len(tiles), tankers, mt, cargos, mc,
-                projection_source, coast_fit.confidence,
+                projection_source, "ok" if mouse_anchor.get("available") else "fallback",
             )
 
         except Exception as e:
             logger.error("  Tile (%d,%d) failed: %s", row, col, e)
             tiles_failed += 1
 
-    coastline_summary = coastline_tracker.summary()
-    last_fit = coastline_summary.get("last_fit") or {}
     logger.info(
         "Region %s navigation summary: nav=%s setView_opt=%s "
-        "coast_conf=%s offset=(dlat=%s dlon=%s meters=%s) "
-        "projection_fallbacks=%d coastline_stats=%s",
+        "mouseposition_ok=%d mouseposition_fallback=%d",
         region_name,
         nav_counts,
         USE_SETVIEW_OPTIMIZATION,
-        last_fit.get("confidence"),
-        last_fit.get("delta_lat"),
-        last_fit.get("delta_lon"),
-        last_fit.get("meters"),
-        coastline_summary["stats"].get("fallback", 0),
-        coastline_summary["stats"],
+        mouseposition_stats["ok"],
+        mouseposition_stats["fallback"],
     )
+
+    deduped_markers = dedup_markers_spatial(all_markers, MARKER_DEDUP_EPS_DEG)
+    if len(deduped_markers) != len(all_markers):
+        dropped = len(all_markers) - len(deduped_markers)
+        dedup_counts = _count_markers_by_type(deduped_markers)
+        total_moving_tankers = dedup_counts["moving_tankers"]
+        total_moving_cargos = dedup_counts["moving_cargos"]
+        total_tankers = (
+            dedup_counts["stationary_tankers"] + dedup_counts["moving_tankers"]
+        )
+        total_cargos = (
+            dedup_counts["stationary_cargos"] + dedup_counts["moving_cargos"]
+        )
+        all_markers = deduped_markers
+        logger.info(
+            "Region %s marker dedup: dropped %d near-duplicate markers "
+            "(eps=%.6f deg)",
+            region_name,
+            dropped,
+            MARKER_DEDUP_EPS_DEG,
+        )
 
     # --- Save composite image if requested ------------------------------------
     saved_path = ""
@@ -2464,10 +2622,6 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             "qa", timestamp_str, region_name, qa_summary
         )
         logger.warning("Region %s QA failed: %s", region_name, exc)
-    calibration_artifact = _write_calibration_artifact(
-        timestamp_str, region_name, config, coastline_summary
-    )
-
     qa_flags = qa_summary.get("qa_flags", [])
     qa_confidence = qa_summary.get("qa_confidence", 0.0)
 
@@ -2506,8 +2660,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
         "qa": qa_summary,
         "qa_flags": qa_flags,
         "qa_confidence": qa_confidence,
-        "coastline": coastline_summary,
-        "calibration": calibration_artifact,
+        "mouseposition": mouseposition_stats,
     }
 
 
@@ -2627,6 +2780,7 @@ def capture_worker(region_name, timestamp_str):
                     if not filter_ok:
                         raise RuntimeError("required setup failed: vessel filter")
                     hide_ui_overlays(page)
+                    install_capture_visibility_css(page)
                     if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
                         _discover_leaflet_map(page)
             except Exception as e:
@@ -2653,7 +2807,7 @@ def capture_worker(region_name, timestamp_str):
 
             map_dims = _get_map_dimensions(page)
             center_offset = None
-            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS or LEAFLET_PROJECTION_FALLBACK:
+            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
                 center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
                 try:
                     map_probe = run_map_probe(page)
@@ -2678,23 +2832,51 @@ def capture_worker(region_name, timestamp_str):
                     )
                     logger.warning(
                         "[worker=%s region=%s] Leaflet center_offset unavailable; "
-                        "production capture continues with coastline/requested-center "
+                        "production capture continues with mouseposition/requested-center "
                         "projection; frame_scan=%s",
                         worker_id, region_name, scan_path,
                     )
-            coast_status = coastline_source_status()
+
+            mouse_probe = _read_mouseposition_anchor(
+                page,
+                map_dims,
+                center_lat,
+                center_lon,
+                zoom,
+                region_name,
+                tile_id="worker_probe",
+            )
+            if mouse_probe.get("available"):
+                logger.info(
+                    "[worker=%s region=%s] mouseposition probe selector=%s "
+                    "obs=(%.6f, %.6f) req=(%.6f, %.6f) "
+                    "delta=(%.6f, %.6f; %.0fm) px=(%.1f, %.1f) raw=%r",
+                    worker_id, region_name,
+                    mouse_probe.get("selector"),
+                    mouse_probe["obs_lat"], mouse_probe["obs_lon"],
+                    center_lat, center_lon,
+                    mouse_probe["delta_lat"], mouse_probe["delta_lon"],
+                    mouse_probe["meters"],
+                    mouse_probe["dx_px"], mouse_probe["dy_px"],
+                    mouse_probe.get("raw"),
+                )
+            else:
+                logger.warning(
+                    "[worker=%s region=%s] mouseposition probe unavailable: %s raw=%r",
+                    worker_id, region_name,
+                    mouse_probe.get("reason"),
+                    mouse_probe.get("raw"),
+                )
 
             logger.info(
                 "[worker=%s region=%s] setup ok: nav_default=mouse-drag "
-                "setView_opt=%s map_dims=%dx%d center_offset=%s source=%s "
-                "coastline_calibration=%s coastline_available=%s dark=%s filter=%s",
+                "setView_opt=%s map_dims=%dx%d leaflet_center_offset=%s "
+                "mouseposition=%s dark=%s filter=%s",
                 worker_id, region_name,
                 USE_SETVIEW_OPTIMIZATION,
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
-                center_offset.get("source") if center_offset else None,
-                ENABLE_COASTLINE_CALIBRATION,
-                coast_status.get("available"),
+                "ok" if mouse_probe.get("available") else "missing",
                 dark_state,
                 filter_state,
             )
@@ -3038,10 +3220,10 @@ def main():
     active_count = len(region_filter) if region_filter else len(ACTIVE_REGIONS)
     logger.info("Total: %d regions, %d tiles | Viewport: %dx%d | "
                 "Max browsers: %d | Save images: %s | bbox=%s | cross_zoom_qa=%s "
-                "| coastline_calibration=%s | no_ingest=%s",
+                "| projection=mouseposition-dom | no_ingest=%s",
                 active_count, total_tiles, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
                 MAX_BROWSERS, SAVE_IMAGES, USE_BBOX_TILING,
-                ENABLE_CROSS_ZOOM_QA, ENABLE_COASTLINE_CALIBRATION, no_ingest)
+                ENABLE_CROSS_ZOOM_QA, no_ingest)
 
     # Run once immediately
     capture_all_regions(region_filter, no_ingest=no_ingest)
