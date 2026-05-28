@@ -1622,7 +1622,6 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     drag_y = -dy
 
     if abs(drag_x) < 1 and abs(drag_y) < 1:
-        timings["drag_s"] = 0.0
         timings["tiles_wait_s"] = 0.0
         timings["ais_wait_s"] = 0.0
         timings["nav_total_s"] = time.perf_counter() - nav_started
@@ -1642,7 +1641,6 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     step_dx = drag_x / steps_needed
     step_dy = drag_y / steps_needed
 
-    drag_started = time.perf_counter()
     for _ in range(steps_needed):
         page.mouse.move(cx, cy)
         page.mouse.down()
@@ -1650,7 +1648,6 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
         page.mouse.up()
         if steps_needed > 1:
             time.sleep(0.05)
-    timings["drag_s"] = time.perf_counter() - drag_started
 
     logger.info("  Panned via mouse_drag (dx=%.0f dy=%.0f, %d step(s))",
                 drag_x, drag_y, steps_needed)
@@ -3039,16 +3036,6 @@ def _save_tile_image(tile, timestamp_str, img_bytes):
     return str(output_path), output_path.stat().st_size / 1024
 
 
-def _rounded_timing(timings):
-    rounded = {}
-    for key, value in (timings or {}).items():
-        if isinstance(value, float):
-            rounded[key] = round(value, 4)
-        else:
-            rounded[key] = value
-    return rounded
-
-
 def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
     """Capture one same-zoom batch from the global tile manifest."""
     batch_started = time.perf_counter()
@@ -3090,15 +3077,11 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
         tile_started = time.perf_counter()
         timing = {
             "nav_total_s": 0.0,
-            "drag_s": 0.0,
             "tiles_wait_s": 0.0,
             "ais_wait_s": 0.0,
             "mouseposition_s": 0.0,
             "screenshot_s": 0.0,
             "opencv_s": 0.0,
-            "accept_dedup_s": 0.0,
-            "save_s": 0.0,
-            "json_log_s": 0.0,
         }
         nav_mode = "initial"
         tid = tile["tile_id"]
@@ -3125,7 +3108,6 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
             current_lat, current_lon = lat, lon
 
         try:
-            section_started = time.perf_counter()
             pre_capture_center_offset = None
             if LEAFLET_DIAGNOSTICS:
                 pre_capture_center_offset = _wait_for_map_center_offset(
@@ -3152,7 +3134,6 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                         scan_path,
                     )
                     leaflet_diag_logged = True
-            timing["leaflet_diag_s"] = time.perf_counter() - section_started
 
             center_offset = None
             projection_source = "requested-center"
@@ -3203,7 +3184,6 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
             section_started = time.perf_counter()
             img_bytes = map_locator.screenshot(**screenshot_args)
             timing["screenshot_s"] = time.perf_counter() - section_started
-            timing["screenshot_kb"] = len(img_bytes) / 1024
 
             if projection_source != "mouseposition-dom" and not projection_fallback_logged:
                 logger.warning(
@@ -3223,14 +3203,12 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                 center_offset=center_offset,
             )
             timing["opencv_s"] = time.perf_counter() - section_started
-            section_started = time.perf_counter()
             accepted_markers, rejected_markers = GLOBAL_TILE_INDEX.filter_markers_for_tile(
                 tid, raw_markers
             )
             accepted_markers = dedup_markers_spatial(
                 accepted_markers, MARKER_DEDUP_EPS_DEG
             )
-            timing["accept_dedup_s"] = time.perf_counter() - section_started
             counts = _tile_result_counts(accepted_markers)
             tile_det = {
                 "tile_id": tid,
@@ -3279,19 +3257,9 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                         tid, row, col, zoom, act_zoom,
                     )
 
-            section_started = time.perf_counter()
             saved_path, file_size_kb = _save_tile_image(tile, timestamp_str, img_bytes)
-            timing["save_s"] = time.perf_counter() - section_started
             nav_mode_used = _nav_mode_summary(nav_counts)
             projection_mode = _projection_mode_summary([tile_det])
-            timing["wait_total_s"] = (
-                timing.get("tiles_wait_s", 0.0)
-                + timing.get("ais_wait_s", 0.0)
-            )
-            timing["pre_log_total_s"] = time.perf_counter() - tile_started
-            tile_det["timing"] = _rounded_timing(timing)
-
-            section_started = time.perf_counter()
             _log_tile_json(
                 timestamp_str,
                 tile,
@@ -3306,9 +3274,7 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                 qa_flags=_global_tile_qa_flags(),
                 qa_confidence=None,
             )
-            timing["json_log_s"] = time.perf_counter() - section_started
             timing["total_s"] = time.perf_counter() - tile_started
-            tile_det["timing"] = _rounded_timing(timing)
             for key, value in timing.items():
                 if key.endswith("_s") and isinstance(value, (int, float)):
                     batch_timing_totals[key] = (
@@ -3324,7 +3290,6 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                 "nav_mode": nav_mode_used,
                 "projection_mode": projection_mode,
                 "mouseposition": dict(mouseposition_stats),
-                "timing": _rounded_timing(timing),
             }
             logger.info(
                 "  Tile %s (%d,%d) [%d/%d]: %d tankers (%d mov), "
@@ -3344,31 +3309,21 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
             )
             logger.info(
                 "TIMING global_tile tile=%s z=%d step=%d/%d total=%.3fs "
-                "pre_log=%.3fs nav=%.3fs mode=%s drag=%.3fs "
-                "tiles_wait=%.3fs tiles_ready=%s ais_wait=%.3fs "
-                "ais_ready=%s mouseposition=%.3fs screenshot=%.3fs "
-                "screenshot_kb=%.1f opencv=%.3fs accept_dedup=%.3fs "
-                "save=%.3fs json_log=%.3fs raw=%d accepted=%d rejected=%d",
+                "nav=%.3fs mode=%s tiles_wait=%.3fs ais_wait=%.3fs "
+                "mouseposition=%.3fs screenshot=%.3fs opencv=%.3fs "
+                "raw=%d accepted=%d rejected=%d",
                 tid,
                 zoom,
                 i + 1,
                 len(tile_batch),
                 timing.get("total_s", 0.0),
-                timing.get("pre_log_total_s", 0.0),
                 timing.get("nav_total_s", 0.0),
                 nav_mode,
-                timing.get("drag_s", 0.0),
                 timing.get("tiles_wait_s", 0.0),
-                timing.get("tiles_ready"),
                 timing.get("ais_wait_s", 0.0),
-                timing.get("ais_ready"),
                 timing.get("mouseposition_s", 0.0),
                 timing.get("screenshot_s", 0.0),
-                timing.get("screenshot_kb", 0.0),
                 timing.get("opencv_s", 0.0),
-                timing.get("accept_dedup_s", 0.0),
-                timing.get("save_s", 0.0),
-                timing.get("json_log_s", 0.0),
                 len(raw_markers),
                 len(accepted_markers),
                 rejected_markers,
@@ -3422,7 +3377,6 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                 "moving_cargos": 0,
                 "tiles_ok": 0,
                 "tiles_failed": 1,
-                "timing": _rounded_timing(timing),
             }
 
     batch_elapsed = time.perf_counter() - batch_started
@@ -3437,23 +3391,18 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
     )
     logger.info(
         "TIMING global_tile_batch z=%d tiles=%d elapsed=%.3fs avg_tile=%.3fs "
-        "nav=%.3fs waits=%.3fs tiles_wait=%.3fs ais_wait=%.3fs "
-        "mouseposition=%.3fs screenshot=%.3fs opencv=%.3fs "
-        "accept_dedup=%.3fs save=%.3fs json_log=%.3fs",
+        "nav=%.3fs tiles_wait=%.3fs ais_wait=%.3fs "
+        "mouseposition=%.3fs screenshot=%.3fs opencv=%.3fs",
         batch_zoom,
         len(tile_batch),
         batch_elapsed,
         batch_elapsed / len(tile_batch) if tile_batch else 0.0,
         batch_timing_totals.get("nav_total_s", 0.0),
-        batch_timing_totals.get("wait_total_s", 0.0),
         batch_timing_totals.get("tiles_wait_s", 0.0),
         batch_timing_totals.get("ais_wait_s", 0.0),
         batch_timing_totals.get("mouseposition_s", 0.0),
         batch_timing_totals.get("screenshot_s", 0.0),
         batch_timing_totals.get("opencv_s", 0.0),
-        batch_timing_totals.get("accept_dedup_s", 0.0),
-        batch_timing_totals.get("save_s", 0.0),
-        batch_timing_totals.get("json_log_s", 0.0),
     )
     return results
 
@@ -3473,7 +3422,6 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
     results = {}
     retryable = []
     worker_started = time.perf_counter()
-    setup_timing = {}
     logger.info(
         "[mode=global-tile-batch worker=%s] batch=%s starting",
         worker_id,
@@ -3491,14 +3439,11 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                     "--use-angle=default",
                 ]
 
-            section_started = time.perf_counter()
             browser = p.chromium.launch(
                 headless=False,
                 channel="chrome",
                 args=chrome_args,
             )
-            setup_timing["browser_launch_s"] = time.perf_counter() - section_started
-            section_started = time.perf_counter()
             context = browser.new_context(
                 proxy={
                     "server": proxy["server"],
@@ -3515,13 +3460,10 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 user_agent=_random_user_agent(),
             )
             context.add_cookies(_random_cookies(".marinetraffic.com"))
-            setup_timing["context_s"] = time.perf_counter() - section_started
 
-            section_started = time.perf_counter()
             page = context.new_page()
             _inject_stealth_scripts(page, geo)
             _inject_map_hooks(page)
-            setup_timing["page_init_s"] = time.perf_counter() - section_started
 
             center_lat = first["center_lat"]
             center_lon = first["center_lon"]
@@ -3532,51 +3474,31 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 batch_label,
                 zoom,
             )
-            section_started = time.perf_counter()
             page.goto(url, wait_until="domcontentloaded")
-            setup_timing["goto_s"] = time.perf_counter() - section_started
 
             page_ready = True
             filter_state = "skipped"
             dark_state = "skipped"
             try:
-                section_started = time.perf_counter()
                 cloudflare_passed = _wait_for_cloudflare(page)
-                setup_timing["cloudflare_s"] = time.perf_counter() - section_started
                 if cloudflare_passed:
                     logger.info("[worker=%s batch=%s] Cloudflare passed",
                                 worker_id, batch_label)
                 elif _is_cloudflare_blocked(page):
                     raise RuntimeError("cloudflare block")
 
-                section_started = time.perf_counter()
                 wait_for_map_tiles(page)
-                setup_timing["initial_tiles_wait_s"] = (
-                    time.perf_counter() - section_started
-                )
-                section_started = time.perf_counter()
                 dismiss_cookie_banner(page)
-                setup_timing["cookie_s"] = time.perf_counter() - section_started
-                section_started = time.perf_counter()
                 dark_ok = set_dark_mode(page)
-                setup_timing["dark_mode_s"] = time.perf_counter() - section_started
                 dark_state = "applied" if dark_ok else "unavailable"
-                section_started = time.perf_counter()
                 filter_ok = set_vessel_filter(page)
-                setup_timing["filter_s"] = time.perf_counter() - section_started
                 filter_state = "applied" if filter_ok else "failed"
                 if not filter_ok:
                     raise RuntimeError("required setup failed: vessel filter")
-                section_started = time.perf_counter()
                 hide_ui_overlays(page)
                 install_capture_visibility_css(page)
-                setup_timing["hide_ui_s"] = time.perf_counter() - section_started
                 if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
-                    section_started = time.perf_counter()
                     _discover_leaflet_map(page)
-                    setup_timing["setview_discover_s"] = (
-                        time.perf_counter() - section_started
-                    )
             except Exception as exc:
                 retry_setup = (
                     _is_crash_error(exc)
@@ -3601,34 +3523,19 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 page_ready = False
 
             if not page_ready:
-                setup_timing["setup_total_s"] = time.perf_counter() - worker_started
                 logger.info(
-                    "TIMING global_tile_worker batch=%s setup_failed total=%.3fs "
-                    "browser=%.3fs context=%.3fs page=%.3fs goto=%.3fs "
-                    "cloudflare=%.3fs initial_tiles=%.3fs dark=%.3fs "
-                    "filter=%.3fs",
+                    "TIMING global_tile_worker batch=%s setup_failed elapsed=%.3fs",
                     batch_label,
-                    setup_timing.get("setup_total_s", 0.0),
-                    setup_timing.get("browser_launch_s", 0.0),
-                    setup_timing.get("context_s", 0.0),
-                    setup_timing.get("page_init_s", 0.0),
-                    setup_timing.get("goto_s", 0.0),
-                    setup_timing.get("cloudflare_s", 0.0),
-                    setup_timing.get("initial_tiles_wait_s", 0.0),
-                    setup_timing.get("dark_mode_s", 0.0),
-                    setup_timing.get("filter_s", 0.0),
+                    time.perf_counter() - worker_started,
                 )
                 context.close()
                 browser.close()
                 results["_retryable"] = retryable
                 return results
 
-            section_started = time.perf_counter()
             map_dims = _get_map_dimensions(page)
-            setup_timing["map_dims_s"] = time.perf_counter() - section_started
             center_offset = None
             if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
-                section_started = time.perf_counter()
                 center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
                 try:
                     map_probe = run_map_probe(page)
@@ -3645,9 +3552,7 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                         batch_label,
                         exc,
                     )
-                setup_timing["map_probe_s"] = time.perf_counter() - section_started
 
-            section_started = time.perf_counter()
             mouse_probe = _read_mouseposition_anchor(
                 page,
                 map_dims,
@@ -3657,10 +3562,7 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 first["tile_id"],
                 tile_id="worker_probe",
             )
-            setup_timing["mouseposition_probe_s"] = (
-                time.perf_counter() - section_started
-            )
-            setup_timing["setup_total_s"] = time.perf_counter() - worker_started
+            setup_elapsed = time.perf_counter() - worker_started
             logger.info(
                 "[worker=%s batch=%s] setup ok: nav_default=mouse-drag "
                 "setView_opt=%s map_dims=%dx%d leaflet_center_offset=%s "
@@ -3676,59 +3578,36 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 filter_state,
             )
             logger.info(
-                "TIMING global_tile_worker batch=%s setup_ok total=%.3fs "
-                "browser=%.3fs context=%.3fs page=%.3fs goto=%.3fs "
-                "cloudflare=%.3fs initial_tiles=%.3fs cookie=%.3fs "
-                "dark=%.3fs filter=%.3fs hide_ui=%.3fs map_dims=%.3fs "
-                "map_probe=%.3fs mouseposition_probe=%.3fs",
+                "TIMING global_tile_worker batch=%s setup_ok elapsed=%.3fs",
                 batch_label,
-                setup_timing.get("setup_total_s", 0.0),
-                setup_timing.get("browser_launch_s", 0.0),
-                setup_timing.get("context_s", 0.0),
-                setup_timing.get("page_init_s", 0.0),
-                setup_timing.get("goto_s", 0.0),
-                setup_timing.get("cloudflare_s", 0.0),
-                setup_timing.get("initial_tiles_wait_s", 0.0),
-                setup_timing.get("cookie_s", 0.0),
-                setup_timing.get("dark_mode_s", 0.0),
-                setup_timing.get("filter_s", 0.0),
-                setup_timing.get("hide_ui_s", 0.0),
-                setup_timing.get("map_dims_s", 0.0),
-                setup_timing.get("map_probe_s", 0.0),
-                setup_timing.get("mouseposition_probe_s", 0.0),
+                setup_elapsed,
             )
 
             try:
-                section_started = time.perf_counter()
+                capture_started = time.perf_counter()
                 results.update(
                     _capture_global_tile_batch(
                         tile_batch, timestamp_str, page, map_dims
                     )
                 )
-                setup_timing["capture_batch_s"] = (
-                    time.perf_counter() - section_started
-                )
-                setup_timing["worker_total_s"] = time.perf_counter() - worker_started
+                capture_elapsed = time.perf_counter() - capture_started
                 logger.info(
                     "TIMING global_tile_worker batch=%s finished total=%.3fs "
                     "setup=%.3fs capture_batch=%.3fs",
                     batch_label,
-                    setup_timing.get("worker_total_s", 0.0),
-                    setup_timing.get("setup_total_s", 0.0),
-                    setup_timing.get("capture_batch_s", 0.0),
+                    time.perf_counter() - worker_started,
+                    setup_elapsed,
+                    capture_elapsed,
                 )
             except Exception as exc:
-                setup_timing["capture_batch_s"] = (
-                    time.perf_counter() - section_started
-                )
-                setup_timing["worker_total_s"] = time.perf_counter() - worker_started
+                capture_elapsed = time.perf_counter() - capture_started
                 logger.info(
                     "TIMING global_tile_worker batch=%s capture_failed "
                     "total=%.3fs setup=%.3fs capture_batch=%.3fs",
                     batch_label,
-                    setup_timing.get("worker_total_s", 0.0),
-                    setup_timing.get("setup_total_s", 0.0),
-                    setup_timing.get("capture_batch_s", 0.0),
+                    time.perf_counter() - worker_started,
+                    setup_elapsed,
+                    capture_elapsed,
                 )
                 if _is_crash_error(exc):
                     logger.error(
