@@ -3756,8 +3756,14 @@ def capture_all_regions(region_filter=None, no_ingest=False):
 
 
 def _select_global_tiles(region_filter=None, zoom_filter=None, tier_filter=None,
-                         respect_schedule=True):
+                         tile_ids=None, respect_schedule=True):
     tiles = list(GLOBAL_TILE_MANIFEST)
+    if tile_ids:
+        wanted = set(tile_ids)
+        tiles = [t for t in tiles if t["tile_id"] in wanted]
+        missing = wanted - {t["tile_id"] for t in tiles}
+        if missing:
+            logger.warning("Unknown tile ids ignored: %s", sorted(missing))
     if zoom_filter:
         allowed_zoom = set(int(z) for z in zoom_filter)
         tiles = [t for t in tiles if int(t["zoom"]) in allowed_zoom]
@@ -3816,7 +3822,7 @@ def _chunk_global_tiles(tiles):
 
 
 def capture_all_regions(region_filter=None, no_ingest=False,
-                        zoom_filter=None, tier_filter=None):
+                        zoom_filter=None, tier_filter=None, tile_ids=None):
     """Capture the global tile manifest.
 
     ``region_filter`` is only a debug selector. It chooses global tiles whose
@@ -3836,6 +3842,7 @@ def capture_all_regions(region_filter=None, no_ingest=False,
         region_filter=region_filter,
         zoom_filter=zoom_filter,
         tier_filter=tier_filter,
+        tile_ids=tile_ids,
     )
     batches = _chunk_global_tiles(tiles)
     total_tiles = len(tiles)
@@ -3978,6 +3985,7 @@ def main():
     region_filter = None
     zoom_filter = None
     tier_filter = None
+    tile_ids_filter = None
     run_once = False
     no_ingest = False
     dry_run_grid = False
@@ -3989,6 +3997,8 @@ def main():
             zoom_filter = [int(z) for z in arg.split("=", 1)[1].split(",")]
         elif arg.startswith("--tier="):
             tier_filter = arg.split("=", 1)[1].split(",")
+        elif arg.startswith("--tile-ids="):
+            tile_ids_filter = [tid for tid in arg.split("=", 1)[1].split(",") if tid]
         elif arg == "--save-images":
             pass  # Already handled at module level via SAVE_IMAGES
         elif arg == "--once":
@@ -4018,6 +4028,7 @@ def main():
         region_filter=region_filter,
         zoom_filter=zoom_filter,
         tier_filter=tier_filter,
+        tile_ids=tile_ids_filter,
         respect_schedule=not (dry_run_grid or list_tiles),
     )
     selected_summary = manifest_summary(selected_tiles)
@@ -4058,6 +4069,7 @@ def main():
         no_ingest=no_ingest,
         zoom_filter=zoom_filter,
         tier_filter=tier_filter,
+        tile_ids=tile_ids_filter,
     )
     if run_once:
         return

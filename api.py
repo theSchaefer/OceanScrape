@@ -1498,6 +1498,346 @@ def get_tiles():
     return _tiles_geojson_cache
 
 
+# --- Per-tile + combined-tile endpoints --------------------------------------
+
+def _tile_bounds_polygon(tile_bounds):
+    return [
+        (tile_bounds["max_lat"], tile_bounds["min_lon"]),
+        (tile_bounds["max_lat"], tile_bounds["max_lon"]),
+        (tile_bounds["min_lat"], tile_bounds["max_lon"]),
+        (tile_bounds["min_lat"], tile_bounds["min_lon"]),
+    ]
+
+
+def _load_tiles(cur, tile_ids):
+    if not tile_ids:
+        return []
+    cur.execute("""
+        SELECT tile_id, zoom, row, col, enabled, source, seed_regions,
+               center_lat, center_lon, tile_bounds
+        FROM capture_tiles
+        WHERE tile_id = ANY(%s)
+    """, (list(tile_ids),))
+    out = []
+    for r in cur.fetchall():
+        t = dict(r)
+        for k in ("seed_regions", "tile_bounds"):
+            if isinstance(t.get(k), str):
+                t[k] = json.loads(t[k])
+        out.append(t)
+    return out
+
+
+def _tile_rows(cur, tile_ids, snapshot_ts=None, start_dt=None, end_dt=None,
+               type_filter=None, motion_filter=None):
+    sql = """
+        SELECT tile_id, captured_at, lat, lon, ship_type, motion
+        FROM global_vessel_positions
+        WHERE tile_id = ANY(%s)
+    """
+    args = [list(tile_ids)]
+    if snapshot_ts is not None:
+        sql += " AND captured_at = %s"
+        args.append(snapshot_ts)
+    if start_dt is not None:
+        sql += " AND captured_at >= %s"
+        args.append(start_dt)
+    if end_dt is not None:
+        sql += " AND captured_at <= %s"
+        args.append(end_dt)
+    if type_filter:
+        sql += " AND ship_type = %s"
+        args.append(type_filter)
+    if motion_filter:
+        sql += " AND motion = %s"
+        args.append(motion_filter)
+    sql += " ORDER BY captured_at, id"
+    cur.execute(sql, args)
+    return cur.fetchall()
+
+
+def _build_tile_analytics(tile_ids, area_km2, start_dt, end_dt, granularity):
+    from collections import defaultdict
+    trunc_map = {"hourly": "hour", "daily": "day", "weekly": "week"}
+    trunc = trunc_map[granularity]
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT date_trunc(%s, captured_at) AS bucket,
+                       captured_at, ship_type, motion
+                FROM global_vessel_positions
+                WHERE tile_id = ANY(%s)
+                  AND captured_at >= %s
+                  AND captured_at <= %s
+                ORDER BY captured_at
+            """, (trunc, list(tile_ids), start_dt, end_dt))
+            rows = cur.fetchall()
+
+    snapshots = defaultdict(lambda: {
+        "tankers": 0, "cargos": 0, "moving_tankers": 0, "moving_cargos": 0,
+    })
+    buckets = defaultdict(set)
+    for r in rows:
+        key = (r["bucket"], r["captured_at"])
+        buckets[r["bucket"]].add(r["captured_at"])
+        d = snapshots[key]
+        is_tanker = r["ship_type"] == "tanker"
+        is_moving = r["motion"] == "moving"
+        if is_tanker and is_moving:
+            d["moving_tankers"] += 1
+        elif is_tanker:
+            d["tankers"] += 1
+        elif is_moving:
+            d["moving_cargos"] += 1
+        else:
+            d["cargos"] += 1
+
+    series = []
+    for bucket in sorted(buckets.keys()):
+        snap_keys = [(b, ts) for (b, ts) in snapshots if b == bucket]
+        n = max(1, len(snap_keys))
+        agg = {"tankers": 0, "cargos": 0, "moving_tankers": 0, "moving_cargos": 0}
+        for key in snap_keys:
+            for field in agg:
+                agg[field] += snapshots[key][field]
+        avg = {field: int(round(value / n)) for field, value in agg.items()}
+        total = sum(avg.values())
+        series.append({
+            "timestamp": bucket.isoformat(),
+            **avg,
+            "total_ships": total,
+            "density": round(total / area_km2, 2) if area_km2 > 0 else 0,
+        })
+
+    totals = [s["total_ships"] for s in series]
+    peak_hour = None
+    if rows:
+        hour_counts = defaultdict(int)
+        for r in rows:
+            hour_counts[r["captured_at"].hour] += 1
+        peak_hour = max(hour_counts, key=hour_counts.get)
+
+    return {
+        "granularity": granularity,
+        "series": series,
+        "kpis": {
+            "avg_total": int(sum(totals) / len(totals)) if totals else 0,
+            "max_total": max(totals) if totals else 0,
+            "min_total": min(totals) if totals else 0,
+            "avg_density": (
+                round((sum(totals) / len(totals)) / area_km2, 2)
+                if (totals and area_km2 > 0) else 0
+            ),
+            "captures_count": len({r["captured_at"] for r in rows}),
+            "peak_hour": peak_hour,
+        },
+    }
+
+
+def _parse_tile_ids(raw):
+    ids = [tid.strip() for tid in (raw or "").split(",") if tid.strip()]
+    if not ids:
+        raise HTTPException(400, "ids query param required (comma-separated)")
+    seen, out = set(), []
+    for tid in ids:
+        if tid not in seen:
+            seen.add(tid)
+            out.append(tid)
+    return out
+
+
+def _tile_positions_csv(tile_ids, start_dt, end_dt, type_filter, motion_filter):
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            rows = _tile_rows(
+                cur, tile_ids,
+                start_dt=start_dt, end_dt=end_dt,
+                type_filter=type_filter, motion_filter=motion_filter,
+            )
+
+    def stream():
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["timestamp", "tile_id", "lat", "lon", "ship_type", "motion"])
+        yield buf.getvalue(); buf.seek(0); buf.truncate()
+        for r in rows:
+            w.writerow([
+                r["captured_at"].isoformat(), r["tile_id"],
+                r["lat"], r["lon"], r["ship_type"], r["motion"],
+            ])
+            yield buf.getvalue(); buf.seek(0); buf.truncate()
+    return stream
+
+
+# Static-path /api/tiles/combine/* declared BEFORE the /api/tiles/{tile_id}
+# pattern so FastAPI doesn't match "combine" as a tile id.
+
+@app.get("/api/tiles/combine/analytics")
+def get_combined_tile_analytics(
+    ids: str = Query(...),
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    granularity: str = Query("hourly", pattern="^(hourly|daily|weekly)$"),
+):
+    tile_ids = _parse_tile_ids(ids)
+    now = datetime.now(timezone.utc)
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(days=7)))
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            tiles = _load_tiles(cur, tile_ids)
+    if not tiles:
+        raise HTTPException(404, "No matching tiles")
+    area = sum(
+        _polygon_area_km2(_tile_bounds_polygon(t["tile_bounds"])) for t in tiles
+    )
+    data = _build_tile_analytics(
+        [t["tile_id"] for t in tiles], area, start_dt, end_dt, granularity,
+    )
+    return {
+        "tile_ids": [t["tile_id"] for t in tiles],
+        "tile_count": len(tiles),
+        "missing_ids": sorted(set(tile_ids) - {t["tile_id"] for t in tiles}),
+        "area_km2": round(area, 1),
+        **data,
+    }
+
+
+@app.get("/api/tiles/combine/export")
+def export_combined_tile_positions(
+    ids: str = Query(...),
+    start: str = Query(...),
+    end: str = Query(...),
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+):
+    tile_ids = _parse_tile_ids(ids)
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "start/end must be ISO datetimes")
+    if start_dt >= end_dt:
+        raise HTTPException(400, "end must be after start")
+    stream = _tile_positions_csv(tile_ids, start_dt, end_dt, type, motion)
+    fname = f"tiles_combined_{start_dt.date()}_{end_dt.date()}.csv"
+    return StreamingResponse(
+        stream(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.get("/api/tiles/{tile_id}")
+def get_tile(tile_id: str):
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            tiles = _load_tiles(cur, [tile_id])
+    if not tiles:
+        raise HTTPException(404, f"Unknown tile '{tile_id}'")
+    return tiles[0]
+
+
+@app.get("/api/tiles/{tile_id}/analytics")
+def get_tile_analytics(
+    tile_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    granularity: str = Query("hourly", pattern="^(hourly|daily|weekly)$"),
+):
+    now = datetime.now(timezone.utc)
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(days=7)))
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            tiles = _load_tiles(cur, [tile_id])
+    if not tiles:
+        raise HTTPException(404, f"Unknown tile '{tile_id}'")
+    area = _polygon_area_km2(_tile_bounds_polygon(tiles[0]["tile_bounds"]))
+    data = _build_tile_analytics([tile_id], area, start_dt, end_dt, granularity)
+    return {
+        "tile_id": tile_id,
+        "tile": tiles[0],
+        "area_km2": round(area, 1),
+        **data,
+    }
+
+
+@app.get("/api/tiles/{tile_id}/vessels")
+def get_tile_vessels(
+    tile_id: str,
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+    timestamp: Optional[str] = None,
+    dedup: bool = True,
+    dedup_eps: Optional[float] = Query(None, ge=0, le=1),
+):
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if timestamp:
+                ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                cur.execute("""
+                    SELECT captured_at FROM tile_captures
+                    WHERE tile_id = %s
+                    ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
+                    LIMIT 1
+                """, (tile_id, ts))
+            else:
+                cur.execute("""
+                    SELECT MAX(captured_at) AS captured_at FROM tile_captures
+                    WHERE tile_id = %s
+                """, (tile_id,))
+            row = cur.fetchone()
+            snapshot_ts = row["captured_at"] if row else None
+            rows = _tile_rows(
+                cur, [tile_id], snapshot_ts=snapshot_ts,
+                type_filter=type, motion_filter=motion,
+            ) if snapshot_ts else []
+    vessels = [{
+        "lat": r["lat"], "lon": r["lon"],
+        "type": r["ship_type"], "motion": r["motion"],
+        "tile_id": r["tile_id"],
+    } for r in rows]
+    raw_count = len(vessels)
+    if dedup:
+        eps = dedup_eps if dedup_eps is not None else VESSEL_DEDUP_EPS_DEG
+        vessels = dedup_markers_spatial(vessels, eps)
+    snapshot_iso = snapshot_ts.isoformat() if snapshot_ts else None
+    return {
+        "tile_id": tile_id,
+        "timestamp": snapshot_iso,
+        "snapshot_timestamp": snapshot_iso,
+        "vessels": vessels,
+        "count": len(vessels),
+        "raw_count": raw_count,
+    }
+
+
+@app.get("/api/tiles/{tile_id}/export")
+def export_tile_positions(
+    tile_id: str,
+    start: str = Query(...),
+    end: str = Query(...),
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+):
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "start/end must be ISO datetimes")
+    if start_dt >= end_dt:
+        raise HTTPException(400, "end must be after start")
+    stream = _tile_positions_csv([tile_id], start_dt, end_dt, type, motion)
+    fname = f"{tile_id}_positions_{start_dt.date()}_{end_dt.date()}.csv"
+    return StreamingResponse(
+        stream(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @app.get("/api/timeline")
 def get_timeline():
     with get_conn() as conn:

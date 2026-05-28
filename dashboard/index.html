@@ -132,6 +132,36 @@ input[type="range"]{accent-color:var(--accent)}
 .toast.show{opacity:1;transform:translateX(0)}
 .toast.success{background:#238636}.toast.error{background:#da3633}.toast.info{background:#1f6feb}
 
+/* ── Tile context menu + selection chip bar ─────────────────────────── */
+#tile-menu{position:absolute;z-index:50;background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);padding:4px;min-width:170px;display:none;
+  font-size:12px}
+#tile-menu.show{display:block}
+#tile-menu .tm-header{padding:6px 8px;font-size:10px;color:var(--text-dim);
+  border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tile-menu button{display:block;width:100%;text-align:left;background:none;border:none;
+  border-radius:4px;padding:6px 8px;color:var(--text);font-size:12px}
+#tile-menu button:hover{background:var(--surface2);border-color:transparent}
+#tile-menu .tm-sep{height:1px;background:var(--border);margin:2px 4px}
+
+#sel-bar{position:absolute;top:10px;left:10px;right:auto;z-index:6;background:var(--surface);
+  border:1px solid var(--border);border-radius:6px;padding:6px 8px;display:none;align-items:center;
+  gap:6px;max-width:60%;flex-wrap:wrap;backdrop-filter:blur(4px)}
+#sel-bar.show{display:flex}
+#sel-bar .sb-count{font-size:11px;color:var(--text-dim);margin-right:4px}
+.sel-chip{display:inline-flex;align-items:center;gap:4px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:12px;padding:2px 4px 2px 8px;font-size:11px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.sel-chip button{background:none;border:none;color:var(--text-dim);font-size:13px;
+  line-height:1;padding:0 4px;border-radius:8px}
+.sel-chip button:hover{color:var(--danger);background:transparent}
+#sel-bar .sb-actions{display:flex;gap:4px;margin-left:auto}
+#sel-bar .sb-actions button{font-size:11px;padding:3px 8px}
+#sel-bar .sb-actions button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+#map-controls button.active{border-color:var(--accent);color:var(--accent)}
+
 /* ── Keyboard hint ──────────────────────────────────────────────────── */
 #kb-hint{position:absolute;bottom:8px;left:12px;z-index:5;font-size:10px;color:var(--text-dim);
   background:rgba(13,17,23,.8);padding:3px 8px;border-radius:4px}
@@ -177,9 +207,30 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
     <button id="btn-draw" title="Draw region (D)">Draw Region</button>
     <button id="btn-lanes" title="Toggle shipping lanes (L)">Lanes</button>
     <button id="btn-tiles" title="Toggle capture tiles (T)">Tiles</button>
+    <button id="btn-tile-select" title="Tile select mode (S) — click tiles to add/remove from selection">Select</button>
+  </div>
+
+  <!-- Tile selection chip bar -->
+  <div id="sel-bar">
+    <span class="sb-count" id="sb-count">0 tiles selected</span>
+    <div id="sb-chips" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+    <div class="sb-actions">
+      <button id="sb-compare" class="primary" title="Open combined analytics">Compare</button>
+      <button id="sb-clear" title="Clear selection">Clear</button>
+    </div>
+  </div>
+
+  <!-- Tile right-click context menu -->
+  <div id="tile-menu">
+    <div class="tm-header" id="tm-header">tile</div>
+    <button id="tm-detail">View detail</button>
+    <button id="tm-add">Add to selection</button>
+    <button id="tm-export">Export positions…</button>
+    <div class="tm-sep"></div>
+    <button id="tm-zoom">Zoom to tile</button>
   </div>
   <div id="last-updated"></div>
-  <div id="kb-hint"><kbd>R</kbd> Refresh &nbsp; <kbd>D</kbd> Draw &nbsp; <kbd>L</kbd> Lanes &nbsp; <kbd>T</kbd> Tiles &nbsp; <kbd>Esc</kbd> Close</div>
+  <div id="kb-hint"><kbd>R</kbd> Refresh &nbsp; <kbd>D</kbd> Draw &nbsp; <kbd>L</kbd> Lanes &nbsp; <kbd>T</kbd> Tiles &nbsp; <kbd>S</kbd> Select tiles &nbsp; <kbd>Esc</kbd> Close</div>
 
   <!-- Analytics slide-in -->
   <div id="analytics">
@@ -275,8 +326,16 @@ const S = {
   lanesVisible: false,
   tilesVisible: false,
   tilesLoaded: false,
+  tileSelectMode: false,
+  selectedTiles: new Set(),
+  tileFeaturesById: {},
   analyticsChart: null,
   analyticsData: null,
+  // Routing context for the analytics drawer + exports. One of:
+  //   {kind:'region', id:<code>, name}
+  //   {kind:'tile',   id:<tile_id>}
+  //   {kind:'combined', ids:[<tile_id>,...]}
+  analyticsContext: null,
 };
 
 /* ━━ DOM refs ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -375,6 +434,17 @@ function initMap(token) {
     addMapLayers();
     loadAll();
   });
+  // Pan/zoom should dismiss the tile context menu (it would be anchored
+  // to the old screen position and feel disconnected).
+  map.on('movestart', () => hideTileMenu());
+
+  // Suppress the browser context menu over the map so right-click on a tile
+  // can show ours instead. (Mapbox `contextmenu` events already preventDefault
+  // on the layer hit, but right-clicks that miss the tile layer would still
+  // open the OS menu — uncomment the next line if you want to suppress those
+  // too. For now we leave them as-is so users can use the browser menu when
+  // not over a tile.)
+  // $('#map').addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 function addMapSources() {
@@ -487,15 +557,30 @@ function addMapLayers() {
   });
 
   // ── Capture tiles (thin outline + faint fill, hidden by default) ──
+  // `selected` is a feature-state flag set in setTileSelectedState().
   map.addLayer({
     id: 'tiles-fill', type: 'fill', source: 'tiles',
     layout: {'visibility':'none'},
-    paint: {'fill-color':'#3fb950','fill-opacity':0.04},
+    paint: {
+      'fill-color': ['case',
+        ['boolean', ['feature-state', 'selected'], false], '#58a6ff',
+        '#3fb950'],
+      'fill-opacity': ['case',
+        ['boolean', ['feature-state', 'selected'], false], 0.18,
+        0.04],
+    },
   });
   map.addLayer({
     id: 'tiles-line', type: 'line', source: 'tiles',
     layout: {'visibility':'none'},
-    paint: {'line-color':'rgba(63,185,80,0.6)','line-width':1},
+    paint: {
+      'line-color': ['case',
+        ['boolean', ['feature-state', 'selected'], false], '#58a6ff',
+        'rgba(63,185,80,0.6)'],
+      'line-width': ['case',
+        ['boolean', ['feature-state', 'selected'], false], 2,
+        1],
+    },
   });
 
   // ── Click handlers ──
@@ -529,6 +614,34 @@ function addMapLayers() {
     if (e._stopped || S.drawMode) return;
     const code = e.features[0].properties.code;
     selectRegion(code);
+  });
+
+  // ── Tile interaction ──
+  // Left-click on a tile: in select mode, toggle membership. Otherwise no-op
+  // (don't stop propagation — region-fill underneath still opens analytics).
+  map.on('click', 'tiles-fill', (e) => {
+    if (!S.tilesVisible) return;
+    if (e._stopped || S.drawMode) return;
+    if (!S.tileSelectMode) return;
+    const tileId = e.features[0].properties.tile_id;
+    toggleTileSelection(tileId);
+    e._stopped = true; // suppress region click underneath
+    e.originalEvent.stopPropagation();
+  });
+  // Right-click on a tile: show context menu at cursor.
+  map.on('contextmenu', 'tiles-fill', (e) => {
+    if (!S.tilesVisible) return;
+    if (S.drawMode) return;
+    e.preventDefault();
+    e.originalEvent.preventDefault();
+    const f = e.features[0];
+    openTileMenu(f.properties.tile_id, e.point.x, e.point.y);
+  });
+  map.on('mouseenter', 'tiles-fill', () => {
+    if (S.tileSelectMode) map.getCanvas().style.cursor = 'crosshair';
+  });
+  map.on('mouseleave', 'tiles-fill', () => {
+    if (S.tileSelectMode) map.getCanvas().style.cursor = '';
   });
 
   // Cluster click → zoom in
@@ -804,6 +917,7 @@ function selectRegion(code) {
 
 /* ━━ Analytics Panel ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 async function openAnalytics(code, name) {
+  S.analyticsContext = {kind:'region', id:code, name:name||code};
   $('#analytics-title').textContent = name || code;
   $('#analytics').classList.add('open');
 
@@ -821,6 +935,57 @@ async function openAnalytics(code, name) {
     renderChart(d);
     renderKPIs(d.kpis);
     loadAlerts(code);
+  } catch(e) {}
+}
+
+async function openTileAnalytics(tileId) {
+  S.analyticsContext = {kind:'tile', id:tileId};
+  S.selectedRegion = null;  // ensure region-list visual deselects
+  renderRegionList();
+  $('#analytics-title').textContent = `Tile ${tileId}`;
+  $('#analytics').classList.add('open');
+  const gran = $('#tl-granularity').value;
+  const start = dtLocalToUtcIso($('#tl-start').value);
+  const end = dtLocalToUtcIso($('#tl-end').value, true);
+  let url = `/api/tiles/${tileId}/analytics?granularity=${gran}`;
+  if (start) url += `&start=${start}`;
+  if (end) url += `&end=${end}`;
+  try {
+    const d = await api(url);
+    S.analyticsData = d;
+    renderChart(d);
+    renderKPIs(d.kpis);
+    $('#alert-log').innerHTML = '';
+    $('#alert-badge').style.display = 'none';
+  } catch(e) {}
+}
+
+async function openCombinedAnalytics(tileIds) {
+  if (!tileIds || tileIds.length === 0) {
+    toast('No tiles selected', 'error');
+    return;
+  }
+  S.analyticsContext = {kind:'combined', ids:[...tileIds]};
+  S.selectedRegion = null;
+  renderRegionList();
+  $('#analytics-title').textContent = `${tileIds.length} tiles combined`;
+  $('#analytics').classList.add('open');
+  const gran = $('#tl-granularity').value;
+  const start = dtLocalToUtcIso($('#tl-start').value);
+  const end = dtLocalToUtcIso($('#tl-end').value, true);
+  const params = new URLSearchParams({ids: tileIds.join(','), granularity: gran});
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  try {
+    const d = await api('/api/tiles/combine/analytics?' + params);
+    S.analyticsData = d;
+    renderChart(d);
+    renderKPIs(d.kpis);
+    $('#alert-log').innerHTML = '';
+    $('#alert-badge').style.display = 'none';
+    if (d.missing_ids && d.missing_ids.length) {
+      toast(`Skipped unknown tiles: ${d.missing_ids.join(', ')}`, 'info');
+    }
   } catch(e) {}
 }
 
@@ -955,11 +1120,21 @@ window.ackAlert = async function(id) {
 function closeAnalytics() {
   $('#analytics').classList.remove('open');
   S.selectedRegion = null;
+  S.analyticsContext = null;
   renderRegionList();
   loadVessels();
 }
 
 /* ━━ CSV Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function _analyticsCsvFilename() {
+  const ctx = S.analyticsContext;
+  if (!ctx) return 'analytics.csv';
+  if (ctx.kind === 'region') return `${ctx.id}_analytics.csv`;
+  if (ctx.kind === 'tile')   return `${ctx.id}_analytics.csv`;
+  if (ctx.kind === 'combined') return `tiles_combined_analytics.csv`;
+  return 'analytics.csv';
+}
+
 function exportCSV() {
   if (!S.analyticsData || !S.analyticsData.series.length) {
     toast('No data to export', 'error');
@@ -973,26 +1148,32 @@ function exportCSV() {
   const blob = new Blob([csv], {type:'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${S.selectedRegion || 'region'}_analytics.csv`;
+  a.download = _analyticsCsvFilename();
   a.click();
   URL.revokeObjectURL(a.href);
   toast('CSV downloaded', 'success');
 }
 
 /* ━━ Positions Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-function openPositionsDialog() {
-  if (!S.selectedRegion) {
-    toast('Select a region first', 'error');
+function openPositionsDialog(overrideContext) {
+  const ctx = overrideContext || S.analyticsContext
+    || (S.selectedRegion && {kind:'region', id:S.selectedRegion});
+  if (!ctx) {
+    toast('Select a region or tile first', 'error');
     return;
   }
-  // Default start/end to whatever's in the timeline inputs, else last 24h
+  S.exportContext = ctx;
   const tlStart = $('#tl-start').value;
   const tlEnd = $('#tl-end').value;
   const now = new Date();
   const yesterday = new Date(now.getTime() - 24*60*60*1000);
   $('#pe-start').value = tlStart || utcIsoToDtLocal(yesterday.toISOString());
   $('#pe-end').value = tlEnd || utcIsoToDtLocal(now.toISOString());
-  $('#pe-region').textContent = 'Region: ' + S.selectedRegion;
+  let label = '';
+  if (ctx.kind === 'region') label = 'Region: ' + ctx.id;
+  else if (ctx.kind === 'tile') label = 'Tile: ' + ctx.id;
+  else if (ctx.kind === 'combined') label = `Combined: ${ctx.ids.length} tiles`;
+  $('#pe-region').textContent = label;
   $('#positions-dialog-overlay').style.display = 'flex';
 }
 
@@ -1008,27 +1189,43 @@ async function exportPositions() {
   const endIso = dtLocalToUtcIso(end, true);
   if (new Date(startIso) >= new Date(endIso)) { toast('End must be after start', 'error'); return; }
 
+  const ctx = S.exportContext || S.analyticsContext;
+  if (!ctx) { toast('No selection', 'error'); return; }
+
+  const params = new URLSearchParams({start: startIso, end: endIso});
+  const ft = $('#filter-type').value;
+  const fm = $('#filter-motion').value;
+  if (ft) params.set('type', ft);
+  if (fm) params.set('motion', fm);
+
+  let url, filename;
+  if (ctx.kind === 'region') {
+    params.set('region', ctx.id);
+    url = '/api/vessels/export?' + params;
+    filename = `${ctx.id}_positions_${start.slice(0,10)}_${end.slice(0,10)}.csv`;
+  } else if (ctx.kind === 'tile') {
+    url = `/api/tiles/${encodeURIComponent(ctx.id)}/export?` + params;
+    filename = `${ctx.id}_positions_${start.slice(0,10)}_${end.slice(0,10)}.csv`;
+  } else if (ctx.kind === 'combined') {
+    params.set('ids', ctx.ids.join(','));
+    url = '/api/tiles/combine/export?' + params;
+    filename = `tiles_combined_positions_${start.slice(0,10)}_${end.slice(0,10)}.csv`;
+  } else {
+    toast('Unsupported export context', 'error');
+    return;
+  }
+
   const btn = $('#pe-export');
   const origText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Exporting...';
   try {
-    const params = new URLSearchParams({
-      region: S.selectedRegion,
-      start: startIso,
-      end: endIso,
-    });
-    const ft = $('#filter-type').value;
-    const fm = $('#filter-motion').value;
-    if (ft) params.set('type', ft);
-    if (fm) params.set('motion', fm);
-
-    const r = await fetch(API + '/api/vessels/export?' + params);
+    const r = await fetch(API + url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${S.selectedRegion}_positions_${start.slice(0,10)}_${end.slice(0,10)}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
     toast('Positions exported', 'success');
@@ -1170,10 +1367,95 @@ async function toggleTiles() {
   if (S.tilesVisible && !S.tilesLoaded) {
     try {
       const d = await api('/api/tiles');
+      // Mapbox's feature-state needs a stable feature id. Inject the
+      // tile_id as the feature id so we can highlight selection later.
+      d.features = d.features.map((f, i) => ({...f, id: i}));
+      S.tileFeaturesById = {};
+      for (const f of d.features) {
+        S.tileFeaturesById[f.properties.tile_id] = f;
+      }
       map.getSource('tiles').setData(d);
       S.tilesLoaded = true;
+      // Re-apply any prior selection state
+      for (const tid of S.selectedTiles) setTileSelectedState(tid, true);
     } catch(e) {}
   }
+  if (!S.tilesVisible) hideTileMenu();
+}
+
+/* ━━ Tile selection + context menu ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function setTileSelectedState(tileId, selected) {
+  const f = S.tileFeaturesById[tileId];
+  if (!f) return;
+  map.setFeatureState({source:'tiles', id:f.id}, {selected});
+}
+
+function toggleTileSelection(tileId) {
+  if (S.selectedTiles.has(tileId)) {
+    S.selectedTiles.delete(tileId);
+    setTileSelectedState(tileId, false);
+  } else {
+    S.selectedTiles.add(tileId);
+    setTileSelectedState(tileId, true);
+  }
+  renderSelectionBar();
+}
+
+function clearTileSelection() {
+  for (const tid of S.selectedTiles) setTileSelectedState(tid, false);
+  S.selectedTiles.clear();
+  renderSelectionBar();
+}
+
+function renderSelectionBar() {
+  const bar = $('#sel-bar');
+  const chips = $('#sb-chips');
+  const count = S.selectedTiles.size;
+  bar.classList.toggle('show', count > 0);
+  $('#sb-count').textContent = `${count} tile${count===1?'':'s'} selected`;
+  chips.innerHTML = '';
+  for (const tid of S.selectedTiles) {
+    const chip = document.createElement('span');
+    chip.className = 'sel-chip';
+    chip.innerHTML = `${tid}<button data-tile="${tid}" title="Remove">&times;</button>`;
+    chip.querySelector('button').addEventListener('click', () => {
+      toggleTileSelection(tid);
+    });
+    chips.appendChild(chip);
+  }
+}
+
+function toggleTileSelectMode() {
+  S.tileSelectMode = !S.tileSelectMode;
+  $('#btn-tile-select').classList.toggle('active', S.tileSelectMode);
+  if (S.tileSelectMode && !S.tilesVisible) toggleTiles();
+  map.getCanvas().style.cursor = '';
+  if (S.tileSelectMode) {
+    toast('Select mode: click tiles to add/remove. Right-click for menu.', 'info');
+  }
+}
+
+function openTileMenu(tileId, px, py) {
+  const menu = $('#tile-menu');
+  $('#tm-header').textContent = tileId;
+  menu.dataset.tileId = tileId;
+  // Position with bounds-aware nudge so the menu stays on screen.
+  const mapEl = $('#map');
+  const rect = mapEl.getBoundingClientRect();
+  menu.style.display = 'block';
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = px + 4;
+  let top = py + 4;
+  if (left + mw > rect.width) left = px - mw - 4;
+  if (top + mh > rect.height) top = py - mh - 4;
+  menu.style.left = Math.max(4, left) + 'px';
+  menu.style.top = Math.max(4, top) + 'px';
+  menu.classList.add('show');
+}
+
+function hideTileMenu() {
+  $('#tile-menu').classList.remove('show');
+  $('#tile-menu').style.display = 'none';
 }
 
 /* ━━ Event Wiring ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -1181,6 +1463,49 @@ $('#btn-refresh').addEventListener('click', refresh);
 $('#btn-draw').addEventListener('click', toggleDrawMode);
 $('#btn-lanes').addEventListener('click', toggleLanes);
 $('#btn-tiles').addEventListener('click', toggleTiles);
+$('#btn-tile-select').addEventListener('click', toggleTileSelectMode);
+
+// Tile context menu actions
+$('#tm-detail').addEventListener('click', () => {
+  const tid = $('#tile-menu').dataset.tileId;
+  hideTileMenu();
+  if (tid) openTileAnalytics(tid);
+});
+$('#tm-add').addEventListener('click', () => {
+  const tid = $('#tile-menu').dataset.tileId;
+  hideTileMenu();
+  if (tid && !S.selectedTiles.has(tid)) toggleTileSelection(tid);
+  else if (tid) toast(`Tile ${tid} already selected`, 'info');
+});
+$('#tm-export').addEventListener('click', () => {
+  const tid = $('#tile-menu').dataset.tileId;
+  hideTileMenu();
+  if (tid) openPositionsDialog({kind:'tile', id:tid});
+});
+$('#tm-zoom').addEventListener('click', () => {
+  const tid = $('#tile-menu').dataset.tileId;
+  hideTileMenu();
+  const f = S.tileFeaturesById[tid];
+  if (!f) return;
+  const coords = f.geometry.coordinates[0];
+  const lons = coords.map(c=>c[0]), lats = coords.map(c=>c[1]);
+  map.fitBounds(
+    [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+    {padding:60, maxZoom:f.properties.zoom + 1, duration:600}
+  );
+});
+
+// Selection chip bar actions
+$('#sb-compare').addEventListener('click', () => {
+  openCombinedAnalytics([...S.selectedTiles]);
+});
+$('#sb-clear').addEventListener('click', clearTileSelection);
+
+// Dismiss context menu on outside click / Esc / map move
+document.addEventListener('click', (e) => {
+  if (!$('#tile-menu').contains(e.target)) hideTileMenu();
+});
+
 $('#filter-type').addEventListener('change', () => loadVessels());
 $('#filter-motion').addEventListener('change', () => loadVessels());
 $('#analytics-close').addEventListener('click', closeAnalytics);
@@ -1209,8 +1534,15 @@ $$('.tl-presets button').forEach(btn => {
     $('#tl-start').value = utcIsoToDtLocal(start.toISOString());
     $('#tl-end').value = utcIsoToDtLocal(end.toISOString());
     rebuildTimelineSteps();
-    // Reload analytics if open
-    if (S.selectedRegion) {
+    // Reload analytics if open — route by current context
+    const ctx = S.analyticsContext;
+    if (ctx && ctx.kind === 'region') {
+      openAnalytics(ctx.id, S.regions.find(r=>r.code===ctx.id)?.name);
+    } else if (ctx && ctx.kind === 'tile') {
+      openTileAnalytics(ctx.id);
+    } else if (ctx && ctx.kind === 'combined') {
+      openCombinedAnalytics(ctx.ids);
+    } else if (S.selectedRegion) {
       openAnalytics(S.selectedRegion, S.regions.find(r=>r.code===S.selectedRegion)?.name);
     }
   });
@@ -1224,9 +1556,12 @@ document.addEventListener('keydown', (e) => {
     case 'D': e.preventDefault(); toggleDrawMode(); break;
     case 'L': e.preventDefault(); toggleLanes(); break;
     case 'T': e.preventDefault(); toggleTiles(); break;
+    case 'S': e.preventDefault(); toggleTileSelectMode(); break;
     case 'ESCAPE':
       e.preventDefault();
-      if ($('#region-dialog-overlay').classList.contains('show')) {
+      if ($('#tile-menu').classList.contains('show')) {
+        hideTileMenu();
+      } else if ($('#region-dialog-overlay').classList.contains('show')) {
         $('#region-dialog-overlay').classList.remove('show');
         pendingPolygon = null;
       } else if ($('#analytics').classList.contains('open')) {
