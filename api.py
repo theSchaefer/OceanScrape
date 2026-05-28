@@ -26,10 +26,18 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from grid import get_tile_bounds, get_tile_centers
+from global_tile_grid import (
+    build_global_tile_manifest,
+    parse_global_bbox,
+    tile_to_geojson_feature,
+)
 from marker_dedup import count_markers_by_type, dedup_markers_spatial
 from regions import REGIONS
-from update_database import _SCHEMA_SQL
+from update_database import (
+    _SCHEMA_SQL,
+    _sync_capture_tile_manifest,
+    GLOBAL_GRID_DEFAULT_ZOOM as DB_GLOBAL_GRID_DEFAULT_ZOOM,
+)
 
 load_dotenv()
 
@@ -38,6 +46,11 @@ MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60"))
 VIEWPORT_WIDTH = int(os.getenv("VIEWPORT_WIDTH", "7680"))
 VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "4320"))
+GLOBAL_GRID_BBOX = parse_global_bbox(os.getenv("GLOBAL_GRID_BBOX"))
+GLOBAL_GRID_DEFAULT_ZOOM = int(os.getenv(
+    "GLOBAL_GRID_DEFAULT_ZOOM",
+    str(DB_GLOBAL_GRID_DEFAULT_ZOOM),
+))
 # Default spatial dedup bucket for cross-region marker overlap. 0.003° ≈ 330 m
 # at the equator — large enough to collapse the same ship detected by two
 # overlapping regions (different zooms ⇒ different pixel→latlon roundings),
@@ -124,6 +137,7 @@ def _startup():
         with conn.cursor() as cur:
             cur.execute(_SCHEMA_SQL)
             cur.execute(_EXTRA_SCHEMA)
+            _sync_capture_tile_manifest(cur)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +237,103 @@ def _custom_region_stats_from_vp(cur, polygon, capture_ids):
     }
 
 
+def _resolve_region(cur, code):
+    """Return (name, polygon, is_custom) for predefined or custom regions."""
+    region_def = REGIONS.get(code)
+    if region_def:
+        return region_def["name"], region_def["polygon"], False
+    cur.execute("SELECT name, polygon FROM custom_regions WHERE code = %s", (code,))
+    row = cur.fetchone()
+    if row:
+        return row["name"], row["polygon"], True
+    return None, None, False
+
+
+def _latest_global_snapshot(cur, timestamp=None):
+    if timestamp:
+        ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        cur.execute("""
+            SELECT captured_at
+            FROM tile_captures
+            ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
+            LIMIT 1
+        """, (ts,))
+    else:
+        cur.execute("SELECT MAX(captured_at) AS captured_at FROM tile_captures")
+    row = cur.fetchone()
+    return row["captured_at"] if row else None
+
+
+def _global_rows_for_polygon(cur, polygon, snapshot_ts=None,
+                             start_dt=None, end_dt=None,
+                             type_filter=None, motion_filter=None,
+                             bucket_trunc=None):
+    bbox = _polygon_bbox(polygon)
+    select_bucket = ", date_trunc(%s, gvp.captured_at) AS bucket" if bucket_trunc else ""
+    args = []
+    if bucket_trunc:
+        args.append(bucket_trunc)
+    sql = f"""
+        SELECT gvp.tile_id, gvp.captured_at, gvp.lat, gvp.lon,
+               gvp.ship_type, gvp.motion{select_bucket}
+        FROM global_vessel_positions gvp
+        WHERE gvp.lat BETWEEN %s AND %s
+          AND gvp.lon BETWEEN %s AND %s
+    """
+    args.extend([bbox[1], bbox[3], bbox[0], bbox[2]])
+    if snapshot_ts is not None:
+        sql += " AND gvp.captured_at = %s"
+        args.append(snapshot_ts)
+    if start_dt is not None:
+        sql += " AND gvp.captured_at >= %s"
+        args.append(start_dt)
+    if end_dt is not None:
+        sql += " AND gvp.captured_at <= %s"
+        args.append(end_dt)
+    if type_filter:
+        sql += " AND gvp.ship_type = %s"
+        args.append(type_filter)
+    if motion_filter:
+        sql += " AND gvp.motion = %s"
+        args.append(motion_filter)
+    sql += " ORDER BY gvp.captured_at, gvp.id"
+    cur.execute(sql, args)
+    return [
+        r for r in cur.fetchall()
+        if _point_in_polygon(r["lat"], r["lon"], polygon)
+    ]
+
+
+def _count_global_rows(rows):
+    tankers = cargos = moving_tankers = moving_cargos = 0
+    for r in rows:
+        ship_type = r.get("ship_type") or r.get("type")
+        motion = r.get("motion")
+        if ship_type == "tanker" and motion == "moving":
+            moving_tankers += 1
+        elif ship_type == "tanker":
+            tankers += 1
+        elif motion == "moving":
+            moving_cargos += 1
+        else:
+            cargos += 1
+    total = tankers + cargos + moving_tankers + moving_cargos
+    return {
+        "tankers": tankers,
+        "cargos": cargos,
+        "moving_tankers": moving_tankers,
+        "moving_cargos": moving_cargos,
+        "total_ships": total,
+    }
+
+
+def _global_stats_for_polygon(cur, polygon, snapshot_ts):
+    if snapshot_ts is None:
+        return None
+    rows = _global_rows_for_polygon(cur, polygon, snapshot_ts=snapshot_ts)
+    return _count_global_rows(rows)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -273,19 +384,17 @@ def get_config():
 def get_status():
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT MAX(captured_at) AS last_scrape FROM captures")
+            cur.execute("SELECT MAX(captured_at) AS last_scrape FROM tile_captures")
             row = cur.fetchone()
             last_scrape = row["last_scrape"] if row else None
 
-            cur.execute("SELECT COUNT(*) AS total FROM captures")
+            cur.execute("SELECT COUNT(*) AS total FROM tile_captures")
             total_captures = cur.fetchone()["total"]
 
-            cur.execute("SELECT COUNT(*) AS total FROM vessel_positions")
+            cur.execute("SELECT COUNT(*) AS total FROM global_vessel_positions")
             total_markers = cur.fetchone()["total"]
 
-            valid = list(_valid_region_codes())
-            cur.execute("SELECT COUNT(DISTINCT region) AS cnt FROM captures "
-                        "WHERE region = ANY(%s)", (valid,))
+            cur.execute("SELECT COUNT(*) AS cnt FROM capture_tiles WHERE enabled")
             regions_active = cur.fetchone()["cnt"]
 
             last_run_stats = None
@@ -294,7 +403,7 @@ def get_status():
                     SELECT COUNT(*) FILTER (WHERE status = 'success') AS regions_ok,
                            COUNT(*) FILTER (WHERE status != 'success') AS regions_failed,
                            SUM(tankers + cargos + moving_tankers + moving_cargos) AS total_ships
-                    FROM captures
+                    FROM tile_captures
                     WHERE captured_at = %s
                 """, (last_scrape,))
                 last_run_stats = dict(cur.fetchone())
@@ -314,7 +423,7 @@ def get_status():
     }
 
 
-@app.get("/api/regions")
+@app.get("/api/regions_legacy", include_in_schema=False)
 def get_regions():
     regions_out = []
 
@@ -438,6 +547,81 @@ def get_regions():
     return {"regions": regions_out}
 
 
+@app.get("/api/regions")
+def get_regions_global():
+    regions_out = []
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            snapshot_ts = _latest_global_snapshot(cur)
+            cur.execute("SELECT * FROM custom_regions ORDER BY created_at")
+            custom_rows = cur.fetchall()
+            cur.execute("""
+                SELECT region_code, COUNT(*) AS cnt
+                FROM alerts
+                WHERE acknowledged_at IS NULL
+                GROUP BY region_code
+            """)
+            alert_counts = {r["region_code"]: r["cnt"] for r in cur.fetchall()}
+
+            for code, rdef in REGIONS.items():
+                polygon = rdef["polygon"]
+                area = _polygon_area_km2(polygon)
+                stats = _global_stats_for_polygon(cur, polygon, snapshot_ts)
+                latest_data = None
+                if stats and stats["total_ships"] > 0:
+                    latest_data = {
+                        "captured_at": snapshot_ts.isoformat(),
+                        **stats,
+                        "density": round(stats["total_ships"] / area, 2) if area > 0 else 0,
+                    }
+                regions_out.append({
+                    "code": code,
+                    "name": rdef["name"],
+                    "type": "predefined",
+                    "polygon": [[p[0], p[1]] for p in polygon],
+                    "zoom": rdef["zoom"],
+                    "bbox": _polygon_bbox(polygon),
+                    "centroid": list(_polygon_centroid(polygon)),
+                    "area_km2": round(area, 1),
+                    "latest": latest_data,
+                    "thresholds": {"high": None, "low": None},
+                    "unacked_alerts": alert_counts.get(code, 0),
+                })
+
+            for cr in custom_rows:
+                polygon = cr["polygon"]
+                area = _polygon_area_km2(polygon)
+                stats = _global_stats_for_polygon(cur, polygon, snapshot_ts)
+                latest_data = None
+                if stats and stats["total_ships"] > 0:
+                    latest_data = {
+                        "captured_at": snapshot_ts.isoformat(),
+                        **stats,
+                        "density": round(stats["total_ships"] / area, 2) if area > 0 else 0,
+                    }
+                regions_out.append({
+                    "code": cr["code"],
+                    "name": cr["name"],
+                    "type": "custom",
+                    "polygon": polygon,
+                    "zoom": cr["zoom"],
+                    "bbox": _polygon_bbox(polygon),
+                    "centroid": list(_polygon_centroid(polygon)),
+                    "area_km2": round(area, 1),
+                    "latest": latest_data,
+                    "thresholds": {
+                        "high": cr["high_threshold"],
+                        "low": cr["low_threshold"],
+                    },
+                    "unacked_alerts": alert_counts.get(cr["code"], 0),
+                    "description": cr["description"],
+                    "id": cr["id"],
+                })
+
+    _check_alerts(regions_out)
+    return {"regions": regions_out}
+
+
 def _check_alerts(regions_list):
     """Generate alerts for custom regions whose thresholds are crossed."""
     for r in regions_list:
@@ -480,6 +664,102 @@ def _check_alerts(regions_list):
 
 
 @app.get("/api/regions/{code}/analytics")
+def get_region_analytics_global(
+    code: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    granularity: str = Query("hourly", pattern="^(hourly|daily|weekly)$"),
+):
+    from collections import defaultdict
+
+    trunc_map = {"hourly": "hour", "daily": "day", "weekly": "week"}
+    trunc = trunc_map[granularity]
+    now = datetime.now(timezone.utc)
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(days=7)))
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            region_name, polygon, _is_custom = _resolve_region(cur, code)
+            if not polygon:
+                raise HTTPException(404, f"Unknown region '{code}'")
+            area = _polygon_area_km2(polygon)
+            rows = _global_rows_for_polygon(
+                cur,
+                polygon,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                bucket_trunc=trunc,
+            )
+
+    snapshots = defaultdict(lambda: {
+        "tankers": 0,
+        "cargos": 0,
+        "moving_tankers": 0,
+        "moving_cargos": 0,
+    })
+    buckets = defaultdict(set)
+    for r in rows:
+        key = (r["bucket"], r["captured_at"])
+        buckets[r["bucket"]].add(r["captured_at"])
+        d = snapshots[key]
+        is_tanker = r["ship_type"] == "tanker"
+        is_moving = r["motion"] == "moving"
+        if is_tanker and is_moving:
+            d["moving_tankers"] += 1
+        elif is_tanker:
+            d["tankers"] += 1
+        elif is_moving:
+            d["moving_cargos"] += 1
+        else:
+            d["cargos"] += 1
+
+    series = []
+    for bucket in sorted(buckets.keys()):
+        snap_keys = [(b, ts) for (b, ts) in snapshots if b == bucket]
+        n = max(1, len(snap_keys))
+        agg = {"tankers": 0, "cargos": 0, "moving_tankers": 0, "moving_cargos": 0}
+        for key in snap_keys:
+            for field in agg:
+                agg[field] += snapshots[key][field]
+        avg = {field: int(round(value / n)) for field, value in agg.items()}
+        total = sum(avg.values())
+        series.append({
+            "timestamp": bucket.isoformat(),
+            **avg,
+            "total_ships": total,
+            "density": round(total / area, 2) if area > 0 else 0,
+        })
+
+    totals = [s["total_ships"] for s in series]
+    avg_total = int(sum(totals) / len(totals)) if totals else 0
+    max_total = max(totals) if totals else 0
+    min_total = min(totals) if totals else 0
+    peak_hour = None
+    if rows:
+        hour_counts = defaultdict(int)
+        for r in rows:
+            hour_counts[r["captured_at"].hour] += 1
+        peak_hour = max(hour_counts, key=hour_counts.get)
+
+    return {
+        "region": code,
+        "region_name": region_name,
+        "granularity": granularity,
+        "series": series,
+        "kpis": {
+            "avg_total": avg_total,
+            "max_total": max_total,
+            "min_total": min_total,
+            "avg_density": round(avg_total / area, 2) if area > 0 else 0,
+            "captures_count": len({r["captured_at"] for r in rows}),
+            "peak_hour": peak_hour,
+        },
+    }
+
+
+@app.get("/api/regions_legacy/{code}/analytics", include_in_schema=False)
 def get_region_analytics(
     code: str,
     start: Optional[str] = None,
@@ -709,6 +989,93 @@ def _dedup_markers_spatial(vessels, eps_deg):
 
 
 @app.get("/api/vessels")
+def get_vessels_global(
+    region: Optional[str] = None,
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+    timestamp: Optional[str] = None,
+    dedup: bool = True,
+    dedup_eps: Optional[float] = Query(None, ge=0, le=1),
+):
+    snapshot_ts = None
+    vessels = []
+    tiles_expected = 0
+    tiles_returned = 0
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            snapshot_ts = _latest_global_snapshot(cur, timestamp=timestamp)
+            cur.execute("SELECT COUNT(*) AS total FROM capture_tiles WHERE enabled")
+            tiles_expected = cur.fetchone()["total"]
+            if snapshot_ts:
+                cur.execute("""
+                    SELECT COUNT(*) AS total
+                    FROM tile_captures
+                    WHERE captured_at = %s
+                """, (snapshot_ts,))
+                tiles_returned = cur.fetchone()["total"]
+
+            if region:
+                _name, polygon, _is_custom = _resolve_region(cur, region)
+                if not polygon:
+                    raise HTTPException(404, f"Unknown region '{region}'")
+                rows = _global_rows_for_polygon(
+                    cur,
+                    polygon,
+                    snapshot_ts=snapshot_ts,
+                    type_filter=type,
+                    motion_filter=motion,
+                ) if snapshot_ts else []
+            elif snapshot_ts:
+                sql = """
+                    SELECT tile_id, captured_at, lat, lon, ship_type, motion
+                    FROM global_vessel_positions
+                    WHERE captured_at = %s
+                """
+                args = [snapshot_ts]
+                if type:
+                    sql += " AND ship_type = %s"
+                    args.append(type)
+                if motion:
+                    sql += " AND motion = %s"
+                    args.append(motion)
+                sql += " ORDER BY tile_id, id"
+                cur.execute(sql, args)
+                rows = cur.fetchall()
+            else:
+                rows = []
+
+    for row in rows:
+        vessels.append({
+            "lat": row["lat"],
+            "lon": row["lon"],
+            "type": row["ship_type"],
+            "motion": row["motion"],
+            "tile_id": row["tile_id"],
+            "region": region,
+        })
+
+    raw_count = len(vessels)
+    if dedup:
+        eps = dedup_eps if dedup_eps is not None else VESSEL_DEDUP_EPS_DEG
+        vessels = dedup_markers_spatial(vessels, eps)
+
+    snapshot_iso = snapshot_ts.isoformat() if snapshot_ts else None
+    return {
+        "timestamp": snapshot_iso,
+        "snapshot_timestamp": snapshot_iso,
+        "coverage": {
+            "tiles_returned": tiles_returned,
+            "tiles_expected": tiles_expected,
+            "regions_returned": tiles_returned,
+            "regions_expected": tiles_expected,
+        },
+        "vessels": vessels,
+        "count": len(vessels),
+        "raw_count": raw_count,
+    }
+
+
+@app.get("/api/vessels_legacy", include_in_schema=False)
 def get_vessels(
     region: Optional[str] = None,
     type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
@@ -825,6 +1192,61 @@ def get_vessels(
 
 
 @app.get("/api/vessels/history")
+def get_vessels_history_global(
+    region: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    max_frames: int = Query(100, ge=1, le=500),
+):
+    now = datetime.now(timezone.utc)
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else now
+    start_dt = (datetime.fromisoformat(start.replace("Z", "+00:00")) if start
+                else (end_dt - timedelta(hours=24)))
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            _name, polygon, _is_custom = _resolve_region(cur, region)
+            if not polygon:
+                raise HTTPException(404, f"Unknown region '{region}'")
+            rows = _global_rows_for_polygon(
+                cur,
+                polygon,
+                start_dt=start_dt,
+                end_dt=end_dt,
+            )
+
+    by_ts = {}
+    for row in rows:
+        by_ts.setdefault(row["captured_at"], []).append({
+            "lat": row["lat"],
+            "lon": row["lon"],
+            "type": row["ship_type"],
+            "motion": row["motion"],
+            "tile_id": row["tile_id"],
+        })
+
+    timestamps = sorted(by_ts)
+    if len(timestamps) > max_frames:
+        step = len(timestamps) / max_frames
+        timestamps = [timestamps[int(i * step)] for i in range(max_frames)]
+
+    frames = []
+    for ts in timestamps:
+        markers = dedup_markers_spatial(by_ts[ts], VESSEL_DEDUP_EPS_DEG)
+        counts = count_markers_by_type(markers)
+        frames.append({
+            "timestamp": ts.isoformat(),
+            "markers": markers,
+            "tankers": counts["stationary_tankers"] + counts["moving_tankers"],
+            "cargos": counts["stationary_cargos"] + counts["moving_cargos"],
+            "moving_tankers": counts["moving_tankers"],
+            "moving_cargos": counts["moving_cargos"],
+        })
+
+    return {"region": region, "frames": frames}
+
+
+@app.get("/api/vessels_legacy/history", include_in_schema=False)
 def get_vessels_history(
     region: str,
     start: Optional[str] = None,
@@ -872,6 +1294,65 @@ def get_vessels_history(
 
 
 @app.get("/api/vessels/export")
+def export_vessel_positions_global(
+    region: str,
+    start: str,
+    end: str,
+    type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
+    motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
+):
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "start/end must be ISO datetimes")
+    if start_dt >= end_dt:
+        raise HTTPException(400, "end must be after start")
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            _name, polygon, _is_custom = _resolve_region(cur, region)
+            if not polygon:
+                raise HTTPException(404, f"Unknown region '{region}'")
+            rows = _global_rows_for_polygon(
+                cur,
+                polygon,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                type_filter=type,
+                motion_filter=motion,
+            )
+
+    def stream():
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["timestamp", "region", "lat", "lon", "ship_type", "motion", "tile_id"])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate()
+
+        for row in rows:
+            w.writerow([
+                row["captured_at"].isoformat(),
+                region,
+                row["lat"],
+                row["lon"],
+                row["ship_type"],
+                row["motion"],
+                row["tile_id"],
+            ])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate()
+
+    fname = f"{region}_positions_{start_dt.date()}_{end_dt.date()}.csv"
+    return StreamingResponse(
+        stream(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.get("/api/vessels_legacy/export", include_in_schema=False)
 def export_vessel_positions(
     region: str,
     start: str,
@@ -971,37 +1452,40 @@ _tiles_geojson_cache = None
 
 
 def _build_tiles_geojson():
-    """Compute the scraper's tile grid for every predefined region.
-
-    Tile bounds are fully determined by (polygon, zoom, viewport), so we
-    compute them once at first request and cache. Returns a GeoJSON
-    FeatureCollection ready for a mapbox-gl source.
-    """
+    """Return the global capture tile manifest as GeoJSON."""
     features = []
-    for code, rdef in REGIONS.items():
-        polygon = rdef["polygon"]
-        zoom = rdef["zoom"]
-        name = rdef.get("name", code)
-        tiles, _grid_info = get_tile_centers(
-            polygon, zoom, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT tile_id, zoom, row, col, enabled, schedule_minutes,
+                       priority, source, seed_regions, center_lat, center_lon,
+                       tile_bounds, capture_bounds, owner_bounds_px,
+                       capture_bounds_px
+                FROM capture_tiles
+                ORDER BY zoom, row, col
+            """)
+            rows = cur.fetchall()
+
+    if rows:
+        tiles = []
+        for row in rows:
+            tile = dict(row)
+            for key in ("seed_regions", "tile_bounds", "capture_bounds",
+                        "owner_bounds_px", "capture_bounds_px"):
+                if isinstance(tile.get(key), str):
+                    tile[key] = json.loads(tile[key])
+            tiles.append(tile)
+    else:
+        tiles = build_global_tile_manifest(
+            VIEWPORT_WIDTH,
+            VIEWPORT_HEIGHT,
+            global_bbox=GLOBAL_GRID_BBOX,
+            default_zoom=GLOBAL_GRID_DEFAULT_ZOOM,
+            schedule_minutes=SCRAPE_INTERVAL_MINUTES,
         )
-        for row, col, lat, lon in tiles:
-            corners = get_tile_bounds(lat, lon, zoom, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
-            ring = [[lon_, lat_] for (lat_, lon_) in corners]
-            ring.append(ring[0])
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [ring]},
-                "properties": {
-                    "region": code,
-                    "region_name": name,
-                    "row": row,
-                    "col": col,
-                    "zoom": zoom,
-                    "center_lat": lat,
-                    "center_lon": lon,
-                },
-            })
+
+    for tile in tiles:
+        features.append(tile_to_geojson_feature(tile))
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -1016,27 +1500,22 @@ def get_tiles():
 
 @app.get("/api/timeline")
 def get_timeline():
-    # Filter by current valid region codes so that history rows from
-    # deleted custom regions don't appear on the timeline slider.
-    valid = list(_valid_region_codes())
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT MIN(captured_at) AS earliest,
                        MAX(captured_at) AS latest,
                        COUNT(*) AS total_captures
-                FROM captures
-                WHERE region = ANY(%s)
-            """, (valid,))
+                FROM tile_captures
+            """)
             row = cur.fetchone()
 
             cur.execute("""
                 SELECT DISTINCT captured_at
-                FROM captures
-                WHERE region = ANY(%s)
+                FROM tile_captures
                 ORDER BY captured_at DESC
                 LIMIT 200
-            """, (valid,))
+            """)
             snapshots = [r["captured_at"].isoformat() for r in cur.fetchall()]
 
     return {

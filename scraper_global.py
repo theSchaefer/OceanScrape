@@ -45,6 +45,13 @@ from patchright.sync_api import sync_playwright
 
 from debug_map_probe import run_map_probe, write_frame_scan
 from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
+from global_tile_grid import (
+    GlobalTileIndex,
+    build_global_tile_manifest,
+    manifest_summary,
+    parse_global_bbox,
+    tile_intersects_polygon,
+)
 from grid import (
     get_tile_centers, get_bbox_tile_centers, polygon_to_pixel_coords,
     tile_id as make_tile_id, _point_in_polygon,
@@ -52,7 +59,7 @@ from grid import (
 )
 from marker_dedup import dedup_markers_spatial
 from regions import REGIONS, REGION_TIERS, load_bbox_regions
-from update_database import process_log
+from update_database import get_due_tile_ids, process_log
 
 load_dotenv()
 
@@ -83,6 +90,11 @@ MARKER_DEDUP_EPS_DEG = float(os.getenv(
     "MARKER_DEDUP_EPS_DEG",
     os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"),
 ))
+GLOBAL_GRID_BBOX = parse_global_bbox(os.getenv("GLOBAL_GRID_BBOX"))
+GLOBAL_GRID_DEFAULT_ZOOM = int(os.getenv("GLOBAL_GRID_DEFAULT_ZOOM", "9"))
+GLOBAL_TILE_BATCH_SIZE = int(os.getenv("GLOBAL_TILE_BATCH_SIZE", "12"))
+TILE_ACCEPT_BUFFER_PX = int(os.getenv("TILE_ACCEPT_BUFFER_PX", "8"))
+RESPECT_TILE_SCHEDULE = os.getenv("RESPECT_TILE_SCHEDULE", "1") == "1"
 ENABLE_CROSS_ZOOM_QA = os.getenv("ENABLE_CROSS_ZOOM_QA", "1") == "1"
 QA_SAMPLE_RATE = float(os.getenv("QA_SAMPLE_RATE", "0.10"))
 QA_MIN_SAMPLES = int(os.getenv("QA_MIN_SAMPLES", "1"))
@@ -91,6 +103,20 @@ QA_TOTAL_RATIO_THRESHOLD = float(os.getenv("QA_TOTAL_RATIO_THRESHOLD", "1.35"))
 QA_TYPE_RATIO_THRESHOLD = float(os.getenv("QA_TYPE_RATIO_THRESHOLD", "1.50"))
 QA_ABS_DELTA_THRESHOLD = int(os.getenv("QA_ABS_DELTA_THRESHOLD", "5"))
 ACTIVE_REGIONS = load_bbox_regions(use_bbox_tiling=USE_BBOX_TILING)
+GLOBAL_TILE_MANIFEST = build_global_tile_manifest(
+    VIEWPORT_WIDTH,
+    VIEWPORT_HEIGHT,
+    global_bbox=GLOBAL_GRID_BBOX,
+    default_zoom=GLOBAL_GRID_DEFAULT_ZOOM,
+    schedule_minutes=SCRAPE_INTERVAL_MINUTES,
+)
+GLOBAL_TILE_INDEX = GlobalTileIndex(
+    GLOBAL_TILE_MANIFEST,
+    VIEWPORT_WIDTH,
+    VIEWPORT_HEIGHT,
+    global_bbox=GLOBAL_GRID_BBOX,
+    accept_buffer_px=TILE_ACCEPT_BUFFER_PX,
+)
 
 # Crash retry settings
 MAX_REGION_RETRIES = 2
@@ -340,8 +366,12 @@ def hide_ui_overlays(page):
         ];
         const elements = document.querySelectorAll(selectors.join(', '));
         for (const el of elements) {
-            if (el.matches && el.matches('.leaflet-control-mouseposition')) continue;
-            if (el.querySelector && el.querySelector('.leaflet-control-mouseposition')) continue;
+            if (el.matches && el.matches(
+                '.leaflet-control-mouseposition, .leaflet-control-mouseposition-dark'
+            )) continue;
+            if (el.querySelector && el.querySelector(
+                '.leaflet-control-mouseposition, .leaflet-control-mouseposition-dark'
+            )) continue;
             if (el.tagName.toLowerCase() === 'canvas') continue;
             if (el.querySelector('canvas')) continue;
             if (el.closest('.leaflet-pane')) continue;
@@ -383,7 +413,8 @@ def install_capture_visibility_css(page):
         }
         style.textContent = `
             #map_canvas, #map_canvas * { cursor: none !important; }
-            .leaflet-control-mouseposition {
+            .leaflet-control-mouseposition,
+            .leaflet-control-mouseposition-dark {
                 opacity: 0 !important;
                 pointer-events: none !important;
                 color: transparent !important;
@@ -1734,6 +1765,12 @@ def _read_mouseposition_dom(page):
     script = """
     () => {
         const selectors = [
+            '#map_canvas > div.leaflet-control-container > ' +
+                'div.leaflet-bottom.leaflet-right > ' +
+                'div.leaflet-control.leaflet-control-mouseposition-dark',
+            '#map_canvas .leaflet-control.leaflet-control-mouseposition-dark',
+            '.leaflet-control.leaflet-control-mouseposition-dark',
+            '.leaflet-control-mouseposition-dark',
             '.leaflet-control-mouseposition.leaflet-control',
             '.leaflet-control-mouseposition'
         ];
@@ -2939,6 +2976,528 @@ def capture_region(region_name, config, timestamp_str):
     return res.get(region_name)
 
 
+# --- Global tile capture ------------------------------------------------------
+
+
+def _tile_result_counts(markers):
+    counts = _count_markers_by_type(markers)
+    return {
+        "tankers": counts["stationary_tankers"] + counts["moving_tankers"],
+        "cargos": counts["stationary_cargos"] + counts["moving_cargos"],
+        "moving_tankers": counts["moving_tankers"],
+        "moving_cargos": counts["moving_cargos"],
+    }
+
+
+def _global_tile_qa_flags():
+    flags = ["qa_redesign_required"]
+    if ENABLE_CROSS_ZOOM_QA:
+        flags.append("cross_zoom_qa_disabled_for_global_grid")
+    return flags
+
+
+def _save_tile_image(tile, timestamp_str, img_bytes):
+    if not SAVE_IMAGES:
+        return "", 0.0
+    out_dir = Path(CAPTURES_DIR) / "tiles" / f"z{tile['zoom']}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ext = "jpg" if SCREENSHOT_FORMAT == "jpeg" else "png"
+    output_path = out_dir / f"{tile['tile_id']}_{timestamp_str}.{ext}"
+    with open(output_path, "wb") as f:
+        f.write(img_bytes)
+    return str(output_path), output_path.stat().st_size / 1024
+
+
+def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
+    """Capture one same-zoom batch from the global tile manifest."""
+    map_width = int(map_dims["width"])
+    map_height = int(map_dims["height"])
+    map_cx = int(map_dims["x"]) + map_width // 2
+    map_cy = int(map_dims["y"]) + map_height // 2
+    map_locator = page.locator("#map_canvas")
+    install_capture_visibility_css(page)
+
+    nav_counts = {"mouse-drag": 0, "setView": 0}
+    mouseposition_stats = {"ok": 0, "fallback": 0}
+    projection_fallback_logged = False
+    leaflet_diag_logged = False
+    results = {}
+
+    first = tile_batch[0]
+    current_lat = first["center_lat"]
+    current_lon = first["center_lon"]
+    batch_zoom = int(first["zoom"])
+
+    canvas_state = page.evaluate("""
+    () => {
+        const mc = document.getElementById('map_canvas');
+        if (!mc) return 'canvas_missing';
+        const rect = mc.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return 'canvas_zero_size';
+        const overlay = document.querySelector('.leaflet-overlay-pane');
+        if (!overlay) return 'overlay_pane_missing';
+        return 'ok';
+    }
+    """)
+    if canvas_state != "ok":
+        logger.warning("Global tile batch z%d: map not ready - %s",
+                       batch_zoom, canvas_state)
+
+    for i, tile in enumerate(tile_batch):
+        tid = tile["tile_id"]
+        row = int(tile["row"])
+        col = int(tile["col"])
+        zoom = int(tile["zoom"])
+        lat = float(tile["center_lat"])
+        lon = float(tile["center_lon"])
+
+        if i > 0:
+            nav_mode = _pan_map(
+                page,
+                current_lat,
+                current_lon,
+                lat,
+                lon,
+                zoom,
+                map_center=(map_cx, map_cy),
+                region_name=tid,
+                timestamp_str=timestamp_str,
+            )
+            nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
+            current_lat, current_lon = lat, lon
+
+        try:
+            pre_capture_center_offset = None
+            if LEAFLET_DIAGNOSTICS:
+                pre_capture_center_offset = _wait_for_map_center_offset(
+                    page, timeout_ms=250
+                )
+
+            leaflet_center_offset = None
+            if LEAFLET_DIAGNOSTICS:
+                try:
+                    leaflet_center_offset = (
+                        _get_map_center_offset(page) or pre_capture_center_offset
+                    )
+                except Exception:
+                    leaflet_center_offset = pre_capture_center_offset
+                if not leaflet_center_offset and not leaflet_diag_logged:
+                    scan_path = _emit_frame_scan(
+                        page, timestamp_str, tid, "center_offset_capture_unavailable"
+                    )
+                    logger.warning(
+                        "Tile %s: Leaflet center_offset unavailable; "
+                        "continuing with mouseposition/requested-center projection; "
+                        "frame_scan=%s",
+                        tid,
+                        scan_path,
+                    )
+                    leaflet_diag_logged = True
+
+            center_offset = None
+            projection_source = "requested-center"
+            proj_lat = lat
+            proj_lon = lon
+            mouse_anchor = _read_mouseposition_anchor(
+                page, map_dims, lat, lon, zoom, tid, tile_id=tid
+            )
+            if mouse_anchor.get("available"):
+                proj_lat = mouse_anchor["obs_lat"]
+                proj_lon = mouse_anchor["obs_lon"]
+                center_offset = _mouseposition_center_offset(
+                    map_width, map_height, proj_lat, proj_lon, zoom
+                )
+                projection_source = "mouseposition-dom"
+                mouseposition_stats["ok"] += 1
+                logger.info(
+                    "  Tile %s (%d,%d): mouseposition obs=(%.6f, %.6f) "
+                    "req=(%.6f, %.6f) delta=(%.6f, %.6f; %.0fm) px=(%.1f, %.1f)",
+                    tid,
+                    row,
+                    col,
+                    mouse_anchor["obs_lat"],
+                    mouse_anchor["obs_lon"],
+                    lat,
+                    lon,
+                    mouse_anchor["delta_lat"],
+                    mouse_anchor["delta_lon"],
+                    mouse_anchor["meters"],
+                    mouse_anchor["dx_px"],
+                    mouse_anchor["dy_px"],
+                )
+            else:
+                mouseposition_stats["fallback"] += 1
+                if not projection_fallback_logged:
+                    logger.warning(
+                        "Global tile capture: mouseposition DOM unavailable (%s); "
+                        "using requested tile centers",
+                        mouse_anchor.get("reason"),
+                    )
+                    projection_fallback_logged = True
+
+            screenshot_args = {"type": SCREENSHOT_FORMAT}
+            if SCREENSHOT_FORMAT == "jpeg":
+                screenshot_args["quality"] = SCREENSHOT_QUALITY
+            img_bytes = map_locator.screenshot(**screenshot_args)
+
+            if projection_source != "mouseposition-dom" and not projection_fallback_logged:
+                logger.warning(
+                    "Global tile capture: projection fallback active; "
+                    "using requested tile centers"
+                )
+                projection_fallback_logged = True
+
+            det, raw_markers, img_shape = _detect_ships_inline(
+                img_bytes,
+                proj_lat,
+                proj_lon,
+                zoom,
+                map_width,
+                map_height,
+                center_offset=center_offset,
+            )
+            accepted_markers, rejected_markers = GLOBAL_TILE_INDEX.filter_markers_for_tile(
+                tid, raw_markers
+            )
+            accepted_markers = dedup_markers_spatial(
+                accepted_markers, MARKER_DEDUP_EPS_DEG
+            )
+            counts = _tile_result_counts(accepted_markers)
+            tile_det = {
+                "tile_id": tid,
+                "tile": [row, col],
+                "center_lat": lat,
+                "center_lon": lon,
+                "zoom": zoom,
+                "tiling_mode": "global_web_mercator",
+                "raw_markers": len(raw_markers),
+                "accepted_markers": len(accepted_markers),
+                "rejected_markers": rejected_markers,
+                "tankers": counts["tankers"],
+                "cargos": counts["cargos"],
+                "moving_tankers": counts["moving_tankers"],
+                "moving_cargos": counts["moving_cargos"],
+                "markers": accepted_markers,
+                "proj": {
+                    "req_lat": lat,
+                    "req_lon": lon,
+                    "req_zoom": zoom,
+                    "source": projection_source,
+                    "obs_lat": mouse_anchor.get("obs_lat"),
+                    "obs_lon": mouse_anchor.get("obs_lon"),
+                    "delta_lat": mouse_anchor.get("delta_lat"),
+                    "delta_lon": mouse_anchor.get("delta_lon"),
+                    "dx_px": mouse_anchor.get("dx_px"),
+                    "dy_px": mouse_anchor.get("dy_px"),
+                    "meters": mouse_anchor.get("meters"),
+                    "mouseposition_raw": mouse_anchor.get("raw"),
+                    "mouseposition_selector": mouse_anchor.get("selector"),
+                    "mouseposition_frame": mouse_anchor.get("frame_url"),
+                    "dpr": center_offset.get("dpr") if center_offset else None,
+                    "img_h": int(img_shape[0]) if img_shape else None,
+                    "img_w": int(img_shape[1]) if img_shape else None,
+                    "center_x": center_offset.get("center_x") if center_offset else None,
+                    "center_y": center_offset.get("center_y") if center_offset else None,
+                },
+            }
+            if leaflet_center_offset:
+                from seer import _debug_center_check
+                _debug_center_check(lat, lon, leaflet_center_offset, row, col, logger)
+                act_zoom = leaflet_center_offset.get("map_zoom")
+                if act_zoom is not None and abs(act_zoom - zoom) > 1e-6:
+                    logger.warning(
+                        "  Tile %s (%d,%d): setZoom drift! requested %s, actual %s",
+                        tid, row, col, zoom, act_zoom,
+                    )
+
+            saved_path, file_size_kb = _save_tile_image(tile, timestamp_str, img_bytes)
+            nav_mode_used = _nav_mode_summary(nav_counts)
+            projection_mode = _projection_mode_summary([tile_det])
+            _log_tile_json(
+                timestamp_str,
+                tile,
+                saved_path,
+                "success",
+                file_size_kb,
+                counts,
+                detections=[tile_det],
+                markers=accepted_markers,
+                nav_mode=nav_mode_used,
+                projection_mode=projection_mode,
+                qa_flags=_global_tile_qa_flags(),
+                qa_confidence=None,
+            )
+            results[tid] = {
+                **counts,
+                "tile_id": tid,
+                "tiles_ok": 1,
+                "tiles_failed": 0,
+                "detections": [tile_det],
+                "nav": dict(nav_counts),
+                "nav_mode": nav_mode_used,
+                "projection_mode": projection_mode,
+                "mouseposition": dict(mouseposition_stats),
+            }
+            logger.info(
+                "  Tile %s (%d,%d) [%d/%d]: %d tankers (%d mov), "
+                "%d cargo (%d mov), accepted=%d rejected=%d projection=%s",
+                tid,
+                row,
+                col,
+                i + 1,
+                len(tile_batch),
+                counts["tankers"],
+                counts["moving_tankers"],
+                counts["cargos"],
+                counts["moving_cargos"],
+                len(accepted_markers),
+                rejected_markers,
+                projection_source,
+            )
+        except Exception as exc:
+            logger.error("  Tile %s (%d,%d) failed: %s", tid, row, col, exc)
+            _log_tile_json(
+                timestamp_str,
+                tile,
+                "",
+                "error",
+                0.0,
+                {"tankers": 0, "cargos": 0, "moving_tankers": 0, "moving_cargos": 0},
+                detections=[{"tile_id": tid, "tile": [row, col], "error": str(exc)}],
+                markers=[],
+                nav_mode=_nav_mode_summary(nav_counts),
+                projection_mode="unknown",
+                qa_flags=["capture_failed", *_global_tile_qa_flags()],
+                qa_confidence=0.0,
+            )
+            results[tid] = {
+                "tile_id": tid,
+                "tankers": 0,
+                "cargos": 0,
+                "moving_tankers": 0,
+                "moving_cargos": 0,
+                "tiles_ok": 0,
+                "tiles_failed": 1,
+            }
+
+    logger.info(
+        "Global tile batch z%d summary: tiles=%d nav=%s mouseposition_ok=%d "
+        "mouseposition_fallback=%d",
+        batch_zoom,
+        len(tile_batch),
+        nav_counts,
+        mouseposition_stats["ok"],
+        mouseposition_stats["fallback"],
+    )
+    return results
+
+
+def capture_tile_batch_worker(tile_batch, timestamp_str):
+    """Open one browser and process a same-zoom global tile batch."""
+    worker_id = threading.current_thread().name
+    tile_batch = list(tile_batch)
+    first = tile_batch[0]
+    zoom = int(first["zoom"])
+    batch_label = f"z{zoom}:{first['tile_id']}+{len(tile_batch) - 1}"
+
+    proxy = random.choice(proxies)
+    fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
+    geo = geo_profiles.get(proxy["server"], fallback)
+
+    results = {}
+    retryable = []
+    logger.info(
+        "[mode=global-tile-batch worker=%s] batch=%s starting",
+        worker_id,
+        batch_label,
+    )
+
+    try:
+        with sync_playwright() as p:
+            _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
+            chrome_args = ["--headless=new", "--disable-dev-shm-usage"]
+            if _has_display:
+                chrome_args += [
+                    "--enable-gpu-rasterization",
+                    "--enable-zero-copy",
+                    "--use-angle=default",
+                ]
+
+            browser = p.chromium.launch(
+                headless=False,
+                channel="chrome",
+                args=chrome_args,
+            )
+            context = browser.new_context(
+                proxy={
+                    "server": proxy["server"],
+                    "username": proxy["username"],
+                    "password": proxy["password"],
+                },
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                device_scale_factor=1.0,
+                timezone_id=geo.timezone_id,
+                locale=geo.locale,
+                geolocation={"latitude": geo.latitude, "longitude": geo.longitude},
+                permissions=["geolocation"],
+                extra_http_headers={"Accept-Language": geo.accept_language},
+                user_agent=_random_user_agent(),
+            )
+            context.add_cookies(_random_cookies(".marinetraffic.com"))
+
+            page = context.new_page()
+            _inject_stealth_scripts(page, geo)
+            _inject_map_hooks(page)
+
+            center_lat = first["center_lat"]
+            center_lon = first["center_lon"]
+            url = build_url(center_lat, center_lon, zoom)
+            logger.info(
+                "[worker=%s batch=%s] loading url at zoom %d",
+                worker_id,
+                batch_label,
+                zoom,
+            )
+            page.goto(url, wait_until="domcontentloaded")
+
+            page_ready = True
+            filter_state = "skipped"
+            dark_state = "skipped"
+            try:
+                if _wait_for_cloudflare(page):
+                    logger.info("[worker=%s batch=%s] Cloudflare passed",
+                                worker_id, batch_label)
+                elif _is_cloudflare_blocked(page):
+                    raise RuntimeError("cloudflare block")
+
+                wait_for_map_tiles(page)
+                dismiss_cookie_banner(page)
+                dark_ok = set_dark_mode(page)
+                dark_state = "applied" if dark_ok else "unavailable"
+                filter_ok = set_vessel_filter(page)
+                filter_state = "applied" if filter_ok else "failed"
+                if not filter_ok:
+                    raise RuntimeError("required setup failed: vessel filter")
+                hide_ui_overlays(page)
+                install_capture_visibility_css(page)
+                if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+                    _discover_leaflet_map(page)
+            except Exception as exc:
+                retry_setup = (
+                    _is_crash_error(exc)
+                    or "required setup failed" in str(exc).lower()
+                    or "cloudflare block" in str(exc).lower()
+                )
+                if retry_setup:
+                    logger.error(
+                        "[worker=%s batch=%s] setup failed (retryable): %s",
+                        worker_id,
+                        batch_label,
+                        exc,
+                    )
+                    retryable.extend(t["tile_id"] for t in tile_batch)
+                else:
+                    logger.error(
+                        "[worker=%s batch=%s] setup failed: %s",
+                        worker_id,
+                        batch_label,
+                        exc,
+                    )
+                page_ready = False
+
+            if not page_ready:
+                context.close()
+                browser.close()
+                results["_retryable"] = retryable
+                return results
+
+            map_dims = _get_map_dimensions(page)
+            center_offset = None
+            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+                center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
+                try:
+                    map_probe = run_map_probe(page)
+                    logger.info("%s", json.dumps({
+                        "event": "map_probe",
+                        "worker": worker_id,
+                        "batch": batch_label,
+                        "probe": map_probe,
+                    }, sort_keys=True))
+                except Exception as exc:
+                    logger.warning(
+                        "[worker=%s batch=%s] map probe failed: %s",
+                        worker_id,
+                        batch_label,
+                        exc,
+                    )
+
+            mouse_probe = _read_mouseposition_anchor(
+                page,
+                map_dims,
+                center_lat,
+                center_lon,
+                zoom,
+                first["tile_id"],
+                tile_id="worker_probe",
+            )
+            logger.info(
+                "[worker=%s batch=%s] setup ok: nav_default=mouse-drag "
+                "setView_opt=%s map_dims=%dx%d leaflet_center_offset=%s "
+                "mouseposition=%s dark=%s filter=%s",
+                worker_id,
+                batch_label,
+                USE_SETVIEW_OPTIMIZATION,
+                int(map_dims["width"]),
+                int(map_dims["height"]),
+                "ok" if center_offset else "missing",
+                "ok" if mouse_probe.get("available") else "missing",
+                dark_state,
+                filter_state,
+            )
+
+            try:
+                results.update(
+                    _capture_global_tile_batch(
+                        tile_batch, timestamp_str, page, map_dims
+                    )
+                )
+            except Exception as exc:
+                if _is_crash_error(exc):
+                    logger.error(
+                        "[worker=%s batch=%s] capture failed (retryable): %s",
+                        worker_id,
+                        batch_label,
+                        exc,
+                    )
+                    retryable.extend(t["tile_id"] for t in tile_batch)
+                else:
+                    logger.error(
+                        "[worker=%s batch=%s] capture failed: %s",
+                        worker_id,
+                        batch_label,
+                        exc,
+                    )
+
+            context.close()
+            browser.close()
+
+    except Exception as exc:
+        if _is_crash_error(exc):
+            logger.error(
+                "[worker=%s batch=%s] worker crashed (retryable): %s",
+                worker_id,
+                batch_label,
+                exc,
+            )
+            retryable.extend(t["tile_id"] for t in tile_batch)
+        else:
+            logger.error("[worker=%s batch=%s] worker failed: %s",
+                         worker_id, batch_label, exc)
+
+    results["_retryable"] = retryable
+    return results
+
+
 # --- Logging ------------------------------------------------------------------
 
 _log_lock = threading.Lock()
@@ -2995,6 +3554,68 @@ def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
                 "moving_t=%d moving_c=%d tiles=%d/%d markers=%d",
                 region, status, tankers, cargos, moving_tankers, moving_cargos,
                 ok, total, len(markers or []))
+
+
+def _log_tile_json(timestamp, tile, filepath, status, size_kb, counts,
+                   detections=None, markers=None, nav_mode=None,
+                   projection_mode=None, qa_flags=None, qa_confidence=None):
+    """Append one global tile capture entry to captures_log.jsonl."""
+    Path("./data").mkdir(parents=True, exist_ok=True)
+    status = status or "success"
+    ok = 1 if status == "success" else 0
+    failed = 0 if status == "success" else 1
+    entry = {
+        "capture_type": "tile",
+        "tile_id": tile["tile_id"],
+        "tile": tile,
+        "row": tile["row"],
+        "col": tile["col"],
+        "center_lat": tile["center_lat"],
+        "center_lon": tile["center_lon"],
+        "tile_bounds": tile["tile_bounds"],
+        "capture_bounds": tile["capture_bounds"],
+        "owner_bounds_px": tile["owner_bounds_px"],
+        "capture_bounds_px": tile["capture_bounds_px"],
+        "schedule_minutes": tile.get("schedule_minutes"),
+        "priority": tile.get("priority", 0),
+        "source": tile.get("source"),
+        "seed_regions": tile.get("seed_regions", []),
+        "filepath": filepath,
+        "date_time": timestamp,
+        "tiles_total": 1,
+        "tiles_ok": ok,
+        "tiles_failed": failed,
+        "zoom": int(tile["zoom"]),
+        "zoom_used": int(tile["zoom"]),
+        "file_size_kb": round(size_kb, 1),
+        "tankers": int(counts.get("tankers", 0)),
+        "cargos": int(counts.get("cargos", 0)),
+        "moving_tankers": int(counts.get("moving_tankers", 0)),
+        "moving_cargos": int(counts.get("moving_cargos", 0)),
+        "status": status,
+        "markers": markers or [],
+        "detections": detections or [],
+        "nav_mode": nav_mode,
+        "projection_mode": projection_mode,
+        "qa_flags": qa_flags or [],
+        "qa_confidence": qa_confidence,
+    }
+
+    with _log_lock:
+        with open(_capture_log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    logger.info(
+        "_log_tile_json: tile=%s status=%s tankers=%d cargos=%d "
+        "moving_t=%d moving_c=%d markers=%d",
+        tile["tile_id"],
+        status,
+        entry["tankers"],
+        entry["cargos"],
+        entry["moving_tankers"],
+        entry["moving_cargos"],
+        len(markers or []),
+    )
 
 
 # --- Orchestration ------------------------------------------------------------
@@ -3134,6 +3755,213 @@ def capture_all_regions(region_filter=None, no_ingest=False):
     return all_results
 
 
+def _select_global_tiles(region_filter=None, zoom_filter=None, tier_filter=None,
+                         respect_schedule=True):
+    tiles = list(GLOBAL_TILE_MANIFEST)
+    if zoom_filter:
+        allowed_zoom = set(int(z) for z in zoom_filter)
+        tiles = [t for t in tiles if int(t["zoom"]) in allowed_zoom]
+
+    region_codes = set(region_filter or [])
+    if tier_filter:
+        allowed_tiers = set(tier_filter)
+        region_codes.update(
+            code for code, tier in REGION_TIERS.items() if tier in allowed_tiers
+        )
+    if region_codes:
+        polygons = [
+            ACTIVE_REGIONS[code]["polygon"]
+            for code in region_codes
+            if code in ACTIVE_REGIONS
+        ]
+        tiles = [
+            t for t in tiles
+            if any(tile_intersects_polygon(t, polygon) for polygon in polygons)
+        ]
+
+    if respect_schedule and RESPECT_TILE_SCHEDULE:
+        try:
+            due_ids = get_due_tile_ids(t["tile_id"] for t in tiles)
+            before = len(tiles)
+            tiles = [t for t in tiles if t["tile_id"] in due_ids]
+            logger.info(
+                "Tile schedule filter: %d/%d selected tiles are due",
+                len(tiles),
+                before,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Tile schedule filter unavailable (%s); capturing selected tiles",
+                exc,
+            )
+
+    return sorted(
+        tiles,
+        key=lambda t: (int(t["zoom"]), int(t["row"]), int(t["col"]), t["tile_id"]),
+    )
+
+
+def _chunk_global_tiles(tiles):
+    by_zoom = {}
+    for tile in tiles:
+        by_zoom.setdefault(int(tile["zoom"]), []).append(tile)
+
+    batches = []
+    batch_size = max(1, GLOBAL_TILE_BATCH_SIZE)
+    for zoom in sorted(by_zoom):
+        zoom_tiles = by_zoom[zoom]
+        for i in range(0, len(zoom_tiles), batch_size):
+            batches.append(zoom_tiles[i:i + batch_size])
+    return batches
+
+
+def capture_all_regions(region_filter=None, no_ingest=False,
+                        zoom_filter=None, tier_filter=None):
+    """Capture the global tile manifest.
+
+    ``region_filter`` is only a debug selector. It chooses global tiles whose
+    owner bounds intersect those region polygons; persisted captures remain
+    tile-scoped.
+    """
+    global _capture_log_path
+
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
+    logger.info("Starting global tile capture run: %s", timestamp_str)
+    previous_log_path = _capture_log_path
+    if no_ingest:
+        _capture_log_path = Path("./data") / f"captures_validation_{timestamp_str}.jsonl"
+        logger.info("Validation capture log: %s", _capture_log_path)
+
+    tiles = _select_global_tiles(
+        region_filter=region_filter,
+        zoom_filter=zoom_filter,
+        tier_filter=tier_filter,
+    )
+    batches = _chunk_global_tiles(tiles)
+    total_tiles = len(tiles)
+    summary = manifest_summary(tiles)
+    tile_by_id = {tile["tile_id"]: tile for tile in tiles}
+    logger.info(
+        "Global tile selection: %d tiles in %d batches | by_zoom=%s "
+        "by_source=%s bbox=%s default_zoom=%d region_filter=%s",
+        total_tiles,
+        len(batches),
+        summary["by_zoom"],
+        summary["by_source"],
+        GLOBAL_GRID_BBOX,
+        GLOBAL_GRID_DEFAULT_ZOOM,
+        region_filter,
+    )
+    if ENABLE_CROSS_ZOOM_QA:
+        logger.warning(
+            "Cross-zoom QA is diagnostic-only for global tile capture. "
+            "Sustainable adaptive zoom/split decisions still need a QA redesign."
+        )
+
+    t_start = time.perf_counter()
+    all_results = {}
+
+    def _run_tile_batches_parallel(tile_batches):
+        worker_results_all = {}
+        retry_tile_ids = []
+        with ThreadPoolExecutor(max_workers=MAX_BROWSERS) as executor:
+            futures = {
+                executor.submit(capture_tile_batch_worker, batch, timestamp_str): [
+                    t["tile_id"] for t in batch
+                ]
+                for batch in tile_batches
+            }
+            for future in as_completed(futures):
+                batch_ids = futures[future]
+                try:
+                    worker_results = future.result() or {}
+                    retry_tile_ids.extend(worker_results.pop("_retryable", []))
+                    worker_results_all.update(worker_results)
+                except Exception as e:
+                    logger.error("Worker for tile batch %s failed: %s", batch_ids, e)
+                    retry_tile_ids.extend(batch_ids)
+        return worker_results_all, retry_tile_ids
+
+    results_batch, retryable = _run_tile_batches_parallel(batches)
+    all_results.update(results_batch)
+
+    for attempt in range(1, MAX_REGION_RETRIES + 1):
+        if not retryable:
+            break
+        retryable = list(dict.fromkeys(
+            tile_id for tile_id in retryable if tile_id not in all_results
+        ))
+        if not retryable:
+            break
+
+        backoff = RETRY_BACKOFF_BASE * attempt + random.uniform(0, 5)
+        logger.info(
+            "Retry attempt %d/%d for %d retryable tile(s): %s "
+            "(backoff %.1fs)",
+            attempt,
+            MAX_REGION_RETRIES,
+            len(retryable),
+            retryable,
+            backoff,
+        )
+        time.sleep(backoff)
+
+        retry_batches = _chunk_global_tiles([
+            tile_by_id[tile_id] for tile_id in retryable if tile_id in tile_by_id
+        ])
+        results_batch, retryable = _run_tile_batches_parallel(retry_batches)
+        all_results.update(results_batch)
+
+    still_failed = [tid for tid in retryable if tid not in all_results] if retryable else []
+    if still_failed:
+        logger.error(
+            "Tiles failed after %d retries: %s",
+            MAX_REGION_RETRIES,
+            still_failed,
+        )
+
+    elapsed = time.perf_counter() - t_start
+    per_tile = elapsed / total_tiles if total_tiles > 0 else 0
+    grand_tankers = sum(r.get("tankers", 0) for r in all_results.values()
+                        if isinstance(r, dict))
+    grand_cargos = sum(r.get("cargos", 0) for r in all_results.values()
+                       if isinstance(r, dict))
+    grand_mov_t = sum(r.get("moving_tankers", 0) for r in all_results.values()
+                      if isinstance(r, dict))
+    grand_mov_c = sum(r.get("moving_cargos", 0) for r in all_results.values()
+                      if isinstance(r, dict))
+
+    logger.info(
+        "STOPWATCH  global tiles: %.2fs total | %d tiles | %.2fs/tile | "
+        "%d tankers (%d mov) | %d cargo (%d mov)",
+        elapsed,
+        total_tiles,
+        per_tile,
+        grand_tankers,
+        grand_mov_t,
+        grand_cargos,
+        grand_mov_c,
+    )
+
+    if no_ingest:
+        logger.info("Database ingestion skipped (--no-ingest)")
+    else:
+        try:
+            logger.info("Ingesting tile captures log into database...")
+            process_log()
+            logger.info("Database ingestion complete")
+        except Exception as e:
+            logger.error(
+                "Database ingestion failed: %s (data preserved in captures_log.jsonl)",
+                e,
+            )
+
+    if no_ingest:
+        _capture_log_path = previous_log_path
+
+    return all_results
+
+
 def scheduled_run():
     jitter = random.uniform(-JITTER_SECONDS, JITTER_SECONDS)
     delay = max(0, jitter)
@@ -3152,6 +3980,8 @@ def main():
     tier_filter = None
     run_once = False
     no_ingest = False
+    dry_run_grid = False
+    list_tiles = False
     for arg in sys.argv[1:]:
         if arg.startswith("--regions="):
             region_filter = arg.split("=", 1)[1].split(",")
@@ -3165,6 +3995,10 @@ def main():
             run_once = True
         elif arg == "--no-ingest":
             no_ingest = True
+        elif arg == "--dry-run-grid":
+            dry_run_grid = True
+        elif arg == "--list-tiles":
+            list_tiles = True
         elif arg == "--list-regions":
             print(f"{'Key':<6} {'Zoom':<5} {'Class':<8} {'Tier':<10} {'Name'}")
             print("-" * 78)
@@ -3180,53 +4014,51 @@ def main():
             print(__doc__)
             return
 
-    # Apply --zoom and --tier filters to build region_filter
-    if zoom_filter or tier_filter:
-        filtered = set()
-        for code, config in ACTIVE_REGIONS.items():
-            zoom_ok = zoom_filter is None or config["zoom"] in zoom_filter
-            tier_ok = tier_filter is None or REGION_TIERS.get(code) in tier_filter
-            if zoom_ok and tier_ok:
-                filtered.add(code)
-        # Intersect with --regions if both specified
-        if region_filter:
-            filtered &= set(region_filter)
-        region_filter = list(filtered) if filtered else ["__none__"]
+    selected_tiles = _select_global_tiles(
+        region_filter=region_filter,
+        zoom_filter=zoom_filter,
+        tier_filter=tier_filter,
+        respect_schedule=not (dry_run_grid or list_tiles),
+    )
+    selected_summary = manifest_summary(selected_tiles)
+    if dry_run_grid or list_tiles:
+        print("Global tile grid")
+        print(f"  bbox: {GLOBAL_GRID_BBOX}")
+        print(f"  viewport: {VIEWPORT_WIDTH}x{VIEWPORT_HEIGHT}")
+        print(f"  default_zoom: {GLOBAL_GRID_DEFAULT_ZOOM}")
+        print(f"  accept_buffer_px: {TILE_ACCEPT_BUFFER_PX}")
+        print(f"  total_tiles: {selected_summary['total_tiles']}")
+        print(f"  by_zoom: {selected_summary['by_zoom']}")
+        print(f"  by_source: {selected_summary['by_source']}")
+        print("  qa: diagnostic only; adaptive zoom/split QA needs redesign")
+        if list_tiles:
+            for tile in selected_tiles:
+                print(
+                    f"{tile['tile_id']} z{tile['zoom']} "
+                    f"r{tile['row']} c{tile['col']} "
+                    f"source={tile.get('source')} seeds={','.join(tile.get('seed_regions', []))}"
+                )
+        return
 
     # Resolve proxy geolocations at startup
     logger.info("Resolving proxy geolocations...")
     geo_profiles = resolve_all_proxies(proxies)
     logger.info("Resolved %d/%d proxy profiles", len(geo_profiles), len(proxies))
 
-    # Log region summary by zoom level
-    zoom_groups = {}
-    for name, config in ACTIVE_REGIONS.items():
-        z = config["zoom"]
-        zoom_groups.setdefault(z, []).append(name)
-
-    for z in sorted(zoom_groups.keys()):
-        regions_at_z = zoom_groups[z]
-        logger.info("Zoom %d: %d regions (%s)", z, len(regions_at_z),
-                    ", ".join(regions_at_z))
-
-    total_tiles = 0
-    for name in (region_filter or ACTIVE_REGIONS.keys()):
-        if name not in ACTIVE_REGIONS:
-            continue
-        config = ACTIVE_REGIONS[name]
-        tiles, info = _get_tile_grid(name, config)
-        total_tiles += len(tiles)
-
-    active_count = len(region_filter) if region_filter else len(ACTIVE_REGIONS)
-    logger.info("Total: %d regions, %d tiles | Viewport: %dx%d | "
-                "Max browsers: %d | Save images: %s | bbox=%s | cross_zoom_qa=%s "
-                "| projection=mouseposition-dom | no_ingest=%s",
-                active_count, total_tiles, VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
-                MAX_BROWSERS, SAVE_IMAGES, USE_BBOX_TILING,
+    logger.info("Global tile summary: %s", selected_summary)
+    logger.info("QA note: adaptive zoom/split decisions require a future QA redesign")
+    logger.info("Viewport: %dx%d | Max browsers: %d | Save images: %s | "
+                "cross_zoom_qa=%s | projection=mouseposition-dom | no_ingest=%s",
+                VIEWPORT_WIDTH, VIEWPORT_HEIGHT, MAX_BROWSERS, SAVE_IMAGES,
                 ENABLE_CROSS_ZOOM_QA, no_ingest)
 
     # Run once immediately
-    capture_all_regions(region_filter, no_ingest=no_ingest)
+    capture_all_regions(
+        region_filter,
+        no_ingest=no_ingest,
+        zoom_filter=zoom_filter,
+        tier_filter=tier_filter,
+    )
     if run_once:
         return
 
