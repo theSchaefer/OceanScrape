@@ -90,7 +90,22 @@ ENABLE_CROSS_ZOOM_QA                Default 1; diagnostic only for global tile c
 QA_SAMPLE_RATE / QA_MAX_SAMPLES     Default 0.10 / 3 sampled baseline tiles per region
 USE_SETVIEW_OPTIMIZATION            Default 0; set 1 to allow optional Leaflet setView panning
 LEAFLET_DIAGNOSTICS                 Default 0; set 1 to emit Leaflet/frame probes
+MOUSE_DRAG_STEPS                    Default 3; intermediate mouse-moves per drag step (dominant pan cost at 8K — raise only if coverage gaps appear)
+MAX_DRAG_PX                         Default 800; max single-drag distance, kept below Leaflet inertia threshold
+TILES_WAIT_MS                       Default 5000; base-map readiness cap, early-exits via .leaflet-tile-loaded
+AIS_WAIT_MS                         Default 3000; vessel-data readiness cap (get_data_json_4 network quiescence)
+AIS_QUIET_MS                        Default 400; quiet window that marks vessel-data fetch complete
+AIS_RENDER_SETTLE_MS               Default 250; post-fetch settle so markers paint before screenshot
+AIS_FIRST_RESPONSE_GRACE_MS        Default 1200; bail out early if a pan triggers no vessel request (cached/empty area)
 ```
+
+Panning uses mouse-drag only: MarineTraffic's Leaflet map instance is not
+reachable from injected JS, so `setView` is unavailable. Because every
+intermediate mouse move repaints the full ~33MP canvas at 8K, `MOUSE_DRAG_STEPS`
+is the largest lever on scrape speed. Readiness is verified without the map
+object: base tiles via the `.leaflet-tile-loaded` DOM class, and vessel markers
+via quiescence of the `get_data_json_4` network responses (the marker canvas is
+cross-origin tainted, so it cannot be pixel-sampled).
 
 Projection offset is derived from MarineTraffic's
 `.leaflet-control-mouseposition` DOM element. The scraper moves the mouse to

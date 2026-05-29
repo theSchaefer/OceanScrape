@@ -81,7 +81,26 @@ SAVE_IMAGES = os.getenv("SAVE_IMAGES", "0") == "1" or "--save-images" in sys.arg
 # Screenshot format: jpeg is ~5x smaller and ~2x faster to encode than png
 SCREENSHOT_FORMAT = os.getenv("SCREENSHOT_FORMAT", "jpeg")
 SCREENSHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "70"))
-MAX_DRAG_PX = 800  # max single-drag distance to avoid Leaflet inertia
+# Max single-drag distance (px) to avoid Leaflet inertia overshoot. The map
+# object is not JS-injectable, so inertia cannot be disabled programmatically;
+# 800px keeps each drag step below the inertia threshold. Env-configurable for
+# tuning only.
+MAX_DRAG_PX = int(os.getenv("MAX_DRAG_PX", "800"))
+# Intermediate mouse-move samples per drag step. At an 8K viewport every
+# intermediate move forces a full ~33MP Leaflet repaint, so this is the single
+# biggest cost driver of panning. Keep small (3) to slash repaints; raise if a
+# faster drag causes coverage gaps. (Was hardcoded 20.)
+MOUSE_DRAG_STEPS = int(os.getenv("MOUSE_DRAG_STEPS", "3"))
+# Readiness-wait caps (ms). Both waits early-exit on a real signal; the cap only
+# bounds genuinely-not-ready / empty cases.
+TILES_WAIT_MS = int(os.getenv("TILES_WAIT_MS", "5000"))
+AIS_WAIT_MS = int(os.getenv("AIS_WAIT_MS", "3000"))
+# Vessel data (get_data_json_4) network quiescence window + post-render settle.
+AIS_QUIET_MS = int(os.getenv("AIS_QUIET_MS", "400"))
+AIS_RENDER_SETTLE_MS = int(os.getenv("AIS_RENDER_SETTLE_MS", "250"))
+# If a pan triggers no vessel request within this window (area cached/empty),
+# stop waiting instead of running out the full AIS_WAIT_MS cap.
+AIS_FIRST_RESPONSE_GRACE_MS = int(os.getenv("AIS_FIRST_RESPONSE_GRACE_MS", "1200"))
 USE_SETVIEW_OPTIMIZATION = os.getenv("USE_SETVIEW_OPTIMIZATION", "0") == "1"
 LEAFLET_DIAGNOSTICS = os.getenv("LEAFLET_DIAGNOSTICS", "0") == "1"
 USE_BBOX_TILING = os.getenv("USE_BBOX_TILING", "1") == "1"
@@ -1179,38 +1198,40 @@ def set_vessel_filter(page):
     return False
 
 
-def wait_for_map_tiles(page, timeout_ms=8000):
-    """Wait for map canvas to render actual tile imagery."""
+def _leaflet_tiles_ready(page):
+    """True when the Leaflet base-map <img> tiles are present and all loaded.
+
+    Reads the DOM tile state (``.leaflet-tile`` / ``.leaflet-tile-loaded``)
+    instead of sampling a cross-origin-tainted ``<canvas>``. This works without
+    the (un-capturable) Leaflet map object: Leaflet adds the
+    ``leaflet-tile-loaded`` class to each tile ``<img>`` once its image finishes
+    decoding, and strips it from tiles it is (re)loading. Returns False on any
+    evaluate error so callers keep waiting.
+    """
     try:
-        page.wait_for_selector('canvas', state='attached', timeout=timeout_ms)
-        deadline = time.time() + (timeout_ms / 1000)
-        while time.time() < deadline:
-            has_content = page.evaluate("""
-            () => {
-                const canvas = document.querySelector('canvas');
-                if (!canvas) return false;
-                try {
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) return false;
-                    const w = canvas.width, h = canvas.height;
-                    const pts = [[w*0.25,h*0.25],[w*0.5,h*0.5],[w*0.75,h*0.75],
-                                 [w*0.25,h*0.75],[w*0.75,h*0.25]];
-                    let hits = 0;
-                    for (const [x, y] of pts) {
-                        const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-                        if (p[3] > 0 && (p[0] < 250 || p[1] < 250 || p[2] < 250)) hits++;
-                    }
-                    return hits >= 2;
-                } catch(e) { return false; }
-            }
-            """)
-            if has_content:
-                logger.info("  Map tiles rendered")
-                return
-            time.sleep(0.25)
-    except Exception as e:
-        logger.warning("  wait_for_map_tiles: %s", e)
-    time.sleep(0.25)
+        return bool(page.evaluate("""
+        () => {
+            const tiles = document.querySelectorAll('.leaflet-tile');
+            if (!tiles.length) return false;
+            const loaded = document.querySelectorAll('.leaflet-tile-loaded').length;
+            const pending = document.querySelectorAll(
+                '.leaflet-tile:not(.leaflet-tile-loaded)').length;
+            return loaded > 0 && pending === 0;
+        }
+        """))
+    except Exception:
+        return False
+
+
+def wait_for_map_tiles(page, timeout_ms=8000):
+    """Wait for the Leaflet base-map tiles to finish loading (early-exit)."""
+    deadline = time.time() + (timeout_ms / 1000)
+    while time.time() < deadline:
+        if _leaflet_tiles_ready(page):
+            logger.info("  Map tiles rendered")
+            return
+        time.sleep(0.1)
+    logger.warning("  wait_for_map_tiles: timed out after %dms", timeout_ms)
 
 
 # --- Stealth ------------------------------------------------------------------
@@ -1445,52 +1466,60 @@ def _wait_for_cloudflare(page, timeout_s: int = 15) -> bool:
 # --- Smart AIS marker detection -----------------------------------------------
 
 
-def _wait_for_ais_markers(page, timeout_ms=3000):
-    """Wait until AIS ship markers appear on the Leaflet overlay pane.
+def _wait_for_ais_markers(page, vessel_state=None, since_ts=None,
+                          timeout_ms=None):
+    """Wait for vessel data to arrive after a pan, via network quiescence.
 
-    Replaces the fixed time.sleep() AIS wait with actual detection of when
-    ship marker elements or overlay canvas content appear.  Falls back after
-    timeout (open ocean may legitimately have no ships).
+    The Leaflet map object is not injectable and the marker canvas is
+    cross-origin tainted, so there is no reliable DOM signal that markers
+    finished rendering. Instead we observe the network: MarineTraffic fetches
+    vessel positions per map tile from ``…/getData/get_data_json_4/…`` whenever
+    the viewport changes. ``vessel_state`` is a per-page dict updated by a
+    ``page.on("response")`` handler (registered in the worker) holding
+    ``{"last_ts": perf_counter, "count": int}``.
+
+    Strategy: wait until at least one vessel response has arrived *since*
+    ``since_ts`` (the moment the pan was issued) and the endpoint has then been
+    quiet for ``AIS_QUIET_MS``; finally add a short ``AIS_RENDER_SETTLE_MS`` so
+    the markers are painted before the screenshot. ``AIS_WAIT_MS`` caps the wait
+    so genuinely-empty areas (no requests) don't hang.
+
+    IMPORTANT: the poll uses ``page.wait_for_timeout`` rather than
+    ``time.sleep`` — only the former pumps the Playwright event loop, so the
+    ``response`` events actually fire on this (sync) thread.
+
+    Returns True if vessel responses were observed, False on cap-timeout.
     """
-    deadline = time.time() + (timeout_ms / 1000)
-    while time.time() < deadline:
-        has_markers = page.evaluate("""
-        () => {
-            const pane = document.querySelector('.leaflet-overlay-pane');
-            if (!pane) return false;
+    timeout_ms = AIS_WAIT_MS if timeout_ms is None else timeout_ms
 
-            // Check if the overlay canvas has non-transparent content
-            const canvas = pane.querySelector('canvas');
-            if (canvas && canvas.width > 0) {
-                try {
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) return false;
-                    const w = canvas.width, h = canvas.height;
-                    const pts = [
-                        [w*0.25, h*0.25], [w*0.5, h*0.5], [w*0.75, h*0.75],
-                        [w*0.25, h*0.75], [w*0.75, h*0.25],
-                        [w*0.1, h*0.5], [w*0.9, h*0.5],
-                        [w*0.5, h*0.1], [w*0.5, h*0.9],
-                    ];
-                    for (const [x, y] of pts) {
-                        const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-                        if (p[3] > 10) return true;
-                    }
-                } catch(e) { /* cross-origin taint */ }
-            }
+    if vessel_state is None:
+        # No network tracking (e.g. legacy region path): fall back to a short
+        # fixed settle rather than the old broken canvas probe.
+        page.wait_for_timeout(min(timeout_ms, 800))
+        return False
 
-            // Fallback: check for SVG/img elements in overlay pane
-            const children = pane.querySelectorAll('svg, img, div');
-            if (children.length > 0) return true;
+    since_ts = time.perf_counter() if since_ts is None else since_ts
+    start = time.perf_counter()
+    deadline = start + timeout_ms / 1000.0
+    quiet_s = AIS_QUIET_MS / 1000.0
+    grace_s = AIS_FIRST_RESPONSE_GRACE_MS / 1000.0
+    saw_response = False
 
-            return false;
-        }
-        """)
-        if has_markers:
-            return True
-        time.sleep(0.05)
+    while time.perf_counter() < deadline:
+        page.wait_for_timeout(50)  # pumps event loop so on("response") fires
+        last_ts = vessel_state.get("last_ts", 0.0)
+        if last_ts >= since_ts:
+            saw_response = True
+            if (time.perf_counter() - last_ts) >= quiet_s:
+                break
+        elif (time.perf_counter() - start) >= grace_s:
+            # No vessel request fired for this pan within the grace window —
+            # the area's data is cached or simply empty; stop waiting.
+            break
 
-    return False
+    if saw_response and AIS_RENDER_SETTLE_MS:
+        page.wait_for_timeout(AIS_RENDER_SETTLE_MS)
+    return saw_response
 
 
 # --- Leaflet setView map panning ---------------------------------------------
@@ -1568,13 +1597,18 @@ def _pan_map_js(page, target_lat, target_lon, zoom):
 
 
 def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
-             map_center=None, timeout_ms=5000, region_name=None,
-             timestamp_str=None, worker_id=None, timings=None):
+             map_center=None, region_name=None,
+             timestamp_str=None, worker_id=None, timings=None,
+             vessel_state=None):
     """Pan the map using mouse drag by default.
 
     Leaflet setView remains an explicit optimization path. Production capture
     does not require the map object and does not abort when it is unavailable.
     Returns the navigation mode used: ``setView`` or ``mouse-drag``.
+
+    ``vessel_state`` is the per-page network-tracking dict (see
+    :func:`_wait_for_ais_markers`); when provided, the AIS wait keys off the
+    vessel-data responses triggered by this pan instead of a blind sleep.
     """
 
     timings = timings if timings is not None else {}
@@ -1593,12 +1627,13 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
                 logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
                 time.sleep(0.05)
                 wait_started = time.perf_counter()
-                tiles_ready = _wait_for_tiles_after_pan(page, timeout_ms)
+                tiles_ready = _wait_for_tiles_after_pan(page)
                 timings["tiles_wait_s"] = time.perf_counter() - wait_started
                 timings["tiles_ready"] = bool(tiles_ready)
 
                 wait_started = time.perf_counter()
-                ais_ready = _wait_for_ais_markers(page, timeout_ms=2000)
+                ais_ready = _wait_for_ais_markers(
+                    page, vessel_state=vessel_state, since_ts=nav_started)
                 timings["ais_wait_s"] = time.perf_counter() - wait_started
                 timings["ais_ready"] = bool(ais_ready)
                 timings["nav_total_s"] = time.perf_counter() - nav_started
@@ -1644,7 +1679,7 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     for _ in range(steps_needed):
         page.mouse.move(cx, cy)
         page.mouse.down()
-        page.mouse.move(cx + step_dx, cy + step_dy, steps=20)
+        page.mouse.move(cx + step_dx, cy + step_dy, steps=MOUSE_DRAG_STEPS)
         page.mouse.up()
         if steps_needed > 1:
             time.sleep(0.05)
@@ -1653,43 +1688,33 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
                 drag_x, drag_y, steps_needed)
     time.sleep(0.05)
     wait_started = time.perf_counter()
-    tiles_ready = _wait_for_tiles_after_pan(page, timeout_ms)
+    tiles_ready = _wait_for_tiles_after_pan(page)
     timings["tiles_wait_s"] = time.perf_counter() - wait_started
     timings["tiles_ready"] = bool(tiles_ready)
 
     wait_started = time.perf_counter()
-    ais_ready = _wait_for_ais_markers(page, timeout_ms=2000)
+    ais_ready = _wait_for_ais_markers(
+        page, vessel_state=vessel_state, since_ts=nav_started)
     timings["ais_wait_s"] = time.perf_counter() - wait_started
     timings["ais_ready"] = bool(ais_ready)
     timings["nav_total_s"] = time.perf_counter() - nav_started
     return "mouse-drag"
 
 
-def _wait_for_tiles_after_pan(page, timeout_ms=5000):
-    """Wait for map tiles to re-render after a pan."""
+def _wait_for_tiles_after_pan(page, timeout_ms=None):
+    """Wait for Leaflet base-map tiles to re-render after a pan (early-exit).
+
+    Uses the DOM tile-loaded state via :func:`_leaflet_tiles_ready`. A short
+    initial settle lets Leaflet create the new (pending) tile elements before we
+    test for "no pending tiles", otherwise we could see the still-loaded *old*
+    tiles and return prematurely.
+    """
+    if timeout_ms is None:
+        timeout_ms = TILES_WAIT_MS
     deadline = time.time() + (timeout_ms / 1000)
-    time.sleep(0.05)
+    time.sleep(0.15)
     while time.time() < deadline:
-        has_content = page.evaluate("""
-        () => {
-            const canvas = document.querySelector('canvas');
-            if (!canvas) return false;
-            try {
-                const ctx = canvas.getContext('2d');
-                if (!ctx) return false;
-                const w = canvas.width, h = canvas.height;
-                const pts = [[w*0.25,h*0.25],[w*0.5,h*0.5],[w*0.75,h*0.75],
-                             [w*0.25,h*0.75],[w*0.75,h*0.25]];
-                let hits = 0;
-                for (const [x, y] of pts) {
-                    const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-                    if (p[3] > 0 && (p[0] < 250 || p[1] < 250 || p[2] < 250)) hits++;
-                }
-                return hits >= 3;
-            } catch(e) { return false; }
-        }
-        """)
-        if has_content:
+        if _leaflet_tiles_ready(page):
             return True
         time.sleep(0.05)
     return False
@@ -3036,8 +3061,14 @@ def _save_tile_image(tile, timestamp_str, img_bytes):
     return str(output_path), output_path.stat().st_size / 1024
 
 
-def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
-    """Capture one same-zoom batch from the global tile manifest."""
+def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
+                               vessel_state=None):
+    """Capture one same-zoom batch from the global tile manifest.
+
+    ``vessel_state`` is the per-page network-tracking dict updated by the
+    worker's ``page.on("response")`` handler; it lets the per-tile AIS wait key
+    off real vessel-data responses (see :func:`_wait_for_ais_markers`).
+    """
     batch_started = time.perf_counter()
     map_width = int(map_dims["width"])
     map_height = int(map_dims["height"])
@@ -3103,9 +3134,18 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims):
                 region_name=tid,
                 timestamp_str=timestamp_str,
                 timings=timing,
+                vessel_state=vessel_state,
             )
             nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
             current_lat, current_lon = lat, lon
+        else:
+            # First tile: vessel data was already requested during setup
+            # (including the vessel-filter re-fetch). since_ts=0 means "any
+            # response already counts", so this returns as soon as the endpoint
+            # is quiet — immediately if the data has already settled.
+            wait_started = time.perf_counter()
+            _wait_for_ais_markers(page, vessel_state=vessel_state, since_ts=0.0)
+            timing["ais_wait_s"] = time.perf_counter() - wait_started
 
         try:
             pre_capture_center_offset = None
@@ -3465,6 +3505,23 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
             _inject_stealth_scripts(page, geo)
             _inject_map_hooks(page)
 
+            # Track vessel-data network responses so the per-tile AIS wait can
+            # key off real data arrival (the marker canvas is cross-origin
+            # tainted and the map object is not injectable, so this is the only
+            # reliable "markers loaded" signal). MarineTraffic fetches vessel
+            # positions per map tile from .../getData/get_data_json_4/...
+            vessel_state = {"last_ts": 0.0, "count": 0}
+
+            def _on_vessel_response(response, _state=vessel_state):
+                try:
+                    if "get_data_json" in response.url.lower():
+                        _state["last_ts"] = time.perf_counter()
+                        _state["count"] += 1
+                except Exception:
+                    pass
+
+            page.on("response", _on_vessel_response)
+
             center_lat = first["center_lat"]
             center_lon = first["center_lon"]
             url = build_url(center_lat, center_lon, zoom)
@@ -3587,7 +3644,8 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 capture_started = time.perf_counter()
                 results.update(
                     _capture_global_tile_batch(
-                        tile_batch, timestamp_str, page, map_dims
+                        tile_batch, timestamp_str, page, map_dims,
+                        vessel_state=vessel_state,
                     )
                 )
                 capture_elapsed = time.perf_counter() - capture_started
