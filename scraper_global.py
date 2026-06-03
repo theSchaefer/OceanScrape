@@ -326,7 +326,7 @@ def _random_cookies(domain):
     return random.sample(cookies, k=random.randint(2, len(cookies)))
 
 
-def dismiss_cookie_banner(page, timeout_ms=_COOKIE_BANNER_WAIT_MS):
+def dismiss_cookie_banner(page, timeout_ms=None):
     """Click the cookie consent 'Accept' button, waiting for it to appear.
 
     The MarineTraffic consent banner is injected asynchronously, often a couple
@@ -338,6 +338,8 @@ def dismiss_cookie_banner(page, timeout_ms=_COOKIE_BANNER_WAIT_MS):
     missing" / "no visible selector matched". So we poll until the banner shows
     up or the deadline passes. Returns True if a banner was clicked.
     """
+    if timeout_ms is None:
+        timeout_ms = _COOKIE_BANNER_WAIT_MS
     selectors = [
         "button:has-text('Accept')",
         "button:has-text('accept')",
@@ -532,7 +534,7 @@ _DARK_MAP_RESOURCE_HINTS = (
 # "shipTypeAccordion missing" failures. 7500ms made the exact-DOM path reliable
 # in testing (once the cookie banner is out of the way). Tune here, not in the
 # embedded JS.
-_FILTER_ACCORDION_WAIT_MS = 7500
+_FILTER_ACCORDION_WAIT_MS = 5000
 
 # The cookie consent banner is injected a few seconds *after* the map tiles
 # render. dismiss_cookie_banner polls up to this long for it to appear.
