@@ -250,7 +250,7 @@ def _emit_frame_scan(page, timestamp_str, region_name, reason, worker_id=None):
 # --- Proxies ------------------------------------------------------------------
 
 proxies = []
-for i in range(10026, 10096):
+for i in range(10001, 10010):
     proxy = {
         "server": f"http://isp.decodo.com:{i}",
         "username": os.getenv("DECODO_USERNAME"),

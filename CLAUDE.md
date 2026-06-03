@@ -67,6 +67,26 @@ DATABASE_URL                        # PostgreSQL connection string (e.g. postgre
 
 Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-profile spoofing (timezone, locale, geolocation derived from proxy IP). UA rotation. Single `page.goto()` per browser worker + `setView()` panning for all subsequent regions avoids repeated Cloudflare challenges. Each browser worker processes many regions sequentially via work-stealing, reusing one Cloudflare pass.
 
+## Backend / API
+
+- The dashboard backend lives in `api.py` (FastAPI), served behind nginx in production; the frontend is `dashboard/index.html`.
+- When adding or changing an endpoint, **edit `api.py` directly** — never deliver a route as a chat snippet only. A feature is not done until the backend route exists in the file *and* the frontend (`dashboard/index.html`) is wired to call it.
+- Verify the full loop before declaring done: start the server, hit each new route (curl / browser), and confirm the frontend receives valid data — no 404 (missing/unmounted route) and no 500.
+
+## Scraper Architecture
+
+- MarineTraffic's Leaflet map object is **not exposed on `window`** — it's bundled inside a closure. Do not rely on direct JS injection of the map (e.g. `window.L` / a global map handle).
+- Use **network / tile-readiness waits** and **multi-strategy hooks** (constructor hooks injected before page load, as in `discover_map.py`) to detect map state, rather than assuming a global is reachable.
+- Marker pixel → lat/lon conversion is sensitive to projection, device-pixel-ratio (DPR), and zoom. When markers are misplaced, check that math first instead of patching coordinates.
+
+## Error Handling
+
+- Prefer **hard failures over silent soft-fallback captures**. If a run precondition (e.g. `center_offset`) is not met, abort the capture rather than recording it — bad data in the DB is worse than a missing row.
+
+## Database / SQL
+
+- In any `SELECT DISTINCT` query, **every `ORDER BY` expression must also appear in the SELECT list**, or Postgres raises an error (this caused recurring 500s during timeline scrubbing).
+
 ## Notes
 
 - `data/` directory is gitignored; it holds `captures_log.jsonl` and saved images. The database is external (PostgreSQL).
