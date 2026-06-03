@@ -326,8 +326,18 @@ def _random_cookies(domain):
     return random.sample(cookies, k=random.randint(2, len(cookies)))
 
 
-def dismiss_cookie_banner(page):
-    """Click the cookie consent 'Accept' button if present."""
+def dismiss_cookie_banner(page, timeout_ms=_COOKIE_BANNER_WAIT_MS):
+    """Click the cookie consent 'Accept' button, waiting for it to appear.
+
+    The MarineTraffic consent banner is injected asynchronously, often a couple
+    of seconds *after* the map tiles render. A single immediate check therefore
+    misses it: Playwright's ``is_visible()`` returns the *current* state and does
+    not wait (the ``timeout`` kwarg is effectively a no-op here). When the check
+    runs too early the banner stays up, overlays the map-type and vessel-filter
+    controls, and the downstream setup steps fail with "shipTypeAccordion
+    missing" / "no visible selector matched". So we poll until the banner shows
+    up or the deadline passes. Returns True if a banner was clicked.
+    """
     selectors = [
         "button:has-text('Accept')",
         "button:has-text('accept')",
@@ -340,16 +350,21 @@ def dismiss_cookie_banner(page):
         "button[class*='accept']",
         "button[class*='consent']",
     ]
-    for sel in selectors:
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                logger.info("  Dismissed cookie banner via: %s", sel)
-                time.sleep(0.5)
-                return
-        except Exception:
-            continue
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        for sel in selectors:
+            try:
+                btn = page.locator(sel).first
+                if btn.is_visible():
+                    btn.click()
+                    logger.info("  Dismissed cookie banner via: %s", sel)
+                    time.sleep(0.5)
+                    return True
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(250)
 
 
 def hide_ui_overlays(page):
@@ -510,6 +525,18 @@ _DARK_MAP_RESOURCE_HINTS = (
     "dark-v",
     "dark_matter",
 )
+
+# How long the exact-DOM vessel filter waits for #shipTypeAccordion to appear
+# after clicking the filter trigger, in milliseconds. The accordion is rendered
+# asynchronously; 2500ms was too short and caused intermittent
+# "shipTypeAccordion missing" failures. 7500ms made the exact-DOM path reliable
+# in testing (once the cookie banner is out of the way). Tune here, not in the
+# embedded JS.
+_FILTER_ACCORDION_WAIT_MS = 7500
+
+# The cookie consent banner is injected a few seconds *after* the map tiles
+# render. dismiss_cookie_banner polls up to this long for it to appear.
+_COOKIE_BANNER_WAIT_MS = 8000
 
 
 def _legacy_set_vessel_filter_evaluate_unused(page):
@@ -822,6 +849,14 @@ def _click_dark_map_option_after_open(page):
         pause_s=0.45,
     ):
         direct_selectors = [
+            # Stable hooks from the live MarineTraffic map-type panel (#MapType):
+            # the dark base map is a MUI radio carrying the semantic color class
+            # "MuiRadio-colorDarkMode"; its label is the 2nd entry in the panel.
+            # The css-* classes in the full DOM path are MUI-hashed and unstable,
+            # so we deliberately do not match on them.
+            "#MapType label:has(.MuiRadio-colorDarkMode)",
+            "label:has(.MuiRadio-colorDarkMode)",
+            "#MapType label:nth-child(2)",
             "button:has-text('Dark')",
             "label:has-text('Dark')",
             "[role='button']:has-text('Dark')",
@@ -913,6 +948,11 @@ def set_dark_mode(page):
             return True
 
     direct_selectors = [
+        # See _click_dark_map_option_after_open: match the dark base map via its
+        # stable MUI hooks (#MapType / MuiRadio-colorDarkMode) before text.
+        "#MapType label:has(.MuiRadio-colorDarkMode)",
+        "label:has(.MuiRadio-colorDarkMode)",
+        "#MapType label:nth-child(2)",
         "button:has-text('Dark')",
         "label:has-text('Dark')",
         "[role='button']:has-text('Dark')",
@@ -981,7 +1021,7 @@ def _set_marine_traffic_ship_type_filter(page):
     try:
         result = page.evaluate(
             """
-            async ({ desired }) => {
+            async ({ desired, waitMs }) => {
                 const sleep = ms => new Promise(r => setTimeout(r, ms));
                 const visible = (el) => {
                     if (!el) return false;
@@ -1001,7 +1041,7 @@ def _set_marine_traffic_ship_type_filter(page):
                         trigger.click();
                         await sleep(450);
                     }
-                    const deadline = Date.now() + 5000;
+                    const deadline = Date.now() + waitMs;
                     while (!accordion && Date.now() < deadline) {
                         accordion = document.querySelector('#shipTypeAccordion');
                         if (!accordion) await sleep(100);
@@ -1091,7 +1131,7 @@ def _set_marine_traffic_ship_type_filter(page):
                 };
             }
             """,
-            {"desired": desired},
+            {"desired": desired, "waitMs": _FILTER_ACCORDION_WAIT_MS},
         )
     except Exception as e:
         logger.debug("  Vessel filter exact DOM path failed: %s", e)
@@ -1130,6 +1170,11 @@ def _set_marine_traffic_ship_type_filter(page):
 
 def set_vessel_filter(page):
     """Keep only cargo and oil tanker/tanker vessel types using UI clicks."""
+    # A consent banner that surfaced late (after the initial dismiss, e.g. during
+    # dark-mode setup) overlays the filter trigger and #shipTypeAccordion and
+    # produces "shipTypeAccordion missing" / "no visible selector matched". Clear
+    # any straggler first; cheap no-op when it was already dismissed.
+    dismiss_cookie_banner(page, timeout_ms=1500)
     if _set_marine_traffic_ship_type_filter(page):
         return True
 
