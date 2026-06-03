@@ -540,6 +540,10 @@ _FILTER_ACCORDION_WAIT_MS = 5000
 # render. dismiss_cookie_banner polls up to this long for it to appear.
 _COOKIE_BANNER_WAIT_MS = 8000
 
+# How long the exact-DOM dark-map setter waits for the #MapType panel to appear
+# after clicking the map-type button, in milliseconds.
+_MAP_TYPE_PANEL_WAIT_MS = 4000
+
 
 def _legacy_set_vessel_filter_evaluate_unused(page):
     """Open MarineTraffic's vessel-type filter and uncheck everything except
@@ -931,6 +935,101 @@ def _click_dark_map_option_after_open(page):
     return False
 
 
+def _set_marine_traffic_dark_map(page):
+    """Select the dark base map by operating directly in the #MapType panel DOM.
+
+    Mirrors the reliable exact-DOM approach used for the vessel filter. The
+    map-type panel is a simplebar-virtualized scroller, so is_visible()/click
+    gating misses its entries; working in-DOM avoids that. The dark base map is
+    a MUI radio whose enclosing <span> carries the semantic color class
+    'MuiRadio-colorDarkMode' (observed in the live DOM); we fall back to the 2nd
+    label in the panel. Returns True only if the radio ends up checked. On
+    failure it logs DOM counts so the selector can be refined without guessing.
+    """
+    try:
+        result = page.evaluate(
+            """
+            async ({ waitMs }) => {
+                const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+                let panel = document.querySelector('#MapType');
+                if (!panel) {
+                    const opener = document.querySelector(
+                        '#mapButton, button#mapButton, ' +
+                        'button[aria-label="Map type"], [aria-label="Map type"]'
+                    );
+                    if (opener) { opener.click(); await sleep(450); }
+                    const deadline = Date.now() + waitMs;
+                    while (!panel && Date.now() < deadline) {
+                        panel = document.querySelector('#MapType');
+                        if (!panel) await sleep(100);
+                    }
+                }
+                if (!panel) return { ok: false, reason: 'MapType panel missing' };
+
+                // 'MuiRadio-colorDarkMode' sits on the radio's <span>, not the
+                // <input>; resolve span -> input -> enclosing label. Fall back to
+                // the 2nd label (observed position of the dark option).
+                const span = panel.querySelector('.MuiRadio-colorDarkMode');
+                let input = span ? span.querySelector('input') : null;
+                let label = (input && input.closest('label')) ||
+                            (span && span.closest('label'));
+                if (!label) {
+                    const labels = panel.querySelectorAll('label');
+                    if (labels.length >= 2) {
+                        label = labels[1];
+                        if (!input) input = label.querySelector('input');
+                    }
+                }
+                if (!label && !input) {
+                    return {
+                        ok: false,
+                        reason: 'dark option missing',
+                        radios: panel.querySelectorAll('input[type="radio"]').length,
+                        labels: panel.querySelectorAll('label').length,
+                    };
+                }
+
+                if (input && input.checked) {
+                    return { ok: true, already: true };
+                }
+
+                (label || input).click();
+                await sleep(350);
+                if (input && !input.checked) {
+                    const setter = Object.getOwnPropertyDescriptor(
+                        HTMLInputElement.prototype, 'checked').set;
+                    setter.call(input, true);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    await sleep(200);
+                }
+                return {
+                    ok: input ? input.checked : true,
+                    already: false,
+                    via_label: Boolean(label),
+                };
+            }
+            """,
+            {"waitMs": _MAP_TYPE_PANEL_WAIT_MS},
+        )
+    except Exception as e:
+        logger.debug("  Dark map exact-DOM path failed: %s", e)
+        return False
+
+    if not result:
+        return False
+    if result.get("ok"):
+        logger.info("  Dark map applied via exact DOM (already=%s via_label=%s)",
+                    result.get("already"), result.get("via_label"))
+        return True
+    logger.warning(
+        "  Dark map exact-DOM path failed: reason=%s radios=%s labels=%s",
+        result.get("reason"), result.get("radios"), result.get("labels"),
+    )
+    return False
+
+
 def set_dark_mode(page):
     """Enable MarineTraffic dark map style using UI clicks only."""
     if _page_has_dark_theme(page):
@@ -941,6 +1040,9 @@ def set_dark_mode(page):
         return True
     if _page_has_dark_map_dom(page):
         logger.info("  Dark map UI already active")
+        return True
+
+    if _set_marine_traffic_dark_map(page):
         return True
 
     if _click_dark_map_option_after_open(page):
