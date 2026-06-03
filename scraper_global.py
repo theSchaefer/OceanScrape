@@ -250,7 +250,7 @@ def _emit_frame_scan(page, timestamp_str, region_name, reason, worker_id=None):
 # --- Proxies ------------------------------------------------------------------
 
 proxies = []
-for i in range(10001, 10010):
+for i in range(10001, 10011):
     proxy = {
         "server": f"http://isp.decodo.com:{i}",
         "username": os.getenv("DECODO_USERNAME"),
@@ -540,9 +540,11 @@ _FILTER_ACCORDION_WAIT_MS = 5000
 # render. dismiss_cookie_banner polls up to this long for it to appear.
 _COOKIE_BANNER_WAIT_MS = 8000
 
-# How long the exact-DOM dark-map setter waits for the #MapType panel to appear
-# after clicking the map-type button, in milliseconds.
-_MAP_TYPE_PANEL_WAIT_MS = 4000
+# How long the exact-DOM dark-map setter waits for the dark option to appear in
+# the #MapType panel after clicking the map-type button, in milliseconds. The
+# panel container persists empty in the DOM and populates asynchronously, so
+# this waits for the option itself, not just the container.
+_MAP_TYPE_PANEL_WAIT_MS = 6000
 
 
 def _legacy_set_vessel_filter_evaluate_unused(page):
@@ -952,25 +954,36 @@ def _set_marine_traffic_dark_map(page):
             async ({ waitMs }) => {
                 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-                let panel = document.querySelector('#MapType');
-                if (!panel) {
+                const findSpan = () => {
+                    const p = document.querySelector('#MapType');
+                    return p ? p.querySelector('.MuiRadio-colorDarkMode') : null;
+                };
+
+                // 'MuiRadio-colorDarkMode' sits on the radio's <span>, not the
+                // <input>. The #MapType container persists in the DOM but only
+                // populates its options once opened, so wait for the dark
+                // *option* to appear (not just the empty panel) and click the
+                // map-type opener if it isn't there yet.
+                let span = findSpan();
+                if (!span) {
                     const opener = document.querySelector(
                         '#mapButton, button#mapButton, ' +
                         'button[aria-label="Map type"], [aria-label="Map type"]'
                     );
                     if (opener) { opener.click(); await sleep(450); }
                     const deadline = Date.now() + waitMs;
-                    while (!panel && Date.now() < deadline) {
-                        panel = document.querySelector('#MapType');
-                        if (!panel) await sleep(100);
+                    while (!span && Date.now() < deadline) {
+                        span = findSpan();
+                        if (!span) await sleep(100);
                     }
                 }
+
+                const panel = document.querySelector('#MapType');
                 if (!panel) return { ok: false, reason: 'MapType panel missing' };
 
-                // 'MuiRadio-colorDarkMode' sits on the radio's <span>, not the
-                // <input>; resolve span -> input -> enclosing label. Fall back to
-                // the 2nd label (observed position of the dark option).
-                const span = panel.querySelector('.MuiRadio-colorDarkMode');
+                // Resolve span -> input -> enclosing label; fall back to the 2nd
+                // label (observed position of the dark option) if the span is
+                // absent but the panel populated.
                 let input = span ? span.querySelector('input') : null;
                 let label = (input && input.closest('label')) ||
                             (span && span.closest('label'));
