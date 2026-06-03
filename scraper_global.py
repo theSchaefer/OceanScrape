@@ -1001,7 +1001,7 @@ def _set_marine_traffic_ship_type_filter(page):
                         trigger.click();
                         await sleep(450);
                     }
-                    const deadline = Date.now() + 2500;
+                    const deadline = Date.now() + 5000;
                     while (!accordion && Date.now() < deadline) {
                         accordion = document.querySelector('#shipTypeAccordion');
                         if (!accordion) await sleep(100);
