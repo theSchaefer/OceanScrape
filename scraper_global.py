@@ -51,6 +51,7 @@ from global_tile_grid import (
     manifest_summary,
     parse_global_bbox,
     tile_intersects_polygon,
+    tile_scan_key,
 )
 from grid import (
     get_tile_centers, get_bbox_tile_centers, polygon_to_pixel_coords,
@@ -91,6 +92,12 @@ MAX_DRAG_PX = int(os.getenv("MAX_DRAG_PX", "800"))
 # biggest cost driver of panning. Keep small (3) to slash repaints; raise if a
 # faster drag causes coverage gaps. (Was hardcoded 20.)
 MOUSE_DRAG_STEPS = int(os.getenv("MOUSE_DRAG_STEPS", "3"))
+# Far-jump threshold. A viewport move that would need more than this many
+# mouse-drag steps is performed as a fresh URL load (page.goto centered on the
+# target) instead of dragging. A neighbouring 8K z12 tile is only ~10 steps
+# away, so 24 still allows local hops while preventing the 300-500 step drags
+# that made sparse-z12 tiles cost thousands of seconds of pure navigation.
+URL_NAV_MAX_DRAG_STEPS = int(os.getenv("URL_NAV_MAX_DRAG_STEPS", "24"))
 # Readiness-wait caps (ms). Both waits early-exit on a real signal; the cap only
 # bounds genuinely-not-ready / empty cases.
 TILES_WAIT_MS = int(os.getenv("TILES_WAIT_MS", "5000"))
@@ -101,7 +108,6 @@ AIS_RENDER_SETTLE_MS = int(os.getenv("AIS_RENDER_SETTLE_MS", "250"))
 # If a pan triggers no vessel request within this window (area cached/empty),
 # stop waiting instead of running out the full AIS_WAIT_MS cap.
 AIS_FIRST_RESPONSE_GRACE_MS = int(os.getenv("AIS_FIRST_RESPONSE_GRACE_MS", "1200"))
-USE_SETVIEW_OPTIMIZATION = os.getenv("USE_SETVIEW_OPTIMIZATION", "0") == "1"
 LEAFLET_DIAGNOSTICS = os.getenv("LEAFLET_DIAGNOSTICS", "0") == "1"
 USE_BBOX_TILING = os.getenv("USE_BBOX_TILING", "1") == "1"
 BBOX_OVERLAP_PX = int(os.getenv("BBOX_OVERLAP_PX", "128"))
@@ -1684,7 +1690,7 @@ def _wait_for_ais_markers(page, vessel_state=None, since_ts=None,
     return saw_response
 
 
-# --- Leaflet setView map panning ---------------------------------------------
+# --- Map panning (mouse-drag + url-load) -------------------------------------
 
 
 def _get_map_dimensions(page):
@@ -1746,72 +1752,20 @@ def _get_map_center_offset(page):
     """)
 
 
-def _pan_map_js(page, target_lat, target_lon, zoom):
-    """Pan map using Leaflet's setView API — pixel-perfect positioning."""
-    return page.evaluate(f"""
-    () => {{
-        const map = window.__mtMap;
-        if (!map || typeof map.setView !== 'function') return false;
-        map.setView([{target_lat}, {target_lon}], {zoom}, {{animate: false}});
-        return true;
-    }}
-    """)
+def _plan_navigation(cur_lat, cur_lon, target_lat, target_lon, zoom):
+    """Decide how to move the viewport from one center to another.
 
+    Pure function (no page I/O) so the mouse-drag vs. url-load decision is
+    unit-testable. Returns a dict::
 
-def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
-             map_center=None, region_name=None,
-             timestamp_str=None, worker_id=None, timings=None,
-             vessel_state=None):
-    """Pan the map using mouse drag by default.
+        {"mode": "mouse-drag" | "url-load",
+         "drag_x": float, "drag_y": float,   # pixel vector to drag the map
+         "steps_needed": int}                # mouse-drag steps that *would* run
 
-    Leaflet setView remains an explicit optimization path. Production capture
-    does not require the map object and does not abort when it is unavailable.
-    Returns the navigation mode used: ``setView`` or ``mouse-drag``.
-
-    ``vessel_state`` is the per-page network-tracking dict (see
-    :func:`_wait_for_ais_markers`); when provided, the AIS wait keys off the
-    vessel-data responses triggered by this pan instead of a blind sleep.
+    ``mode`` is ``url-load`` when dragging would need more than
+    ``URL_NAV_MAX_DRAG_STEPS`` steps (a far jump); otherwise ``mouse-drag``.
+    ``steps_needed == 0`` means the target is already centered (no move).
     """
-
-    timings = timings if timings is not None else {}
-    nav_started = time.perf_counter()
-
-    if USE_SETVIEW_OPTIMIZATION:
-        setview_available = False
-        try:
-            discover_started = time.perf_counter()
-            setview_available = _discover_leaflet_map(page)
-            timings["setview_discover_s"] = (
-                timings.get("setview_discover_s", 0.0)
-                + time.perf_counter() - discover_started
-            )
-            if setview_available and _pan_map_js(page, target_lat, target_lon, zoom):
-                logger.info("  Panned via setView (%.5f, %.5f)", target_lat, target_lon)
-                time.sleep(0.05)
-                wait_started = time.perf_counter()
-                tiles_ready = _wait_for_tiles_after_pan(page)
-                timings["tiles_wait_s"] = time.perf_counter() - wait_started
-                timings["tiles_ready"] = bool(tiles_ready)
-
-                wait_started = time.perf_counter()
-                ais_ready = _wait_for_ais_markers(
-                    page, vessel_state=vessel_state, since_ts=nav_started)
-                timings["ais_wait_s"] = time.perf_counter() - wait_started
-                timings["ais_ready"] = bool(ais_ready)
-                timings["nav_total_s"] = time.perf_counter() - nav_started
-                return "setView"
-        except Exception as exc:
-            logger.debug("  setView optimization unavailable: %s", exc)
-
-        if LEAFLET_DIAGNOSTICS and not setview_available:
-            _emit_frame_scan(
-                page,
-                timestamp_str,
-                region_name or "unknown",
-                "setView_unavailable",
-                worker_id=worker_id,
-            )
-
     total_pixels = 256 * (2 ** zoom)
     dx = (target_lon - cur_lon) * total_pixels / 360.0
     dy = lat_to_pixel_y(target_lat, zoom) - lat_to_pixel_y(cur_lat, zoom)
@@ -1819,22 +1773,109 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
     drag_y = -dy
 
     if abs(drag_x) < 1 and abs(drag_y) < 1:
-        timings["tiles_wait_s"] = 0.0
-        timings["ais_wait_s"] = 0.0
-        timings["nav_total_s"] = time.perf_counter() - nav_started
-        return "mouse-drag"
-
-    if map_center:
-        cx, cy = map_center
-    else:
-        cx = VIEWPORT_WIDTH // 2
-        cy = VIEWPORT_HEIGHT // 2
+        return {
+            "mode": "mouse-drag",
+            "drag_x": drag_x,
+            "drag_y": drag_y,
+            "steps_needed": 0,
+        }
 
     steps_needed = max(
         1,
         int(abs(drag_x) / MAX_DRAG_PX) + (1 if abs(drag_x) % MAX_DRAG_PX > 0 else 0),
         int(abs(drag_y) / MAX_DRAG_PX) + (1 if abs(drag_y) % MAX_DRAG_PX > 0 else 0),
     )
+    mode = "url-load" if steps_needed > URL_NAV_MAX_DRAG_STEPS else "mouse-drag"
+    return {
+        "mode": mode,
+        "drag_x": drag_x,
+        "drag_y": drag_y,
+        "steps_needed": steps_needed,
+    }
+
+
+def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
+             map_center=None, region_name=None,
+             timestamp_str=None, worker_id=None, timings=None,
+             vessel_state=None):
+    """Move the map viewport to ``(target_lat, target_lon)``.
+
+    Production capture uses two navigation modes (Leaflet ``setView`` JS
+    injection was removed — MarineTraffic bundles the map object inside a
+    closure, so it is not reliably reachable):
+
+      * ``mouse-drag`` — near viewports: drag the Leaflet map in place.
+      * ``url-load``   — far viewports: reload the page centered on the target.
+        Dragging a sparse, far-apart tile would otherwise need hundreds of 8K
+        mouse-drag steps (the dominant per-tile cost in earlier runs). After the
+        reload the same setup as the initial batch load is reapplied (Cloudflare,
+        map render, dark map, vessel filter, capture CSS).
+
+    The mode is chosen by :func:`_plan_navigation`, gated on
+    ``URL_NAV_MAX_DRAG_STEPS``.
+
+    ``vessel_state`` is the per-page network-tracking dict (see
+    :func:`_wait_for_ais_markers`); when provided, the AIS wait keys off the
+    vessel-data responses triggered by this navigation instead of a blind sleep.
+
+    Returns the navigation mode used: ``"mouse-drag"`` or ``"url-load"``.
+    """
+
+    timings = timings if timings is not None else {}
+    nav_started = time.perf_counter()
+
+    plan = _plan_navigation(cur_lat, cur_lon, target_lat, target_lon, zoom)
+    drag_x = plan["drag_x"]
+    drag_y = plan["drag_y"]
+    steps_needed = plan["steps_needed"]
+
+    # Already centered — nothing to move.
+    if steps_needed == 0:
+        timings["tiles_wait_s"] = 0.0
+        timings["ais_wait_s"] = 0.0
+        timings["nav_total_s"] = time.perf_counter() - nav_started
+        return "mouse-drag"
+
+    if plan["mode"] == "url-load":
+        logger.info(
+            "  Navigating via url-load: to=%s dx=%.0f dy=%.0f steps_would_be=%d "
+            "threshold=%d target=(%.5f, %.5f) z%d",
+            region_name or "?", drag_x, drag_y, steps_needed,
+            URL_NAV_MAX_DRAG_STEPS, target_lat, target_lon, zoom,
+        )
+        page.goto(
+            build_url(target_lat, target_lon, zoom),
+            wait_until="domcontentloaded",
+        )
+        if not _wait_for_cloudflare(page) and _is_cloudflare_blocked(page):
+            raise RuntimeError("url-load cloudflare block")
+        filter_ok = _prepare_map_after_url_navigation(page, region_name or "url-load")
+        if not filter_ok:
+            # Hard-fail rather than capture with the wrong (all-types) filter:
+            # a bad row is worse than a missing one. The caller logs the tile as
+            # an error and moves on.
+            raise RuntimeError(
+                f"url-load setup failed: vessel filter unavailable ({region_name})"
+            )
+        wait_started = time.perf_counter()
+        tiles_ready = _wait_for_tiles_after_pan(page)
+        timings["tiles_wait_s"] = time.perf_counter() - wait_started
+        timings["tiles_ready"] = bool(tiles_ready)
+        wait_started = time.perf_counter()
+        ais_ready = _wait_for_ais_markers(
+            page, vessel_state=vessel_state, since_ts=nav_started)
+        timings["ais_wait_s"] = time.perf_counter() - wait_started
+        timings["ais_ready"] = bool(ais_ready)
+        timings["nav_total_s"] = time.perf_counter() - nav_started
+        return "url-load"
+
+    # Near viewport — drag the map in place.
+    if map_center:
+        cx, cy = map_center
+    else:
+        cx = VIEWPORT_WIDTH // 2
+        cy = VIEWPORT_HEIGHT // 2
+
     step_dx = drag_x / steps_needed
     step_dy = drag_y / steps_needed
 
@@ -1846,8 +1887,10 @@ def _pan_map(page, cur_lat, cur_lon, target_lat, target_lon, zoom,
         if steps_needed > 1:
             time.sleep(0.05)
 
-    logger.info("  Panned via mouse_drag (dx=%.0f dy=%.0f, %d step(s))",
-                drag_x, drag_y, steps_needed)
+    logger.info(
+        "  Panned via mouse-drag: to=%s dx=%.0f dy=%.0f steps=%d threshold=%d",
+        region_name or "?", drag_x, drag_y, steps_needed, URL_NAV_MAX_DRAG_STEPS,
+    )
     time.sleep(0.05)
     wait_started = time.perf_counter()
     tiles_ready = _wait_for_tiles_after_pan(page)
@@ -2122,10 +2165,11 @@ def _add_counts(target, counts):
 
 
 def _nav_mode_summary(nav_counts):
-    if nav_counts.get("setView", 0) and nav_counts.get("mouse-drag", 0):
+    modes = [m for m in ("mouse-drag", "url-load") if nav_counts.get(m, 0)]
+    if len(modes) > 1:
         return "mixed"
-    if nav_counts.get("setView", 0):
-        return "setView"
+    if modes:
+        return modes[0]
     return "mouse-drag"
 
 
@@ -2214,7 +2258,7 @@ def _run_cross_zoom_qa(
     """Recapture sampled baseline tiles at zoom+1 and write a QA artifact."""
     zoom = int(config["zoom"])
     qa_zoom = zoom + 1
-    nav_counts = {"mouse-drag": 0, "setView": 0}
+    nav_counts = {"mouse-drag": 0, "url-load": 0}
     samples = []
     qa_flags = []
 
@@ -2525,7 +2569,7 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
     total_moving_cargos = 0
     projection_fallback_logged = False
     leaflet_diag_logged = False
-    nav_counts = {"mouse-drag": 0, "setView": 0}
+    nav_counts = {"mouse-drag": 0, "url-load": 0}
     mouseposition_stats = {"ok": 0, "fallback": 0}
 
     center_lat, center_lon = _region_center(config)
@@ -2690,8 +2734,8 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
                          row, col, det, len(tile_markers))
 
             # Debug: warn if Leaflet's actual center/zoom drifted from the
-            # requested setView arguments (would indicate MarineTraffic is
-            # rounding, clamping, or otherwise mutating our pan calls).
+            # requested pan target (would indicate MarineTraffic is rounding,
+            # clamping, or otherwise mutating our navigation).
             if leaflet_center_offset:
                 from seer import _debug_center_check
                 _debug_center_check(lat, lon, leaflet_center_offset, row, col, logger)
@@ -2766,11 +2810,10 @@ def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
             tiles_failed += 1
 
     logger.info(
-        "Region %s navigation summary: nav=%s setView_opt=%s "
+        "Region %s navigation summary: nav=%s "
         "mouseposition_ok=%d mouseposition_fallback=%d",
         region_name,
         nav_counts,
-        USE_SETVIEW_OPTIMIZATION,
         mouseposition_stats["ok"],
         mouseposition_stats["fallback"],
     )
@@ -3033,7 +3076,7 @@ def capture_worker(region_name, timestamp_str):
                         raise RuntimeError("required setup failed: vessel filter")
                     hide_ui_overlays(page)
                     install_capture_visibility_css(page)
-                    if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+                    if LEAFLET_DIAGNOSTICS:
                         _discover_leaflet_map(page)
             except Exception as e:
                 retry_setup = (
@@ -3059,7 +3102,7 @@ def capture_worker(region_name, timestamp_str):
 
             map_dims = _get_map_dimensions(page)
             center_offset = None
-            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+            if LEAFLET_DIAGNOSTICS:
                 center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
                 try:
                     map_probe = run_map_probe(page)
@@ -3122,10 +3165,9 @@ def capture_worker(region_name, timestamp_str):
 
             logger.info(
                 "[worker=%s region=%s] setup ok: nav_default=mouse-drag "
-                "setView_opt=%s map_dims=%dx%d leaflet_center_offset=%s "
+                "map_dims=%dx%d leaflet_center_offset=%s "
                 "mouseposition=%s dark=%s filter=%s",
                 worker_id, region_name,
-                USE_SETVIEW_OPTIMIZATION,
                 int(map_dims["width"]), int(map_dims["height"]),
                 "ok" if center_offset else "missing",
                 "ok" if mouse_probe.get("available") else "missing",
@@ -3239,7 +3281,7 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
     map_locator = page.locator("#map_canvas")
     install_capture_visibility_css(page)
 
-    nav_counts = {"mouse-drag": 0, "setView": 0}
+    nav_counts = {"mouse-drag": 0, "url-load": 0}
     mouseposition_stats = {"ok": 0, "fallback": 0}
     projection_fallback_logged = False
     leaflet_diag_logged = False
@@ -3716,7 +3758,7 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                     raise RuntimeError("required setup failed: vessel filter")
                 hide_ui_overlays(page)
                 install_capture_visibility_css(page)
-                if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+                if LEAFLET_DIAGNOSTICS:
                     _discover_leaflet_map(page)
             except Exception as exc:
                 retry_setup = (
@@ -3754,7 +3796,7 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
 
             map_dims = _get_map_dimensions(page)
             center_offset = None
-            if USE_SETVIEW_OPTIMIZATION or LEAFLET_DIAGNOSTICS:
+            if LEAFLET_DIAGNOSTICS:
                 center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
                 try:
                     map_probe = run_map_probe(page)
@@ -3784,11 +3826,10 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
             setup_elapsed = time.perf_counter() - worker_started
             logger.info(
                 "[worker=%s batch=%s] setup ok: nav_default=mouse-drag "
-                "setView_opt=%s map_dims=%dx%d leaflet_center_offset=%s "
+                "map_dims=%dx%d leaflet_center_offset=%s "
                 "mouseposition=%s dark=%s filter=%s",
                 worker_id,
                 batch_label,
-                USE_SETVIEW_OPTIMIZATION,
                 int(map_dims["width"]),
                 int(map_dims["height"]),
                 "ok" if center_offset else "missing",
@@ -4168,13 +4209,22 @@ def _select_global_tiles(region_filter=None, zoom_filter=None, tier_filter=None,
                 exc,
             )
 
-    return sorted(
-        tiles,
-        key=lambda t: (int(t["zoom"]), int(t["row"]), int(t["col"]), t["tile_id"]),
-    )
+    # Snake/boustrophedon order (same key as the manifest) so sequential
+    # navigation makes small local hops. A plain (zoom,row,col) sort would jump
+    # back across the whole row at every row boundary, which for sparse z12
+    # tiles produced hundreds of mouse-drag steps per move.
+    return sorted(tiles, key=tile_scan_key)
 
 
 def _chunk_global_tiles(tiles):
+    """Group tiles into same-zoom batches, preserving input order.
+
+    Each worker processes one batch on a single page, so batch membership
+    determines navigation locality. ``tiles`` is expected snake-ordered (see
+    :func:`_select_global_tiles`); grouping by zoom and slicing in order keeps
+    each batch spatially compact. The url-load fallback in :func:`_pan_map`
+    absorbs the unavoidable far jumps between sparse clusters.
+    """
     by_zoom = {}
     for tile in tiles:
         by_zoom.setdefault(int(tile["zoom"]), []).append(tile)

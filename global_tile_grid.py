@@ -174,6 +174,23 @@ def iter_global_tiles_for_bbox(bbox, zoom, viewport_width, viewport_height,
                 yield tile
 
 
+def tile_scan_key(tile):
+    """Snake/boustrophedon sort key for a global tile.
+
+    Even rows scan west->east, odd rows east->west. This keeps spatially
+    adjacent tiles adjacent in the sorted sequence, so sequential navigation
+    makes small local hops instead of jumping back across the whole row at every
+    row boundary. ``iter_global_tiles_for_bbox`` already emits this order within
+    a single bbox; using the same key when re-sorting the merged manifest (which
+    mixes the global-default and region-seed passes) preserves it globally.
+    """
+    z = int(tile["zoom"])
+    row = int(tile["row"])
+    col = int(tile["col"])
+    scan_col = col if row % 2 == 0 else -col
+    return (z, row, scan_col, tile["tile_id"])
+
+
 def build_global_tile_manifest(
     viewport_width,
     viewport_height,
@@ -236,10 +253,7 @@ def build_global_tile_manifest(
                 else:
                     tiles[tile["tile_id"]] = tile
 
-    return sorted(
-        tiles.values(),
-        key=lambda t: (int(t["zoom"]), int(t["row"]), int(t["col"]), t["tile_id"]),
-    )
+    return sorted(tiles.values(), key=tile_scan_key)
 
 
 def manifest_summary(tiles):

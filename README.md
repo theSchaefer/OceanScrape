@@ -88,10 +88,10 @@ RESPECT_TILE_SCHEDULE               Default 1; select only enabled tiles whose s
 MARKER_DEDUP_EPS_DEG                Default 0.003; collapse near-duplicate markers
 ENABLE_CROSS_ZOOM_QA                Default 1; diagnostic only for global tile capture
 QA_SAMPLE_RATE / QA_MAX_SAMPLES     Default 0.10 / 3 sampled baseline tiles per region
-USE_SETVIEW_OPTIMIZATION            Default 0; set 1 to allow optional Leaflet setView panning
 LEAFLET_DIAGNOSTICS                 Default 0; set 1 to emit Leaflet/frame probes
 MOUSE_DRAG_STEPS                    Default 3; intermediate mouse-moves per drag step (dominant pan cost at 8K — raise only if coverage gaps appear)
 MAX_DRAG_PX                         Default 800; max single-drag distance, kept below Leaflet inertia threshold
+URL_NAV_MAX_DRAG_STEPS              Default 24; above this many drag steps a viewport move uses a fresh URL load instead of dragging (far-jump fallback for sparse tiles)
 TILES_WAIT_MS                       Default 5000; base-map readiness cap, early-exits via .leaflet-tile-loaded
 AIS_WAIT_MS                         Default 3000; vessel-data readiness cap (get_data_json_4 network quiescence)
 AIS_QUIET_MS                        Default 400; quiet window that marks vessel-data fetch complete
