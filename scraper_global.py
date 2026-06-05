@@ -9,8 +9,14 @@ previous work-stealing model accumulated across stolen regions.  Supports
 per-region zoom levels, inline OpenCV ship detection, and JPEG output for
 minimal storage.
 
+Each run writes raw captures to its own file —
+``data/raw/runs/<run_id>/captures.jsonl`` — and updates ``data/raw/runs/LATEST``.
+By default the scraper does NOT ingest into PostgreSQL; ingest is a separate
+step (``python update_database.py <path>``). Pass ``--ingest`` to ingest inline.
+
 Usage:
-  python scraper_global.py                  # Run all regions
+  python scraper_global.py                  # Capture all tiles (raw only, no DB)
+  python scraper_global.py --ingest         # Capture then ingest into PostgreSQL
   python scraper_global.py --save-images    # Also save tile images
   python scraper_global.py --regions N,S,H  # Run specific regions only
   python scraper_global.py --zoom=9         # Run only zoom-level 9 regions
@@ -60,7 +66,7 @@ from grid import (
 )
 from marker_dedup import dedup_markers_spatial
 from regions import REGIONS, REGION_TIERS, load_bbox_regions
-from update_database import get_due_tile_ids, process_log
+from update_database import get_due_tile_ids, ingest_file
 
 load_dotenv()
 
@@ -146,6 +152,21 @@ GLOBAL_TILE_INDEX = GlobalTileIndex(
 # Crash retry settings
 MAX_REGION_RETRIES = 2
 RETRY_BACKOFF_BASE = 5  # seconds
+
+# Suspect-empty-batch heuristic. A "hotspot" tile is one seeded from a
+# chokepoint region (priority > 0 / non-empty seed_regions) — somewhere we
+# expect ships. If a batch overlapping such tiles comes back with ~no raw
+# markers, the AIS session was likely empty (burned proxy / blocked exit IP)
+# rather than genuinely empty ocean, so it is flagged as ``suspect_empty_batch``.
+SUSPECT_EMPTY_RAW_THRESHOLD = int(os.getenv("SUSPECT_EMPTY_RAW_THRESHOLD", "1"))
+SUSPECT_EMPTY_MIN_HOTSPOTS = int(os.getenv("SUSPECT_EMPTY_MIN_HOTSPOTS", "1"))
+# Optional, bounded retry of a suspect batch with a fresh browser + fresh proxy.
+# OFF by default: when enabled, per-tile logging is deferred so only the winning
+# attempt is persisted (the DB upserts ON CONFLICT (tile_id, captured_at) DO
+# NOTHING, so re-logging the same run timestamp would otherwise keep the empty
+# capture). Deferring trades away mid-batch crash-resilience, hence opt-in.
+SUSPECT_EMPTY_RETRY = os.getenv("SUSPECT_EMPTY_RETRY", "0") == "1"
+SUSPECT_EMPTY_MAX_RETRIES = int(os.getenv("SUSPECT_EMPTY_MAX_RETRIES", "1"))
 
 # Error substrings that indicate a browser/driver crash (retryable)
 _CRASH_PATTERNS = (
@@ -266,6 +287,28 @@ for i in range(10001, 10011):
 
 # Geo profiles resolved at startup
 geo_profiles: dict[str, GeoProfile] = {}
+
+
+def _proxy_log_label(proxy: dict, geo: GeoProfile) -> str:
+    """Compact label tracing which proxy endpoint / exit-IP a worker uses.
+
+    Essential for spotting IPs that have been exhausted (rate-limited / burned):
+    correlate failing captures back to a specific port and exit IP. The port is
+    the sticky-session / dedicated-IP selector; exit_ip is resolved at startup."""
+    exit_ip = geo.exit_ip or "unresolved"
+    return f"{proxy['server']} -> exit_ip={exit_ip} [{geo.country_code}/{geo.city}]"
+
+
+def _pick_batch_proxy(exclude_servers=()):
+    """Pick a proxy + its resolved geo profile for one batch attempt.
+
+    On retries, ``exclude_servers`` lets us avoid re-using the same (possibly
+    burned) endpoint so a fresh attempt gets a genuinely different exit IP."""
+    candidates = [p for p in proxies if p["server"] not in exclude_servers]
+    proxy = random.choice(candidates or proxies)
+    fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
+    geo = geo_profiles.get(proxy["server"], fallback)
+    return proxy, geo
 
 # --- User agents --------------------------------------------------------------
 
@@ -2533,706 +2576,6 @@ def _wait_for_map_center_offset(page, timeout_ms=5000):
     return last_offset
 
 
-# --- Core capture (single region, given a page) ------------------------------
-
-
-def _capture_region_tiles(region_name, config, timestamp_str, page, map_dims):
-    """Capture all tiles for a region using an already-setup page.
-
-    Returns dict with capture results: tankers, cargos, markers, file paths.
-    """
-    polygon = config.get("polygon")
-    zoom = config["zoom"]
-    region_display = config.get("name", region_name)
-    tiling_mode = "bbox" if USE_BBOX_TILING and config.get("bbox") else "polygon"
-
-    map_width = int(map_dims["width"])
-    map_height = int(map_dims["height"])
-    map_cx = int(map_dims["x"]) + map_width // 2
-    map_cy = int(map_dims["y"]) + map_height // 2
-
-    tiles, grid_info = _get_tile_grid(region_name, config)
-    n_rows = grid_info["n_rows"]
-    n_cols = grid_info["n_cols"]
-    logger.info("Region %s (%s): %d tiles (%dx%d), zoom %d mode=%s class=%s",
-                region_name, region_display, len(tiles), n_rows, n_cols, zoom,
-                tiling_mode, config.get("crowded_class"))
-
-    tile_images = {}
-    tile_detections = []
-    all_markers = []
-    tiles_ok = 0
-    tiles_failed = 0
-    total_tankers = 0
-    total_cargos = 0
-    total_moving_tankers = 0
-    total_moving_cargos = 0
-    projection_fallback_logged = False
-    leaflet_diag_logged = False
-    nav_counts = {"mouse-drag": 0, "url-load": 0}
-    mouseposition_stats = {"ok": 0, "fallback": 0}
-
-    center_lat, center_lon = _region_center(config)
-    current_lat, current_lon = center_lat, center_lon
-    map_locator = page.locator('#map_canvas')
-    install_capture_visibility_css(page)
-
-    # Verify map canvas is present before capturing tiles
-    canvas_state = page.evaluate("""
-    () => {
-        const mc = document.getElementById('map_canvas');
-        if (!mc) return 'canvas_missing';
-        const rect = mc.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return 'canvas_zero_size';
-        const overlay = document.querySelector('.leaflet-overlay-pane');
-        if (!overlay) return 'overlay_pane_missing';
-        return 'ok';
-    }
-    """)
-    if canvas_state != "ok":
-        logger.warning("Region %s: map not ready — %s", region_name, canvas_state)
-
-    # Guard: if tile filtering removed everything, skip this region
-    if not tiles:
-        logger.warning("Region %s: 0 tiles after grid filtering, skipping", region_name)
-        return {
-            "tankers": 0, "cargos": 0,
-            "moving_tankers": 0, "moving_cargos": 0,
-            "tiles_ok": 0, "tiles_failed": 0, "tiles_total": 0,
-            "markers": [], "tile_images": {},
-        }
-
-    # Navigate to first tile
-    first_row, first_col, first_lat, first_lon, _first_tile_id = _unpack_tile(
-        tiles[0], region_name, zoom
-    )
-    nav_mode = _pan_map(
-        page, center_lat, center_lon, first_lat, first_lon, zoom,
-        map_center=(map_cx, map_cy), region_name=region_name,
-        timestamp_str=timestamp_str,
-    )
-    nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
-    current_lat, current_lon = first_lat, first_lon
-
-    # Capture tiles
-    for i, tile in enumerate(tiles):
-        row, col, lat, lon, tid = _unpack_tile(tile, region_name, zoom)
-        if i > 0:
-            nav_mode = _pan_map(
-                page, current_lat, current_lon, lat, lon, zoom,
-                map_center=(map_cx, map_cy), region_name=region_name,
-                timestamp_str=timestamp_str,
-            )
-            nav_counts[nav_mode] = nav_counts.get(nav_mode, 0) + 1
-            current_lat, current_lon = lat, lon
-
-        try:
-            pre_capture_center_offset = None
-            if LEAFLET_DIAGNOSTICS:
-                pre_capture_center_offset = _wait_for_map_center_offset(
-                    page, timeout_ms=250)
-
-            leaflet_center_offset = None
-            if LEAFLET_DIAGNOSTICS:
-                try:
-                    leaflet_center_offset = (
-                        _get_map_center_offset(page) or pre_capture_center_offset
-                    )
-                except Exception:
-                    leaflet_center_offset = pre_capture_center_offset
-                if (
-                    LEAFLET_DIAGNOSTICS
-                    and not leaflet_center_offset
-                    and not leaflet_diag_logged
-                ):
-                    scan_path = _emit_frame_scan(
-                        page,
-                        timestamp_str,
-                        region_name,
-                        "center_offset_capture_unavailable",
-                    )
-                    logger.warning(
-                        "Region %s: Leaflet center_offset unavailable; "
-                        "continuing with mouseposition/requested-center projection; "
-                        "frame_scan=%s",
-                        region_name,
-                        scan_path,
-                    )
-                    leaflet_diag_logged = True
-
-            center_offset = None
-            projection_source = "requested-center"
-            proj_lat = lat
-            proj_lon = lon
-            proj_zoom = zoom
-            mouse_anchor = _read_mouseposition_anchor(
-                page, map_dims, lat, lon, zoom, region_name, tile_id=tid
-            )
-            if mouse_anchor.get("available"):
-                proj_lat = mouse_anchor["obs_lat"]
-                proj_lon = mouse_anchor["obs_lon"]
-                center_offset = _mouseposition_center_offset(
-                    map_width, map_height, proj_lat, proj_lon, zoom
-                )
-                projection_source = "mouseposition-dom"
-                mouseposition_stats["ok"] += 1
-                logger.info(
-                    "  Tile (%d,%d): mouseposition center obs=(%.6f, %.6f) "
-                    "req=(%.6f, %.6f) delta=(%.6f, %.6f; %.0fm) px=(%.1f, %.1f)",
-                    row, col,
-                    mouse_anchor["obs_lat"], mouse_anchor["obs_lon"],
-                    lat, lon,
-                    mouse_anchor["delta_lat"], mouse_anchor["delta_lon"],
-                    mouse_anchor["meters"],
-                    mouse_anchor["dx_px"], mouse_anchor["dy_px"],
-                )
-            else:
-                mouseposition_stats["fallback"] += 1
-                if not projection_fallback_logged:
-                    logger.warning(
-                        "Region %s: mouseposition DOM unavailable (%s); "
-                        "using requested tile centers",
-                        region_name,
-                        mouse_anchor.get("reason"),
-                    )
-                    projection_fallback_logged = True
-
-            screenshot_args = {"type": SCREENSHOT_FORMAT}
-            if SCREENSHOT_FORMAT == "jpeg":
-                screenshot_args["quality"] = SCREENSHOT_QUALITY
-            img_bytes = map_locator.screenshot(**screenshot_args)
-
-            if projection_source != "mouseposition-dom" and not projection_fallback_logged:
-                logger.warning(
-                    "Region %s: projection fallback active; using requested tile centers",
-                    region_name,
-                )
-                projection_fallback_logged = True
-
-            # Inline ship detection + geo-coordinate extraction. The
-            # mouseposition DOM anchor supplies the real map coordinate under
-            # the screenshot center without requiring Leaflet access.
-            logger.debug("  Tile (%d,%d): running OpenCV detection on %d bytes",
-                         row, col, len(img_bytes))
-            det, tile_markers, img_shape = _detect_ships_inline(
-                img_bytes, proj_lat, proj_lon, proj_zoom,
-                map_width, map_height, center_offset=center_offset
-            )
-
-            # BBox mode keeps the full bbox; legacy mode preserves polygon filtering.
-            raw_count = len(tile_markers)
-            filter_polygon = polygon if tiling_mode == "polygon" else None
-            if filter_polygon:
-                det, tile_markers = _filter_markers_to_polygon(
-                    tile_markers, filter_polygon
-                )
-            if raw_count != len(tile_markers):
-                logger.debug("  Tile (%d,%d): geo-filtered %d → %d markers",
-                             row, col, raw_count, len(tile_markers))
-
-            logger.debug("  Tile (%d,%d): detection result: %s, %d markers",
-                         row, col, det, len(tile_markers))
-
-            # Debug: warn if Leaflet's actual center/zoom drifted from the
-            # requested pan target (would indicate MarineTraffic is rounding,
-            # clamping, or otherwise mutating our navigation).
-            if leaflet_center_offset:
-                from seer import _debug_center_check
-                _debug_center_check(lat, lon, leaflet_center_offset, row, col, logger)
-                act_zoom = leaflet_center_offset.get("map_zoom")
-                if act_zoom is not None and abs(act_zoom - zoom) > 1e-6:
-                    logger.warning("  Tile (%d,%d): setZoom drift! "
-                                   "requested %s, actual %s",
-                                   row, col, zoom, act_zoom)
-
-            st = det["stationary_tankers"]
-            mt = det["moving_tankers"]
-            sc = det["stationary_cargos"]
-            mc = det["moving_cargos"]
-            tankers = st + mt
-            cargos = sc + mc
-
-            total_tankers += tankers
-            total_cargos += cargos
-            total_moving_tankers += mt
-            total_moving_cargos += mc
-            all_markers.extend(tile_markers)
-
-            tile_detections.append({
-                "tile_id": tid,
-                "tile": [row, col],
-                "center_lat": lat,
-                "center_lon": lon,
-                "zoom": zoom,
-                "tiling_mode": tiling_mode,
-                "tankers": tankers,
-                "cargos": cargos,
-                "moving_tankers": mt,
-                "moving_cargos": mc,
-                "markers": tile_markers,
-                # Projection forensics — lets us correlate misplaced markers
-                # with the exact map state and screenshot dimensions the
-                # scraper saw at capture time.
-                "proj": {
-                    "req_lat": lat, "req_lon": lon, "req_zoom": zoom,
-                    "source": projection_source,
-                    "obs_lat": mouse_anchor.get("obs_lat"),
-                    "obs_lon": mouse_anchor.get("obs_lon"),
-                    "delta_lat": mouse_anchor.get("delta_lat"),
-                    "delta_lon": mouse_anchor.get("delta_lon"),
-                    "dx_px": mouse_anchor.get("dx_px"),
-                    "dy_px": mouse_anchor.get("dy_px"),
-                    "meters": mouse_anchor.get("meters"),
-                    "mouseposition_raw": mouse_anchor.get("raw"),
-                    "mouseposition_selector": mouse_anchor.get("selector"),
-                    "mouseposition_frame": mouse_anchor.get("frame_url"),
-                    "dpr": center_offset.get("dpr") if center_offset else None,
-                    "img_h": int(img_shape[0]) if img_shape else None,
-                    "img_w": int(img_shape[1]) if img_shape else None,
-                    "center_x": center_offset.get("center_x") if center_offset else None,
-                    "center_y": center_offset.get("center_y") if center_offset else None,
-                },
-            })
-
-            if SAVE_IMAGES:
-                tile_images[(row, col)] = img_bytes
-
-            tiles_ok += 1
-            logger.info(
-                "  Tile (%d,%d) [%d/%d]: %d tankers (%d mov), "
-                "%d cargo (%d mov) projection=%s mouseposition=%s",
-                row, col, i + 1, len(tiles), tankers, mt, cargos, mc,
-                projection_source, "ok" if mouse_anchor.get("available") else "fallback",
-            )
-
-        except Exception as e:
-            logger.error("  Tile (%d,%d) failed: %s", row, col, e)
-            tiles_failed += 1
-
-    logger.info(
-        "Region %s navigation summary: nav=%s "
-        "mouseposition_ok=%d mouseposition_fallback=%d",
-        region_name,
-        nav_counts,
-        mouseposition_stats["ok"],
-        mouseposition_stats["fallback"],
-    )
-
-    deduped_markers = dedup_markers_spatial(all_markers, MARKER_DEDUP_EPS_DEG)
-    if len(deduped_markers) != len(all_markers):
-        dropped = len(all_markers) - len(deduped_markers)
-        dedup_counts = _count_markers_by_type(deduped_markers)
-        total_moving_tankers = dedup_counts["moving_tankers"]
-        total_moving_cargos = dedup_counts["moving_cargos"]
-        total_tankers = (
-            dedup_counts["stationary_tankers"] + dedup_counts["moving_tankers"]
-        )
-        total_cargos = (
-            dedup_counts["stationary_cargos"] + dedup_counts["moving_cargos"]
-        )
-        all_markers = deduped_markers
-        logger.info(
-            "Region %s marker dedup: dropped %d near-duplicate markers "
-            "(eps=%.6f deg)",
-            region_name,
-            dropped,
-            MARKER_DEDUP_EPS_DEG,
-        )
-
-    # --- Save composite image if requested ------------------------------------
-    saved_path = ""
-    file_size_kb = 0.0
-
-    if SAVE_IMAGES and tile_images:
-        output_dir = Path(CAPTURES_DIR) / region_name
-        output_dir.mkdir(parents=True, exist_ok=True)
-        ext = "jpg" if SCREENSHOT_FORMAT == "jpeg" else "png"
-        filename = f"{region_name}{timestamp_str}.{ext}"
-        output_path = output_dir / filename
-
-        comp_w = n_cols * map_width
-        comp_h = n_rows * map_height
-        composite = Image.new("RGB", (comp_w, comp_h), (0, 0, 0))
-
-        for (r, c), img_bytes in tile_images.items():
-            tile_img = Image.open(io.BytesIO(img_bytes))
-            composite.paste(tile_img, (c * map_width, r * map_height))
-
-        if tiling_mode == "polygon" and polygon:
-            # Mask to polygon only in legacy polygon mode.
-            pixel_coords = polygon_to_pixel_coords(polygon, grid_info, zoom)
-            mask = Image.new("L", composite.size, 0)
-            draw = ImageDraw.Draw(mask)
-            draw.polygon(pixel_coords, fill=255)
-
-            black = Image.new("RGB", composite.size, (0, 0, 0))
-            result = Image.composite(composite, black, mask)
-
-            # Crop to polygon bounding box to reduce file size
-            bbox = mask.getbbox()
-            if bbox:
-                result = result.crop(bbox)
-        else:
-            result = composite
-
-        if SCREENSHOT_FORMAT == "jpeg":
-            result.save(str(output_path), quality=SCREENSHOT_QUALITY)
-        else:
-            result.save(str(output_path))
-
-        file_size_kb = output_path.stat().st_size / 1024
-        saved_path = str(output_path)
-        logger.info("Region %s: saved %s (%.1f KB)", region_name, filename, file_size_kb)
-
-    baseline_by_tile_id = {
-        tile.get("tile_id"): tile for tile in tile_detections if tile.get("tile_id")
-    }
-    nav_mode_used = _nav_mode_summary(nav_counts)
-    projection_mode = _projection_mode_summary(tile_detections)
-    try:
-        qa_summary = _run_cross_zoom_qa(
-            page,
-            region_name,
-            config,
-            timestamp_str,
-            tiles,
-            baseline_by_tile_id,
-            map_dims,
-            nav_mode_used,
-            projection_mode,
-        )
-    except Exception as exc:
-        qa_summary = {
-            "enabled": ENABLE_CROSS_ZOOM_QA,
-            "region": region_name,
-            "timestamp": timestamp_str,
-            "nav_mode": nav_mode_used,
-            "projection_mode": projection_mode,
-            "zoom_used": zoom,
-            "qa_flags": ["qa_failed"],
-            "qa_confidence": 0.0,
-            "error": str(exc),
-        }
-        qa_summary["path"] = _write_json_artifact(
-            "qa", timestamp_str, region_name, qa_summary
-        )
-        logger.warning("Region %s QA failed: %s", region_name, exc)
-    qa_flags = qa_summary.get("qa_flags", [])
-    qa_confidence = qa_summary.get("qa_confidence", 0.0)
-
-    # --- Log results ----------------------------------------------------------
-    _log_json(
-        timestamp_str, region_name, saved_path,
-        len(tiles), tiles_ok, tiles_failed, file_size_kb,
-        total_tankers, total_cargos, zoom, tile_detections,
-        moving_tankers=total_moving_tankers,
-        moving_cargos=total_moving_cargos,
-        markers=all_markers,
-        nav_mode=nav_mode_used,
-        projection_mode=projection_mode,
-        zoom_used=zoom,
-        qa_flags=qa_flags,
-        qa_confidence=qa_confidence,
-    )
-
-    logger.info("Region %s: %d tankers (%d mov), %d cargo (%d mov) (from %d tiles)",
-                region_name, total_tankers, total_moving_tankers,
-                total_cargos, total_moving_cargos, tiles_ok)
-
-    return {
-        "region": region_name,
-        "tankers": total_tankers,
-        "cargos": total_cargos,
-        "moving_tankers": total_moving_tankers,
-        "moving_cargos": total_moving_cargos,
-        "tiles_ok": tiles_ok,
-        "tiles_failed": tiles_failed,
-        "detections": tile_detections,
-        "nav": nav_counts,
-        "nav_mode": nav_mode_used,
-        "projection_mode": projection_mode,
-        "zoom_used": zoom,
-        "qa": qa_summary,
-        "qa_flags": qa_flags,
-        "qa_confidence": qa_confidence,
-        "mouseposition": mouseposition_stats,
-    }
-
-
-# --- Single-region browser worker --------------------------------------------
-
-
-def capture_worker(region_name, timestamp_str):
-    """Single-region worker: opens a fresh browser, processes exactly one
-    region, then tears the browser down.
-
-    Replaces the previous work-stealing model where one worker would steal
-    multiple regions and reuse the same page via Leaflet.setView() panning.
-    State drift between regions (map zoom rounding, vessel-filter UI state,
-    overlay visibility, projection offset, Cloudflare cookies) accumulated
-    across stolen regions and caused systematic marker misplacement on the
-    second+ region. Trading throughput for determinism: every region pays
-    the Cloudflare + setup cost, but starts from a known-clean state.
-    """
-    worker_id = threading.current_thread().name
-    config = ACTIVE_REGIONS[region_name]
-    zoom = config["zoom"]
-    region_display = config.get("name", region_name)
-
-    proxy = random.choice(proxies)
-    fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
-    geo = geo_profiles.get(proxy["server"], fallback)
-
-    results = {}
-    retryable = []  # populated if browser/driver crashed (retry with fresh worker)
-
-    logger.info(
-        "[mode=single-region-worker worker=%s] region=%s (%s) zoom=%d starting",
-        worker_id, region_name, region_display, zoom,
-    )
-
-    try:
-        with sync_playwright() as p:
-            # GPU flags differ by environment: on a headless Linux VPS without
-            # a real GPU, requesting GPU rasterization / ANGLE causes WebGL to
-            # report a SwiftShader or "Google Inc." renderer — a known bot
-            # signal.  We only enable GPU acceleration when a display is
-            # available (i.e. a desktop with a real GPU).
-            _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
-            chrome_args = [
-                "--headless=new",
-                "--disable-dev-shm-usage",
-            ]
-            if _has_display:
-                chrome_args += [
-                    "--enable-gpu-rasterization",
-                    "--enable-zero-copy",
-                    "--use-angle=default",
-                ]
-
-            browser = p.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=chrome_args,
-            )
-
-            context = browser.new_context(
-                proxy={
-                    "server": proxy["server"],
-                    "username": proxy["username"],
-                    "password": proxy["password"],
-                },
-                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-                # Pin device_scale_factor=1 so screenshot dimensions exactly
-                # match the viewport CSS size. Without this, host OS display
-                # scaling (e.g. Windows at 150%) can leak through and produce
-                # over-resolution screenshots, which then break the marker
-                # projection math (see seer._pixel_to_latlon).
-                device_scale_factor=1.0,
-                timezone_id=geo.timezone_id,
-                locale=geo.locale,
-                geolocation={"latitude": geo.latitude, "longitude": geo.longitude},
-                permissions=["geolocation"],
-                extra_http_headers={"Accept-Language": geo.accept_language},
-                user_agent=_random_user_agent(),
-            )
-            context.add_cookies(_random_cookies(".marinetraffic.com"))
-
-            page = context.new_page()
-            _inject_stealth_scripts(page, geo)
-            _inject_map_hooks(page)
-
-            center_lat, center_lon = _region_center(config)
-            url = build_url(center_lat, center_lon, zoom)
-            logger.info(
-                "[worker=%s region=%s] loading url at zoom %d",
-                worker_id, region_name, zoom,
-            )
-            page.goto(url, wait_until="domcontentloaded")
-
-            # Setup: Cloudflare, overlays, map discovery
-            page_ready = True
-            filter_state = "skipped"
-            dark_state = "skipped"
-            try:
-                if _wait_for_cloudflare(page):
-                    logger.info("[worker=%s region=%s] Cloudflare passed",
-                                worker_id, region_name)
-                elif _is_cloudflare_blocked(page):
-                    logger.error("[worker=%s region=%s] Cloudflare block",
-                                 worker_id, region_name)
-                    _log_json(timestamp_str, region_name, "", 0, 0, 0, 0.0, 0, 0,
-                              zoom, [])
-                    page_ready = False
-
-                if page_ready:
-                    wait_for_map_tiles(page)
-                    dismiss_cookie_banner(page)
-                    dark_ok = set_dark_mode(page)
-                    dark_state = "applied" if dark_ok else "unavailable"
-                    filter_ok = set_vessel_filter(page)
-                    filter_state = "applied" if filter_ok else "failed"
-                    if not filter_ok:
-                        raise RuntimeError("required setup failed: vessel filter")
-                    hide_ui_overlays(page)
-                    install_capture_visibility_css(page)
-                    if LEAFLET_DIAGNOSTICS:
-                        _discover_leaflet_map(page)
-            except Exception as e:
-                retry_setup = (
-                    _is_crash_error(e)
-                    or "required setup failed" in str(e).lower()
-                )
-                if retry_setup:
-                    logger.error("[worker=%s region=%s] setup failed (retryable): %s",
-                                 worker_id, region_name, e)
-                    retryable.append(region_name)
-                else:
-                    logger.error("[worker=%s region=%s] setup failed: %s",
-                                 worker_id, region_name, e)
-                    _log_json(timestamp_str, region_name, "", 0, 0, 0, 0.0, 0, 0,
-                              zoom, [])
-                page_ready = False
-
-            if not page_ready:
-                context.close()
-                browser.close()
-                results["_retryable"] = retryable
-                return results
-
-            map_dims = _get_map_dimensions(page)
-            center_offset = None
-            if LEAFLET_DIAGNOSTICS:
-                center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
-                try:
-                    map_probe = run_map_probe(page)
-                    logger.info("%s", json.dumps({
-                        "event": "map_probe",
-                        "worker": worker_id,
-                        "region": region_name,
-                        "probe": map_probe,
-                    }, sort_keys=True))
-                except Exception as e:
-                    logger.warning(
-                        "[worker=%s region=%s] map probe failed: %s",
-                        worker_id, region_name, e,
-                    )
-                if LEAFLET_DIAGNOSTICS and not center_offset:
-                    scan_path = _emit_frame_scan(
-                        page,
-                        timestamp_str,
-                        region_name,
-                        "center_offset_setup_unavailable",
-                        worker_id=worker_id,
-                    )
-                    logger.warning(
-                        "[worker=%s region=%s] Leaflet center_offset unavailable; "
-                        "production capture continues with mouseposition/requested-center "
-                        "projection; frame_scan=%s",
-                        worker_id, region_name, scan_path,
-                    )
-
-            mouse_probe = _read_mouseposition_anchor(
-                page,
-                map_dims,
-                center_lat,
-                center_lon,
-                zoom,
-                region_name,
-                tile_id="worker_probe",
-            )
-            if mouse_probe.get("available"):
-                logger.info(
-                    "[worker=%s region=%s] mouseposition probe selector=%s "
-                    "obs=(%.6f, %.6f) req=(%.6f, %.6f) "
-                    "delta=(%.6f, %.6f; %.0fm) px=(%.1f, %.1f) raw=%r",
-                    worker_id, region_name,
-                    mouse_probe.get("selector"),
-                    mouse_probe["obs_lat"], mouse_probe["obs_lon"],
-                    center_lat, center_lon,
-                    mouse_probe["delta_lat"], mouse_probe["delta_lon"],
-                    mouse_probe["meters"],
-                    mouse_probe["dx_px"], mouse_probe["dy_px"],
-                    mouse_probe.get("raw"),
-                )
-            else:
-                logger.warning(
-                    "[worker=%s region=%s] mouseposition probe unavailable: %s raw=%r",
-                    worker_id, region_name,
-                    mouse_probe.get("reason"),
-                    mouse_probe.get("raw"),
-                )
-
-            logger.info(
-                "[worker=%s region=%s] setup ok: nav_default=mouse-drag "
-                "map_dims=%dx%d leaflet_center_offset=%s "
-                "mouseposition=%s dark=%s filter=%s",
-                worker_id, region_name,
-                int(map_dims["width"]), int(map_dims["height"]),
-                "ok" if center_offset else "missing",
-                "ok" if mouse_probe.get("available") else "missing",
-                dark_state,
-                filter_state,
-            )
-
-            try:
-                result = _capture_region_tiles(
-                    region_name, config, timestamp_str, page, map_dims,
-                )
-                results[region_name] = result
-            except Exception as e:
-                retry_capture = (
-                    _is_crash_error(e)
-                )
-                if retry_capture:
-                    logger.error("[worker=%s region=%s] capture failed (retryable): %s",
-                                 worker_id, region_name, e)
-                    retryable.append(region_name)
-                else:
-                    logger.error("[worker=%s region=%s] capture failed: %s",
-                                 worker_id, region_name, e)
-                    _log_json(timestamp_str, region_name, "", 0, 0, 1, 0.0, 0, 0,
-                              zoom, [])
-
-            context.close()
-            browser.close()
-
-    except Exception as e:
-        if _is_crash_error(e):
-            logger.error("[worker=%s region=%s] worker crashed (retryable): %s",
-                         worker_id, region_name, e)
-            if region_name not in retryable and region_name not in results:
-                retryable.append(region_name)
-        else:
-            logger.error("[worker=%s region=%s] worker failed: %s",
-                         worker_id, region_name, e)
-            qa_summary = _write_failure_qa_artifact(
-                timestamp_str, region_name, config, "capture_failed", e
-            )
-            _log_json(
-                timestamp_str, region_name, "", 0, 0, 1, 0.0, 0, 0,
-                zoom, [], zoom_used=zoom,
-                qa_flags=qa_summary.get("qa_flags", []),
-                qa_confidence=qa_summary.get("qa_confidence"),
-            )
-            qa_path = qa_summary["path"]
-            logger.info("[worker=%s region=%s] failure QA artifact=%s",
-                        worker_id, region_name, qa_path)
-
-    results["_retryable"] = retryable
-    return results
-
-
-# --- Single-region capture (backward-compatible wrapper) ----------------------
-
-
-def capture_region(region_name, config, timestamp_str):
-    """Capture tiles for a single region with its own browser."""
-    res = capture_worker(region_name, timestamp_str)
-    res.pop("_retryable", None)
-    return res.get(region_name)
-
-
 # --- Global tile capture ------------------------------------------------------
 
 
@@ -3266,12 +2609,21 @@ def _save_tile_image(tile, timestamp_str, img_bytes):
 
 
 def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
-                               vessel_state=None):
+                               vessel_state=None, defer_log=False):
     """Capture one same-zoom batch from the global tile manifest.
 
     ``vessel_state`` is the per-page network-tracking dict updated by the
     worker's ``page.on("response")`` handler; it lets the per-tile AIS wait key
     off real vessel-data responses (see :func:`_wait_for_ais_markers`).
+
+    When ``defer_log`` is True, per-tile captures are buffered instead of being
+    written to ``captures_log.jsonl`` immediately; the buffer is returned in the
+    batch stats so the caller can flush only the winning attempt of a retried
+    batch (avoids persisting an empty capture that a re-log could not overwrite).
+
+    Returns ``(results, batch_stats)`` where ``batch_stats`` carries per-batch
+    marker totals (raw/accepted/rejected), tile ok/failed counts, the nav
+    summary, and the deferred log buffer (``None`` when ``defer_log`` is False).
     """
     batch_started = time.perf_counter()
     map_width = int(map_dims["width"])
@@ -3287,6 +2639,16 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
     leaflet_diag_logged = False
     results = {}
     batch_timing_totals = {}
+
+    # Deferred-logging sink: buffer (args, kwargs) for _log_tile_json so a
+    # retried batch only persists the kept attempt. None => write immediately.
+    log_buffer = [] if defer_log else None
+
+    def _emit_tile_log(*args, **kwargs):
+        if log_buffer is not None:
+            log_buffer.append((args, kwargs))
+        else:
+            _log_tile_json(*args, **kwargs)
 
     first = tile_batch[0]
     current_lat = first["center_lat"]
@@ -3504,7 +2866,7 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
             saved_path, file_size_kb = _save_tile_image(tile, timestamp_str, img_bytes)
             nav_mode_used = _nav_mode_summary(nav_counts)
             projection_mode = _projection_mode_summary([tile_det])
-            _log_tile_json(
+            _emit_tile_log(
                 timestamp_str,
                 tile,
                 saved_path,
@@ -3599,7 +2961,7 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
                 timing.get("screenshot_s", 0.0),
                 timing.get("opencv_s", 0.0),
             )
-            _log_tile_json(
+            _emit_tile_log(
                 timestamp_str,
                 tile,
                 "",
@@ -3648,327 +3010,426 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
         batch_timing_totals.get("screenshot_s", 0.0),
         batch_timing_totals.get("opencv_s", 0.0),
     )
-    return results
+
+    # Aggregate per-batch marker totals + tile outcomes from the per-tile
+    # detections, so the worker can log a marker summary and run the
+    # suspect-empty-batch heuristic without re-deriving counts.
+    raw_total = accepted_total = rejected_total = 0
+    ok_tiles = failed_tiles = 0
+    for tile_result in results.values():
+        ok_tiles += int(tile_result.get("tiles_ok", 0) or 0)
+        failed_tiles += int(tile_result.get("tiles_failed", 0) or 0)
+        for det in (tile_result.get("detections") or []):
+            raw_total += int(det.get("raw_markers", 0) or 0)
+            accepted_total += int(det.get("accepted_markers", 0) or 0)
+            rejected_total += int(det.get("rejected_markers", 0) or 0)
+
+    batch_stats = {
+        "raw_total": raw_total,
+        "accepted_total": accepted_total,
+        "rejected_total": rejected_total,
+        "ok_tiles": ok_tiles,
+        "failed_tiles": failed_tiles,
+        "nav_counts": dict(nav_counts),
+        "log_buffer": log_buffer,
+    }
+    return results, batch_stats
 
 
 def capture_tile_batch_worker(tile_batch, timestamp_str):
-    """Open one browser and process a same-zoom global tile batch."""
+    """Process one same-zoom global tile batch in a dedicated browser.
+
+    Lifecycle guarantee: each call opens its **own** Patchright browser,
+    context, and page — ``1 worker call = 1 browser = 1 context = 1 page =
+    1 batch``. Nothing is reused across batches, so a burned proxy / empty AIS
+    session is contained to a single batch (and the global retry path also
+    re-enters here with a fresh browser).
+
+    When ``SUSPECT_EMPTY_RETRY`` is enabled and a batch overlapping known
+    hotspots returns ~no raw markers, it is re-run (bounded) with a fresh
+    browser + fresh proxy. Per-tile logging is deferred so only the best
+    attempt is persisted — re-logging the same run timestamp would otherwise be
+    swallowed by ``ON CONFLICT (tile_id, captured_at) DO NOTHING`` and keep the
+    empty capture.
+    """
     worker_id = threading.current_thread().name
     tile_batch = list(tile_batch)
     first = tile_batch[0]
     zoom = int(first["zoom"])
     batch_label = f"z{zoom}:{first['tile_id']}+{len(tile_batch) - 1}"
-
-    proxy = random.choice(proxies)
-    fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
-    geo = geo_profiles.get(proxy["server"], fallback)
-
-    results = {}
-    retryable = []
-    worker_started = time.perf_counter()
-    logger.info(
-        "[mode=global-tile-batch worker=%s] batch=%s starting",
-        worker_id,
-        batch_label,
+    # Hotspot tiles are seeded from chokepoint regions (priority>0/seed_regions)
+    # — places we expect ships. Used by the suspect-empty heuristic below.
+    hotspot_tiles = sum(
+        1 for t in tile_batch
+        if int(t.get("priority", 0) or 0) > 0 or t.get("seed_regions")
     )
 
-    try:
-        with sync_playwright() as p:
-            _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
-            chrome_args = ["--headless=new", "--disable-dev-shm-usage"]
-            if _has_display:
-                chrome_args += [
-                    "--enable-gpu-rasterization",
-                    "--enable-zero-copy",
-                    "--use-angle=default",
-                ]
+    defer_log = SUSPECT_EMPTY_RETRY
+    max_attempts = 1 + (SUSPECT_EMPTY_MAX_RETRIES if SUSPECT_EMPTY_RETRY else 0)
 
-            browser = p.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=chrome_args,
-            )
-            context = browser.new_context(
-                proxy={
-                    "server": proxy["server"],
-                    "username": proxy["username"],
-                    "password": proxy["password"],
-                },
-                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-                device_scale_factor=1.0,
-                timezone_id=geo.timezone_id,
-                locale=geo.locale,
-                geolocation={"latitude": geo.latitude, "longitude": geo.longitude},
-                permissions=["geolocation"],
-                extra_http_headers={"Accept-Language": geo.accept_language},
-                user_agent=_random_user_agent(),
-            )
-            context.add_cookies(_random_cookies(".marinetraffic.com"))
+    def _run_attempt(attempt_idx, proxy, geo):
+        """Run one full browser lifecycle for the batch with the given proxy."""
+        attempt = {
+            "results": {},
+            "retryable": [],
+            "raw_total": 0,
+            "accepted_total": 0,
+            "rejected_total": 0,
+            "ok_tiles": 0,
+            "failed_tiles": 0,
+            "log_buffer": None,
+            "setup_failed": False,
+            "proxy": proxy,
+            "geo": geo,
+        }
+        results = attempt["results"]
+        retryable = attempt["retryable"]
+        worker_started = time.perf_counter()
+        logger.info(
+            "[mode=global-tile-batch worker=%s] batch=%s attempt=%d/%d "
+            "proxy=%s tz=%s tiles=%d hotspot_tiles=%d browser=starting",
+            worker_id, batch_label, attempt_idx, max_attempts,
+            _proxy_log_label(proxy, geo), geo.timezone_id,
+            len(tile_batch), hotspot_tiles,
+        )
 
-            page = context.new_page()
-            _inject_stealth_scripts(page, geo)
-            _inject_map_hooks(page)
+        try:
+            with sync_playwright() as p:
+                _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
+                chrome_args = ["--headless=new", "--disable-dev-shm-usage"]
+                if _has_display:
+                    chrome_args += [
+                        "--enable-gpu-rasterization",
+                        "--enable-zero-copy",
+                        "--use-angle=default",
+                    ]
 
-            # Track vessel-data network responses so the per-tile AIS wait can
-            # key off real data arrival (the marker canvas is cross-origin
-            # tainted and the map object is not injectable, so this is the only
-            # reliable "markers loaded" signal). MarineTraffic fetches vessel
-            # positions per map tile from .../getData/get_data_json_4/...
-            vessel_state = {"last_ts": 0.0, "count": 0}
-
-            def _on_vessel_response(response, _state=vessel_state):
-                try:
-                    if "get_data_json" in response.url.lower():
-                        _state["last_ts"] = time.perf_counter()
-                        _state["count"] += 1
-                except Exception:
-                    pass
-
-            page.on("response", _on_vessel_response)
-
-            center_lat = first["center_lat"]
-            center_lon = first["center_lon"]
-            url = build_url(center_lat, center_lon, zoom)
-            logger.info(
-                "[worker=%s batch=%s] loading url at zoom %d",
-                worker_id,
-                batch_label,
-                zoom,
-            )
-            page.goto(url, wait_until="domcontentloaded")
-
-            page_ready = True
-            filter_state = "skipped"
-            dark_state = "skipped"
-            try:
-                cloudflare_passed = _wait_for_cloudflare(page)
-                if cloudflare_passed:
-                    logger.info("[worker=%s batch=%s] Cloudflare passed",
-                                worker_id, batch_label)
-                elif _is_cloudflare_blocked(page):
-                    raise RuntimeError("cloudflare block")
-
-                wait_for_map_tiles(page)
-                dismiss_cookie_banner(page)
-                dark_ok = set_dark_mode(page)
-                dark_state = "applied" if dark_ok else "unavailable"
-                filter_ok = set_vessel_filter(page)
-                filter_state = "applied" if filter_ok else "failed"
-                if not filter_ok:
-                    raise RuntimeError("required setup failed: vessel filter")
-                hide_ui_overlays(page)
-                install_capture_visibility_css(page)
-                if LEAFLET_DIAGNOSTICS:
-                    _discover_leaflet_map(page)
-            except Exception as exc:
-                retry_setup = (
-                    _is_crash_error(exc)
-                    or "required setup failed" in str(exc).lower()
-                    or "cloudflare block" in str(exc).lower()
+                browser = p.chromium.launch(
+                    headless=False,
+                    channel="chrome",
+                    args=chrome_args,
                 )
-                if retry_setup:
-                    logger.error(
-                        "[worker=%s batch=%s] setup failed (retryable): %s",
-                        worker_id,
-                        batch_label,
-                        exc,
-                    )
-                    retryable.extend(t["tile_id"] for t in tile_batch)
-                else:
-                    logger.error(
-                        "[worker=%s batch=%s] setup failed: %s",
-                        worker_id,
-                        batch_label,
-                        exc,
-                    )
-                page_ready = False
-
-            if not page_ready:
+                context = browser.new_context(
+                    proxy={
+                        "server": proxy["server"],
+                        "username": proxy["username"],
+                        "password": proxy["password"],
+                    },
+                    viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                    device_scale_factor=1.0,
+                    timezone_id=geo.timezone_id,
+                    locale=geo.locale,
+                    geolocation={"latitude": geo.latitude, "longitude": geo.longitude},
+                    permissions=["geolocation"],
+                    extra_http_headers={"Accept-Language": geo.accept_language},
+                    user_agent=_random_user_agent(),
+                )
+                context.add_cookies(_random_cookies(".marinetraffic.com"))
                 logger.info(
-                    "TIMING global_tile_worker batch=%s setup_failed elapsed=%.3fs",
-                    batch_label,
-                    time.perf_counter() - worker_started,
+                    "[worker=%s batch=%s attempt=%d] browser+context started "
+                    "proxy=%s",
+                    worker_id, batch_label, attempt_idx, proxy["server"],
                 )
+
+                page = context.new_page()
+                _inject_stealth_scripts(page, geo)
+                _inject_map_hooks(page)
+
+                # Track vessel-data network responses so the per-tile AIS wait
+                # can key off real data arrival (the marker canvas is
+                # cross-origin tainted and the map object is not injectable, so
+                # this is the only reliable "markers loaded" signal).
+                # MarineTraffic fetches vessel positions per map tile from
+                # .../getData/get_data_json_4/...
+                vessel_state = {"last_ts": 0.0, "count": 0}
+
+                def _on_vessel_response(response, _state=vessel_state):
+                    try:
+                        if "get_data_json" in response.url.lower():
+                            _state["last_ts"] = time.perf_counter()
+                            _state["count"] += 1
+                    except Exception:
+                        pass
+
+                page.on("response", _on_vessel_response)
+
+                center_lat = first["center_lat"]
+                center_lon = first["center_lon"]
+                url = build_url(center_lat, center_lon, zoom)
+                logger.info(
+                    "[worker=%s batch=%s attempt=%d] loading url at zoom %d",
+                    worker_id, batch_label, attempt_idx, zoom,
+                )
+                page.goto(url, wait_until="domcontentloaded")
+
+                page_ready = True
+                filter_state = "skipped"
+                dark_state = "skipped"
+                try:
+                    cloudflare_passed = _wait_for_cloudflare(page)
+                    if cloudflare_passed:
+                        logger.info("[worker=%s batch=%s] Cloudflare passed",
+                                    worker_id, batch_label)
+                    elif _is_cloudflare_blocked(page):
+                        raise RuntimeError("cloudflare block")
+
+                    wait_for_map_tiles(page)
+                    dismiss_cookie_banner(page)
+                    dark_ok = set_dark_mode(page)
+                    dark_state = "applied" if dark_ok else "unavailable"
+                    filter_ok = set_vessel_filter(page)
+                    filter_state = "applied" if filter_ok else "failed"
+                    if not filter_ok:
+                        raise RuntimeError("required setup failed: vessel filter")
+                    hide_ui_overlays(page)
+                    install_capture_visibility_css(page)
+                    if LEAFLET_DIAGNOSTICS:
+                        _discover_leaflet_map(page)
+                except Exception as exc:
+                    retry_setup = (
+                        _is_crash_error(exc)
+                        or "required setup failed" in str(exc).lower()
+                        or "cloudflare block" in str(exc).lower()
+                    )
+                    if retry_setup:
+                        logger.error(
+                            "[worker=%s batch=%s] setup failed (retryable): %s",
+                            worker_id, batch_label, exc,
+                        )
+                        retryable.extend(t["tile_id"] for t in tile_batch)
+                    else:
+                        logger.error(
+                            "[worker=%s batch=%s] setup failed: %s",
+                            worker_id, batch_label, exc,
+                        )
+                    page_ready = False
+
+                if not page_ready:
+                    attempt["setup_failed"] = True
+                    attempt["failed_tiles"] = len(tile_batch)
+                    logger.info(
+                        "TIMING global_tile_worker batch=%s setup_failed "
+                        "elapsed=%.3fs",
+                        batch_label, time.perf_counter() - worker_started,
+                    )
+                    context.close()
+                    browser.close()
+                    logger.info(
+                        "[worker=%s batch=%s attempt=%d] browser+context "
+                        "closed (setup_failed)",
+                        worker_id, batch_label, attempt_idx,
+                    )
+                    return attempt
+
+                map_dims = _get_map_dimensions(page)
+                center_offset = None
+                if LEAFLET_DIAGNOSTICS:
+                    center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
+                    try:
+                        map_probe = run_map_probe(page)
+                        logger.info("%s", json.dumps({
+                            "event": "map_probe",
+                            "worker": worker_id,
+                            "batch": batch_label,
+                            "probe": map_probe,
+                        }, sort_keys=True))
+                    except Exception as exc:
+                        logger.warning(
+                            "[worker=%s batch=%s] map probe failed: %s",
+                            worker_id, batch_label, exc,
+                        )
+
+                mouse_probe = _read_mouseposition_anchor(
+                    page,
+                    map_dims,
+                    center_lat,
+                    center_lon,
+                    zoom,
+                    first["tile_id"],
+                    tile_id="worker_probe",
+                )
+                setup_elapsed = time.perf_counter() - worker_started
+                logger.info(
+                    "[worker=%s batch=%s] setup ok: nav_default=mouse-drag "
+                    "map_dims=%dx%d leaflet_center_offset=%s "
+                    "mouseposition=%s dark=%s filter=%s",
+                    worker_id,
+                    batch_label,
+                    int(map_dims["width"]),
+                    int(map_dims["height"]),
+                    "ok" if center_offset else "missing",
+                    "ok" if mouse_probe.get("available") else "missing",
+                    dark_state,
+                    filter_state,
+                )
+                logger.info(
+                    "TIMING global_tile_worker batch=%s setup_ok elapsed=%.3fs",
+                    batch_label, setup_elapsed,
+                )
+
+                try:
+                    capture_started = time.perf_counter()
+                    batch_results, batch_stats = _capture_global_tile_batch(
+                        tile_batch, timestamp_str, page, map_dims,
+                        vessel_state=vessel_state, defer_log=defer_log,
+                    )
+                    results.update(batch_results)
+                    attempt["raw_total"] = batch_stats["raw_total"]
+                    attempt["accepted_total"] = batch_stats["accepted_total"]
+                    attempt["rejected_total"] = batch_stats["rejected_total"]
+                    attempt["ok_tiles"] = batch_stats["ok_tiles"]
+                    attempt["failed_tiles"] = batch_stats["failed_tiles"]
+                    attempt["log_buffer"] = batch_stats["log_buffer"]
+                    capture_elapsed = time.perf_counter() - capture_started
+                    logger.info(
+                        "TIMING global_tile_worker batch=%s finished "
+                        "total=%.3fs setup=%.3fs capture_batch=%.3fs",
+                        batch_label,
+                        time.perf_counter() - worker_started,
+                        setup_elapsed,
+                        capture_elapsed,
+                    )
+                except Exception as exc:
+                    capture_elapsed = time.perf_counter() - capture_started
+                    logger.info(
+                        "TIMING global_tile_worker batch=%s capture_failed "
+                        "total=%.3fs setup=%.3fs capture_batch=%.3fs",
+                        batch_label,
+                        time.perf_counter() - worker_started,
+                        setup_elapsed,
+                        capture_elapsed,
+                    )
+                    if _is_crash_error(exc):
+                        logger.error(
+                            "[worker=%s batch=%s] capture failed (retryable): %s",
+                            worker_id, batch_label, exc,
+                        )
+                        retryable.extend(t["tile_id"] for t in tile_batch)
+                    else:
+                        logger.error(
+                            "[worker=%s batch=%s] capture failed: %s",
+                            worker_id, batch_label, exc,
+                        )
+
                 context.close()
                 browser.close()
-                results["_retryable"] = retryable
-                return results
-
-            map_dims = _get_map_dimensions(page)
-            center_offset = None
-            if LEAFLET_DIAGNOSTICS:
-                center_offset = _wait_for_map_center_offset(page, timeout_ms=1000)
-                try:
-                    map_probe = run_map_probe(page)
-                    logger.info("%s", json.dumps({
-                        "event": "map_probe",
-                        "worker": worker_id,
-                        "batch": batch_label,
-                        "probe": map_probe,
-                    }, sort_keys=True))
-                except Exception as exc:
-                    logger.warning(
-                        "[worker=%s batch=%s] map probe failed: %s",
-                        worker_id,
-                        batch_label,
-                        exc,
-                    )
-
-            mouse_probe = _read_mouseposition_anchor(
-                page,
-                map_dims,
-                center_lat,
-                center_lon,
-                zoom,
-                first["tile_id"],
-                tile_id="worker_probe",
-            )
-            setup_elapsed = time.perf_counter() - worker_started
-            logger.info(
-                "[worker=%s batch=%s] setup ok: nav_default=mouse-drag "
-                "map_dims=%dx%d leaflet_center_offset=%s "
-                "mouseposition=%s dark=%s filter=%s",
-                worker_id,
-                batch_label,
-                int(map_dims["width"]),
-                int(map_dims["height"]),
-                "ok" if center_offset else "missing",
-                "ok" if mouse_probe.get("available") else "missing",
-                dark_state,
-                filter_state,
-            )
-            logger.info(
-                "TIMING global_tile_worker batch=%s setup_ok elapsed=%.3fs",
-                batch_label,
-                setup_elapsed,
-            )
-
-            try:
-                capture_started = time.perf_counter()
-                results.update(
-                    _capture_global_tile_batch(
-                        tile_batch, timestamp_str, page, map_dims,
-                        vessel_state=vessel_state,
-                    )
-                )
-                capture_elapsed = time.perf_counter() - capture_started
                 logger.info(
-                    "TIMING global_tile_worker batch=%s finished total=%.3fs "
-                    "setup=%.3fs capture_batch=%.3fs",
-                    batch_label,
-                    time.perf_counter() - worker_started,
-                    setup_elapsed,
-                    capture_elapsed,
+                    "[worker=%s batch=%s attempt=%d] browser+context closed",
+                    worker_id, batch_label, attempt_idx,
                 )
-            except Exception as exc:
-                capture_elapsed = time.perf_counter() - capture_started
-                logger.info(
-                    "TIMING global_tile_worker batch=%s capture_failed "
-                    "total=%.3fs setup=%.3fs capture_batch=%.3fs",
-                    batch_label,
-                    time.perf_counter() - worker_started,
-                    setup_elapsed,
-                    capture_elapsed,
+
+        except Exception as exc:
+            if _is_crash_error(exc):
+                logger.error(
+                    "[worker=%s batch=%s] worker crashed (retryable): %s",
+                    worker_id, batch_label, exc,
                 )
-                if _is_crash_error(exc):
-                    logger.error(
-                        "[worker=%s batch=%s] capture failed (retryable): %s",
-                        worker_id,
-                        batch_label,
-                        exc,
-                    )
-                    retryable.extend(t["tile_id"] for t in tile_batch)
-                else:
-                    logger.error(
-                        "[worker=%s batch=%s] capture failed: %s",
-                        worker_id,
-                        batch_label,
-                        exc,
-                    )
+                retryable.extend(t["tile_id"] for t in tile_batch)
+            else:
+                logger.error("[worker=%s batch=%s] worker failed: %s",
+                             worker_id, batch_label, exc)
 
-            context.close()
-            browser.close()
+        return attempt
 
-    except Exception as exc:
-        if _is_crash_error(exc):
-            logger.error(
-                "[worker=%s batch=%s] worker crashed (retryable): %s",
-                worker_id,
-                batch_label,
-                exc,
+    tried_servers = set()
+    best = None
+    for attempt_idx in range(1, max_attempts + 1):
+        proxy, geo = _pick_batch_proxy(tried_servers)
+        tried_servers.add(proxy["server"])
+        attempt = _run_attempt(attempt_idx, proxy, geo)
+
+        logger.info(
+            "[mode=global-tile-batch worker=%s] batch=%s attempt=%d/%d "
+            "proxy=%s marker_summary raw=%d accepted=%d rejected=%d "
+            "ok_tiles=%d failed_tiles=%d hotspot_tiles=%d",
+            worker_id, batch_label, attempt_idx, max_attempts,
+            _proxy_log_label(proxy, geo),
+            attempt["raw_total"], attempt["accepted_total"],
+            attempt["rejected_total"], attempt["ok_tiles"],
+            attempt["failed_tiles"], hotspot_tiles,
+        )
+
+        # Suspect-empty: a batch that captured tiles successfully over known
+        # hotspots but saw ~no raw markers — almost certainly an empty AIS
+        # session (burned/blocked exit IP), not genuinely empty ocean.
+        suspect = (
+            hotspot_tiles >= SUSPECT_EMPTY_MIN_HOTSPOTS
+            and not attempt["setup_failed"]
+            and attempt["ok_tiles"] > 0
+            and attempt["raw_total"] <= SUSPECT_EMPTY_RAW_THRESHOLD
+        )
+        attempt["suspect"] = suspect
+        if suspect:
+            logger.warning("%s", json.dumps({
+                "event": "suspect_empty_batch",
+                "worker": worker_id,
+                "batch": batch_label,
+                "attempt": attempt_idx,
+                "max_attempts": max_attempts,
+                "proxy_server": proxy["server"],
+                "exit_ip": geo.exit_ip or "unresolved",
+                "country": geo.country_code,
+                "timezone": geo.timezone_id,
+                "hotspot_tiles": hotspot_tiles,
+                "tiles": len(tile_batch),
+                "ok_tiles": attempt["ok_tiles"],
+                "raw_total": attempt["raw_total"],
+                "accepted_total": attempt["accepted_total"],
+                "raw_threshold": SUSPECT_EMPTY_RAW_THRESHOLD,
+                "retry_enabled": SUSPECT_EMPTY_RETRY,
+            }, sort_keys=True))
+
+        if best is None or attempt["raw_total"] > best["raw_total"]:
+            best = attempt
+
+        if not suspect:
+            break
+        if attempt_idx < max_attempts:
+            logger.warning(
+                "[worker=%s batch=%s] suspect_empty_batch -> retrying with "
+                "fresh browser+proxy (next attempt %d/%d)",
+                worker_id, batch_label, attempt_idx + 1, max_attempts,
             )
-            retryable.extend(t["tile_id"] for t in tile_batch)
-        else:
-            logger.error("[worker=%s batch=%s] worker failed: %s",
-                         worker_id, batch_label, exc)
 
-    results["_retryable"] = retryable
+    if best is None:
+        # Defensive: should not happen (loop runs at least once).
+        results = {"_retryable": [t["tile_id"] for t in tile_batch]}
+        return results
+
+    # Flush only the winning attempt's deferred logs (retry path); when
+    # deferral is off, the batch already wrote logs incrementally.
+    if defer_log and best.get("log_buffer"):
+        for log_args, log_kwargs in best["log_buffer"]:
+            _log_tile_json(*log_args, **log_kwargs)
+        logger.info(
+            "[worker=%s batch=%s] flushed %d deferred tile log(s) from best "
+            "attempt (raw=%d accepted=%d)",
+            worker_id, batch_label, len(best["log_buffer"]),
+            best["raw_total"], best["accepted_total"],
+        )
+
+    results = dict(best["results"])
+    results["_retryable"] = best["retryable"]
     return results
 
 
 # --- Logging ------------------------------------------------------------------
 
 _log_lock = threading.Lock()
-_capture_log_path = Path("./data") / "captures_log.jsonl"
-
-
-def _log_json(timestamp, region, filepath, total, ok, failed, size_kb,
-              tankers=0, cargos=0, zoom=None, detections=None,
-              moving_tankers=0, moving_cargos=0, markers=None,
-              nav_mode=None, projection_mode=None, zoom_used=None,
-              qa_flags=None, qa_confidence=None):
-    """Append a single JSON line to captures_log.jsonl (thread-safe)."""
-    Path("./data").mkdir(parents=True, exist_ok=True)
-
-    if total == 0 and ok == 0:
-        status = "error"
-    elif failed == 0:
-        status = "success"
-    elif ok > 0:
-        status = "partial"
-    else:
-        status = "error"
-
-    entry = {
-        "region": region,
-        "region_name": REGIONS.get(region, {}).get("name", region),
-        "filepath": filepath,
-        "is_north": region == "N",
-        "date_time": timestamp,
-        "tiles_total": total,
-        "tiles_ok": ok,
-        "tiles_failed": failed,
-        "zoom": zoom or REGIONS.get(region, {}).get("zoom", DEFAULT_ZOOM_LEVEL),
-        "file_size_kb": round(size_kb, 1),
-        "tankers": tankers,
-        "cargos": cargos,
-        "moving_tankers": moving_tankers,
-        "moving_cargos": moving_cargos,
-        "status": status,
-        "markers": markers or [],
-        "detections": detections or [],
-        "nav_mode": nav_mode,
-        "projection_mode": projection_mode,
-        "zoom_used": zoom_used or zoom or REGIONS.get(region, {}).get("zoom", DEFAULT_ZOOM_LEVEL),
-        "qa_flags": qa_flags or [],
-        "qa_confidence": qa_confidence,
-    }
-
-    with _log_lock:
-        with open(_capture_log_path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-
-    logger.info("_log_json: region=%s status=%s tankers=%d cargos=%d "
-                "moving_t=%d moving_c=%d tiles=%d/%d markers=%d",
-                region, status, tankers, cargos, moving_tankers, moving_cargos,
-                ok, total, len(markers or []))
+# Per-run raw output: each capture run writes its own
+# data/raw/runs/<run_id>/captures.jsonl. Ingest is a separate step
+# (update_database.py <path>); the scraper no longer ingests by default.
+_RAW_RUNS_DIR = Path("./data/raw/runs")
+_LATEST_RUN_POINTER = _RAW_RUNS_DIR / "LATEST"
+# Active run file; set per run by capture_all_regions, read by _log_tile_json.
+_capture_log_path = _RAW_RUNS_DIR / "captures.jsonl"
 
 
 def _log_tile_json(timestamp, tile, filepath, status, size_kb, counts,
                    detections=None, markers=None, nav_mode=None,
                    projection_mode=None, qa_flags=None, qa_confidence=None):
-    """Append one global tile capture entry to captures_log.jsonl."""
-    Path("./data").mkdir(parents=True, exist_ok=True)
+    """Append one global tile capture entry to the active run's captures.jsonl."""
+    _capture_log_path.parent.mkdir(parents=True, exist_ok=True)
     status = status or "success"
     ok = 1 if status == "success" else 0
     failed = 0 if status == "success" else 1
@@ -4027,140 +3488,6 @@ def _log_tile_json(timestamp, tile, filepath, status, size_kb, counts,
 
 
 # --- Orchestration ------------------------------------------------------------
-
-
-def capture_all_regions(region_filter=None, no_ingest=False):
-    """Capture all (or filtered) regions in single-region-per-worker mode.
-
-    Each region is submitted to a ThreadPoolExecutor as an atomic task; the
-    worker opens a fresh browser, processes only that region, and tears the
-    browser down. Concurrency is capped at MAX_BROWSERS. Regions are sorted
-    largest-first so the tail of the run is dominated by smaller regions.
-    """
-    global _capture_log_path
-
-    timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    logger.info("Starting capture run: %s", timestamp_str)
-    previous_log_path = _capture_log_path
-    if no_ingest:
-        _capture_log_path = Path("./data") / f"captures_validation_{timestamp_str}.jsonl"
-        logger.info("Validation capture log: %s", _capture_log_path)
-
-    # Determine which regions to capture
-    if region_filter:
-        names = [n for n in region_filter if n in ACTIVE_REGIONS]
-    else:
-        names = list(ACTIVE_REGIONS.keys())
-
-    # Compute tile counts and sort largest-first (reduces tail latency)
-    tile_counts = {}
-    total_tiles = 0
-    for name in names:
-        config = ACTIVE_REGIONS[name]
-        tiles, info = _get_tile_grid(name, config)
-        tile_counts[name] = len(tiles)
-        total_tiles += len(tiles)
-        logger.info("  %s (%s): %d tiles, zoom %d class=%s mode=%s",
-                    name, config.get("name", name), len(tiles), config["zoom"],
-                    config.get("crowded_class"),
-                    "bbox" if USE_BBOX_TILING and config.get("bbox") else "polygon")
-
-    names.sort(key=lambda n: tile_counts[n], reverse=True)
-    logger.info("Total: %d regions, %d tiles (sorted largest-first)", len(names), total_tiles)
-
-    t_start = time.perf_counter()
-    all_results = {}
-
-    def _run_regions_parallel(region_names):
-        """Submit one fresh-browser worker per region; cap concurrency at
-        MAX_BROWSERS. Each region is an atomic task — workers never share
-        state, never transition between regions."""
-        worker_results_all = {}
-        retry_names = []
-        with ThreadPoolExecutor(max_workers=MAX_BROWSERS) as executor:
-            futures = {
-                executor.submit(capture_worker, name, timestamp_str): name
-                for name in region_names
-            }
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    worker_results = future.result() or {}
-                    retry_names.extend(worker_results.pop("_retryable", []))
-                    worker_results_all.update(worker_results)
-                except Exception as e:
-                    logger.error("Worker for region %s failed: %s", name, e)
-        return worker_results_all, retry_names
-
-    # Initial run
-    results_batch, retryable = _run_regions_parallel(names)
-    all_results.update(results_batch)
-
-    # Retry crashed regions with fresh browsers
-    for attempt in range(1, MAX_REGION_RETRIES + 1):
-        if not retryable:
-            break
-        # De-duplicate and keep only regions not yet successfully captured
-        retryable = list(dict.fromkeys(
-            n for n in retryable if n not in all_results
-        ))
-        if not retryable:
-            break
-
-        backoff = RETRY_BACKOFF_BASE * attempt + random.uniform(0, 5)
-        logger.info(
-            "Retry attempt %d/%d for %d retryable region(s): %s  "
-            "(backoff %.1fs)",
-            attempt, MAX_REGION_RETRIES, len(retryable), retryable, backoff,
-        )
-        time.sleep(backoff)
-
-        results_batch, retryable = _run_regions_parallel(retryable)
-        all_results.update(results_batch)
-
-    # Report regions that exhausted all retries
-    still_failed = [n for n in retryable if n not in all_results] if retryable else []
-    if still_failed:
-        logger.error(
-            "Regions failed after %d retries: %s",
-            MAX_REGION_RETRIES, still_failed,
-        )
-
-    elapsed = time.perf_counter() - t_start
-    per_tile = elapsed / total_tiles if total_tiles > 0 else 0
-
-    # Summary — exclude internal keys like _retryable
-    grand_tankers = sum(r.get("tankers", 0) for r in all_results.values()
-                        if isinstance(r, dict))
-    grand_cargos = sum(r.get("cargos", 0) for r in all_results.values()
-                       if isinstance(r, dict))
-    grand_mov_t = sum(r.get("moving_tankers", 0) for r in all_results.values()
-                      if isinstance(r, dict))
-    grand_mov_c = sum(r.get("moving_cargos", 0) for r in all_results.values()
-                      if isinstance(r, dict))
-
-    logger.info(
-        "STOPWATCH  all regions: %.2fs total | %d tiles | %.2fs/tile | "
-        "%d tankers (%d mov) | %d cargo (%d mov)",
-        elapsed, total_tiles, per_tile,
-        grand_tankers, grand_mov_t, grand_cargos, grand_mov_c,
-    )
-
-    # Flush captures_log.jsonl into PostgreSQL unless this is a validation run.
-    if no_ingest:
-        logger.info("Database ingestion skipped (--no-ingest)")
-    else:
-        try:
-            logger.info("Ingesting captures log into database...")
-            process_log()
-            logger.info("Database ingestion complete")
-        except Exception as e:
-            logger.error("Database ingestion failed: %s (data preserved in captures_log.jsonl)", e)
-
-    if no_ingest:
-        _capture_log_path = previous_log_path
-
-    return all_results
 
 
 def _select_global_tiles(region_filter=None, zoom_filter=None, tier_filter=None,
@@ -4239,8 +3566,16 @@ def _chunk_global_tiles(tiles):
 
 
 def capture_all_regions(region_filter=None, no_ingest=False,
-                        zoom_filter=None, tier_filter=None, tile_ids=None):
-    """Capture the global tile manifest.
+                        zoom_filter=None, tier_filter=None, tile_ids=None,
+                        ingest=False):
+    """Capture the global tile manifest into a per-run raw JSONL file.
+
+    Each run writes ``data/raw/runs/<run_id>/captures.jsonl`` and updates the
+    ``data/raw/runs/LATEST`` pointer. The raw file is the deliverable; ingest
+    into PostgreSQL is a separate step (``update_database.py <path>``).
+
+    By default the run is **not** ingested. Pass ``ingest=True`` to ingest the
+    just-written run inline; ``no_ingest=True`` always wins and forces it off.
 
     ``region_filter`` is only a debug selector. It chooses global tiles whose
     owner bounds intersect those region polygons; persisted captures remain
@@ -4249,11 +3584,11 @@ def capture_all_regions(region_filter=None, no_ingest=False,
     global _capture_log_path
 
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    logger.info("Starting global tile capture run: %s", timestamp_str)
-    previous_log_path = _capture_log_path
-    if no_ingest:
-        _capture_log_path = Path("./data") / f"captures_validation_{timestamp_str}.jsonl"
-        logger.info("Validation capture log: %s", _capture_log_path)
+    run_id = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    logger.info("Starting global tile capture run: %s (run_id=%s)", timestamp_str, run_id)
+    _capture_log_path = _RAW_RUNS_DIR / run_id / "captures.jsonl"
+    logger.info("Raw capture log: %s", _capture_log_path)
+    do_ingest = ingest and not no_ingest
 
     tiles = _select_global_tiles(
         region_filter=region_filter,
@@ -4367,32 +3702,44 @@ def capture_all_regions(region_filter=None, no_ingest=False,
         grand_mov_c,
     )
 
-    if no_ingest:
-        logger.info("Database ingestion skipped (--no-ingest)")
+    # Record the run pointer so orchestrators (run.py) can find the raw file.
+    if _capture_log_path.exists():
+        try:
+            _LATEST_RUN_POINTER.parent.mkdir(parents=True, exist_ok=True)
+            _LATEST_RUN_POINTER.write_text(str(_capture_log_path), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Could not write run pointer %s: %s", _LATEST_RUN_POINTER, exc)
+        logger.info("Raw run written: %s", _capture_log_path)
+        print(f"RUN_CAPTURES={_capture_log_path}")
+    else:
+        logger.warning("No captures written this run; raw file absent: %s", _capture_log_path)
+
+    if not do_ingest:
+        logger.info(
+            "Database ingestion skipped (raw-only). Ingest with: "
+            "python update_database.py %s", _capture_log_path,
+        )
     else:
         try:
-            logger.info("Ingesting tile captures log into database...")
-            process_log()
+            logger.info("Ingesting run into database: %s", _capture_log_path)
+            ingest_file(_capture_log_path)
             logger.info("Database ingestion complete")
         except Exception as e:
             logger.error(
-                "Database ingestion failed: %s (data preserved in captures_log.jsonl)",
-                e,
+                "Database ingestion failed: %s (raw data preserved at %s)",
+                e, _capture_log_path,
             )
-
-    if no_ingest:
-        _capture_log_path = previous_log_path
 
     return all_results
 
 
-def scheduled_run():
+def scheduled_run(**kwargs):
     jitter = random.uniform(-JITTER_SECONDS, JITTER_SECONDS)
     delay = max(0, jitter)
     if delay > 0:
         logger.info("Jitter: waiting %.0fs before run", delay)
         time.sleep(delay)
-    capture_all_regions()
+    capture_all_regions(**kwargs)
 
 
 def main():
@@ -4405,6 +3752,7 @@ def main():
     tile_ids_filter = None
     run_once = False
     no_ingest = False
+    ingest = False
     dry_run_grid = False
     list_tiles = False
     for arg in sys.argv[1:]:
@@ -4422,6 +3770,8 @@ def main():
             run_once = True
         elif arg == "--no-ingest":
             no_ingest = True
+        elif arg == "--ingest":
+            ingest = True
         elif arg == "--dry-run-grid":
             dry_run_grid = True
         elif arg == "--list-tiles":
@@ -4475,24 +3825,28 @@ def main():
 
     logger.info("Global tile summary: %s", selected_summary)
     logger.info("QA note: adaptive zoom/split decisions require a future QA redesign")
+    do_ingest = ingest and not no_ingest
     logger.info("Viewport: %dx%d | Max browsers: %d | Save images: %s | "
-                "cross_zoom_qa=%s | projection=mouseposition-dom | no_ingest=%s",
+                "cross_zoom_qa=%s | projection=mouseposition-dom | ingest=%s",
                 VIEWPORT_WIDTH, VIEWPORT_HEIGHT, MAX_BROWSERS, SAVE_IMAGES,
-                ENABLE_CROSS_ZOOM_QA, no_ingest)
+                ENABLE_CROSS_ZOOM_QA, do_ingest)
 
-    # Run once immediately
-    capture_all_regions(
-        region_filter,
+    capture_kwargs = dict(
+        region_filter=region_filter,
         no_ingest=no_ingest,
+        ingest=ingest,
         zoom_filter=zoom_filter,
         tier_filter=tier_filter,
         tile_ids=tile_ids_filter,
     )
+
+    # Run once immediately
+    capture_all_regions(**capture_kwargs)
     if run_once:
         return
 
-    # Schedule future runs
-    sched.every(SCRAPE_INTERVAL_MINUTES).minutes.do(scheduled_run)
+    # Schedule future runs (same filters and ingest mode as the initial run)
+    sched.every(SCRAPE_INTERVAL_MINUTES).minutes.do(scheduled_run, **capture_kwargs)
     while True:
         sched.run_pending()
         time.sleep(1)

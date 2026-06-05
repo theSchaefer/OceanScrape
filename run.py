@@ -8,8 +8,11 @@ Usage:
 
 import sys
 import subprocess
+from pathlib import Path
 
-from update_database import process_log
+from update_database import ingest_file, process_log
+
+_LATEST_RUN_POINTER = Path("data/raw/runs/LATEST")
 
 
 def legacy_mode(image_files):
@@ -56,8 +59,15 @@ def main():
             print("Scraper failed")
             sys.exit(result.returncode)
 
-        print("\nUpdating database from captures log...")
-        process_log()
+        # The scraper writes a per-run raw file and records its path in the
+        # LATEST pointer. Ingest that specific run rather than a shared log.
+        if _LATEST_RUN_POINTER.exists():
+            run_file = _LATEST_RUN_POINTER.read_text(encoding="utf-8").strip()
+            print(f"\nIngesting raw run into database: {run_file}")
+            ingest_file(run_file)
+        else:
+            print("\nNo run pointer found; falling back to legacy captures log...")
+            process_log()
 
 
 if __name__ == "__main__":

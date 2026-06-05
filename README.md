@@ -18,15 +18,19 @@ Commercial vessel tracking feeds are expensive and often limited by region or up
 ## How it works
 
 ```
-scraper_global.py  →  seer.py (inline OpenCV)  →  captures_log.jsonl  →  update_database.py  →  PostgreSQL  →  api.py  →  dashboard/
-   browser workers      in memory detection         counts + markers       psycopg2 batch insert       FastAPI       Leaflet UI
+   capture → raw JSONL → ingest → postgres → api/dashboard
+scraper_global.py  →  seer.py (inline OpenCV)  →  data/raw/runs/<id>/captures.jsonl  →  update_database.py  →  PostgreSQL  →  api.py  →  dashboard/
+   browser workers      in memory detection         one file per run (no auto-ingest)     psycopg2 batch insert      FastAPI       Leaflet UI
 ```
+
+Capture and ingest are **decoupled**. By default the scraper only writes raw data; loading a run into PostgreSQL is a separate `python update_database.py <path>` step. `run.py` chains both for a one-shot full pass.
 
 1. **Scrape.** `scraper_global.py` launches a small pool of Patchright browser workers (an undetected Playwright fork). Workers process same-zoom batches from a global Web-Mercator tile manifest. Regions are debug filters only; persisted captures are tile-scoped.
 2. **Detect.** Each rendered tile is passed in memory to `seer.py`, which uses HSV color masking and contour analysis in OpenCV to find ship markers. Triangles (three vertices via `approxPolyDP`) are classified as moving ships, circles (high circularity ratio) as stationary. Color separates tankers from cargo vessels.
 3. **Project.** Marker pixel positions are converted to real world coordinates using a Web Mercator inverse projection in `grid.py`. The scraper reads MarineTraffic's mouse-position DOM control at the center of `#map_canvas` to anchor projection without requiring Leaflet access.
-4. **Persist.** `update_database.py` reads the JSONL capture log and batch inserts into `capture_tiles`, `tile_captures`, and `global_vessel_positions`. The old region tables remain as archive data, but new API responses use the global tables.
-5. **Serve.** `api.py` exposes the database through a FastAPI service, and `dashboard/index.html` renders a live Leaflet map with time scrubbing, vessel type and motion filters, per region drill down, and aggregate charts (see the screenshot above).
+4. **Capture (raw).** Each run is written to its own `data/raw/runs/<run_id>/captures.jsonl` (one JSON object per line) and the `data/raw/runs/LATEST` pointer is updated. The scraper does **not** touch PostgreSQL by default — the raw file is the deliverable.
+5. **Ingest.** `python update_database.py data/raw/runs/<run_id>/captures.jsonl` reads that run and batch inserts into `capture_tiles`, `tile_captures`, and `global_vessel_positions`. The insert is idempotent (`ON CONFLICT DO NOTHING`); on success an `ingested.json` status marker is written beside the raw file, which is never moved or rewritten. The old region tables remain as archive data, but new API responses use the global tables.
+6. **Serve.** `api.py` exposes the database through a FastAPI service, and `dashboard/index.html` renders a live Leaflet map with time scrubbing, vessel type and motion filters, per region drill down, and aggregate charts (see the screenshot above).
 
 ## Key features
 
@@ -49,19 +53,28 @@ pip install -r requirements.txt
 
 # Configure .env with proxy credentials and DATABASE_URL (see Configuration)
 
-python run.py                 # one full pipeline pass: scrape, detect, write to DB
+python run.py                 # one full pipeline pass: scrape, detect, raw JSONL, ingest to DB
+```
+
+The two-step (decoupled) flow:
+
+```bash
+python scraper_global.py                    # capture only → data/raw/runs/<run_id>/captures.jsonl
+python update_database.py data/raw/runs/<run_id>/captures.jsonl   # ingest that run into PostgreSQL
 ```
 
 Other common invocations:
 
 ```bash
+python scraper_global.py --ingest           # capture then ingest inline (skip the separate step)
 python scraper_global.py --list-regions     # show every region code, zoom, and tier
 python scraper_global.py --dry-run-grid     # print global tile counts without scraping
 python scraper_global.py --list-tiles       # print selected tile ids
 python scraper_global.py --tier=original    # only the 34 original chokepoint regions
 python scraper_global.py --regions=N,S,P    # Suez North, Suez South, Panama only
-python scraper_global.py --regions=BS --once --no-ingest
-                                           # validation pass, no DB insert
+python scraper_global.py --regions=BS --once --tile-ids=g_z9_r0_c0
+                                           # single-run validation pass (raw only, no DB)
+python update_database.py                    # legacy: ingest + archive data/captures_log.jsonl
 python seer.py path/to/tile.jpg             # run detection on a single image (CLI mode)
 python discover_map.py                      # one shot JS introspection of MarineTraffic
 uvicorn api:app --reload                    # serve the dashboard API locally

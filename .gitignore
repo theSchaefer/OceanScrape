@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 .claude/settings.local.json
 tests/
+scraper_patchright_pan.py
+scraper_patchright_pan_test.py

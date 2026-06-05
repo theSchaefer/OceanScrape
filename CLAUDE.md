@@ -13,11 +13,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run the full pipeline (scrape → inline detection → database)
+# Run the full pipeline (scrape → raw JSONL → ingest → database)
 python run.py
 
-# Run the scraper directly
+# Run the scraper directly (raw-only by default — no DB write)
 python scraper_global.py                   # All 57 regions
+python scraper_global.py --ingest          # Capture then ingest into PostgreSQL
+
+# Ingest a raw run into PostgreSQL (separate step)
+python update_database.py data/raw/runs/<run_id>/captures.jsonl
+python update_database.py                   # Legacy: ingest+archive data/captures_log.jsonl
 python scraper_global.py --save-images     # Also save tile images to disk
 python scraper_global.py --regions N,S,P   # Specific regions only (single-letter codes)
 python scraper_global.py --zoom=9          # Only zoom-level 9 regions
@@ -34,16 +39,19 @@ python seer.py path/to/image.jpg           # Run OpenCV detection on a file (CLI
 ## Architecture
 
 ```
-scraper_global.py  →  seer.py (inline)  →  captures_log.jsonl  →  update_database.py  →  PostgreSQL
-  browser workers     in-memory OpenCV      counts + metadata        psycopg2 batch insert
+capture            →  raw JSONL                              →  ingest              →  postgres     →  api/dashboard
+scraper_global.py  →  data/raw/runs/<run_id>/captures.jsonl   →  update_database.py  →  PostgreSQL   →  api.py + dashboard/
+  browser workers      one file per run (no auto-ingest)         separate CLI step      psycopg2
 ```
 
-- **`scraper_global.py`** — Main scraper. Launches Patchright (undetected Playwright fork) with `MAX_BROWSERS` concurrent browser workers. Each worker pulls regions from a shared queue (work-stealing), navigates MarineTraffic once, then pans via Leaflet `setView()` for all subsequent regions and tiles — no repeated page loads. Regions are sorted largest-first to reduce tail latency. Calls `count_ships_from_bytes()` and `extract_marker_coords()` inline — no images written to disk by default. Marker pixel positions are converted to lat/lon via Web Mercator projection.
+Capture and ingest are **decoupled**. The scraper writes only raw data by default; a separate `update_database.py <path>` step loads a run into PostgreSQL. `run.py` chains both for a full pipeline pass.
+
+- **`scraper_global.py`** — Main scraper. Launches Patchright (undetected Playwright fork) with `MAX_BROWSERS` concurrent browser workers. Each run writes its captures to `data/raw/runs/<run_id>/captures.jsonl` and updates the `data/raw/runs/LATEST` pointer; it does **not** ingest into PostgreSQL unless `--ingest` is passed. Calls `count_ships_from_bytes()` and `extract_marker_coords()` inline — no images written to disk by default. Marker pixel positions are converted to lat/lon via Web Mercator projection.
 - **`seer.py`** — OpenCV ship counter. HSV color masking → contour detection → shape classification: triangles (3 vertices via `approxPolyDP`) = moving ships; circles (high circularity ratio) = stationary ships. Red = tankers, green = cargo. Exports `count_ships_from_bytes()` for in-memory use and `extract_marker_coords()` for lat/lon position extraction.
 - **`grid.py`** — Web Mercator projection utilities. `get_tile_centers()` computes non-overlapping tile grids covering a polygon's bounding box. `generate_ocean_grid()` auto-tiles large bounding boxes. Snake/boustrophedon tile ordering.
 - **`geo_profile.py`** — Resolves proxy IP geolocation via ip-api.com. Maps country codes to locale/Accept-Language/timezone for browser fingerprinting. Requires `DECODO_USERNAME`/`DECODO_PASSWORD` in `.env`.
-- **`run.py`** — Orchestrator. Calls `scraper_global.py` as subprocess, then `update_database.process_log()`.
-- **`update_database.py`** — PostgreSQL database layer. Reads `captures_log.jsonl` (JSONL — one JSON object per line), batch-inserts capture records into a `captures` table and detected marker positions into `vessel_positions` using psycopg2. Ship counts, tile stats, and marker coordinates are stored per capture with JSONB in `captures`. Each marker's lat/lon, ship type, and motion state are also stored relationally in `vessel_positions` (FK to `captures`). Auto-creates schema on first run. Idempotent via `ON CONFLICT`. Falls back to legacy `captures_log.json` if JSONL file is absent.
+- **`run.py`** — Orchestrator. Calls `scraper_global.py` as a subprocess, then ingests the just-written run via `update_database.ingest_file()` (located through the `data/raw/runs/LATEST` pointer).
+- **`update_database.py`** — PostgreSQL database layer. `ingest_file(path)` reads a single run's `captures.jsonl` and batch-inserts it; it does **not** move or reset the raw file, and writes an `<name>.ingested.json` status marker beside it on success. `process_log()` is the legacy entry point for the shared `data/captures_log.jsonl` (archive + reset; falls back to `captures_log.json`). CLI: `python update_database.py [ingest] <path> [...]`. Both paths share the same insert logic (`_insert_entries`) — capture records go into `captures`/`tile_captures`, markers into `vessel_positions`/`global_vessel_positions`. Auto-creates schema on first run. Idempotent via `ON CONFLICT`, so re-ingesting a file is safe.
 - **`discover_map.py`** — Dev/debug tool. Injects constructor hooks before page load to introspect how MarineTraffic stores its Leaflet map instance. Outputs to `map_discovery.json`.
 
 ## Region Codes
@@ -89,7 +97,7 @@ Patchright with `channel="chrome"` + `--headless=new`. Proxy rotation with geo-p
 
 ## Notes
 
-- `data/` directory is gitignored; it holds `captures_log.jsonl` and saved images. The database is external (PostgreSQL).
+- `data/` directory is gitignored; raw runs live under `data/raw/runs/<run_id>/captures.jsonl` (plus an `ingested.json` marker once loaded). The legacy shared log `data/captures_log.jsonl` is still read by `process_log()` for back-compat. The database is external (PostgreSQL).
 - At 8K viewport, most regions fit in a single tile across 57 regions.
 
 ## Learning & Discovery
