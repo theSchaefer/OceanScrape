@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -537,7 +538,7 @@ def insert_tile_capture(data):
 def insert_capture(data):
     """Insert a single capture record into PostgreSQL.
 
-    Accepts either a full entry dict (from _log_json) or a partial dict
+    Accepts either a full entry dict (from _log_tile_json) or a partial dict
     (from the legacy seer.py pipeline in run.py).  Missing keys default
     to safe zero/empty values.
 
@@ -627,6 +628,144 @@ def get_due_tile_ids(tile_ids=None):
         conn.close()
 
 
+def _insert_entries(cur, entries):
+    """Insert a list of capture entries using an open cursor.
+
+    Shared by ``process_log`` (legacy shared log) and ``ingest_file`` (per-run
+    raw file). The per-entry SQL and dedup logic are unchanged — this only
+    encapsulates the loop so both entry points reuse it.
+
+    Returns ``(inserted, skipped, total_markers)``.
+    """
+    inserted = 0
+    skipped = 0
+    total_markers = 0
+    for entry in entries:
+        if entry.get("tile_id") or entry.get("capture_type") == "tile":
+            markers = _dedup_entry_markers(entry)
+            row = _tile_entry_to_row(entry, markers)
+            tile_id = row[0]
+            captured_at = row[1]
+            _upsert_entry_tile(cur, entry)
+            logger.debug(
+                "Inserting tile capture: tile=%s status=%s markers=%d",
+                tile_id, _entry_status(entry), len(markers),
+            )
+            cur.execute(_INSERT_TILE_CAPTURE_SQL + " RETURNING id", row)
+            result = cur.fetchone()
+            if result:
+                capture_id = result[0]
+                inserted += 1
+                m_count = _insert_global_markers(
+                    cur, capture_id, tile_id, captured_at, markers
+                )
+                total_markers += m_count
+                logger.info(
+                    "Inserted tile_capture id=%d tile=%s (%d markers)",
+                    capture_id, tile_id, m_count,
+                )
+            else:
+                skipped += 1
+                logger.debug(
+                    "Skipped duplicate tile capture: tile=%s ts=%s",
+                    tile_id, entry.get("date_time"),
+                )
+            continue
+
+        region = entry.get("region", "?")
+        row = _entry_to_row(entry)
+        logger.debug("Inserting capture: region=%s status=%s tankers=%d cargos=%d",
+                     region, entry.get("status"), entry.get("tankers", 0),
+                     entry.get("cargos", 0))
+        cur.execute(_INSERT_SQL + " RETURNING id", row)
+        result = cur.fetchone()
+        if result:
+            capture_id = result[0]
+            inserted += 1
+            m_count = _insert_markers(cur, capture_id, entry.get("markers", []))
+            total_markers += m_count
+            logger.info("Inserted capture id=%d region=%s (%d markers)",
+                        capture_id, region, m_count)
+        else:
+            skipped += 1
+            logger.debug("Skipped duplicate: region=%s ts=%s",
+                         region, entry.get("date_time"))
+    return inserted, skipped, total_markers
+
+
+def _write_ingest_marker(log_path: Path, result: dict):
+    """Record a per-run ingest status marker next to the capture file.
+
+    Writes ``<name>.ingested.json`` beside ``log_path`` so a run's ingest
+    status is visible without moving or mutating the raw capture file.
+    """
+    marker = log_path.with_name(log_path.stem + ".ingested.json")
+    payload = {
+        "source": str(log_path),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        **result,
+    }
+    try:
+        with open(marker, "w") as f:
+            json.dump(payload, f, indent=2)
+        logger.info("Wrote ingest marker %s", marker)
+    except OSError as exc:
+        logger.warning("Could not write ingest marker %s: %s", marker, exc)
+
+
+def ingest_file(log_path, mark_status=True):
+    """Ingest a single raw capture file into PostgreSQL.
+
+    Unlike :func:`process_log`, this does **not** rename or reset the source
+    file — it is the per-run ingest entry point for files under
+    ``data/raw/runs/<run_id>/captures.jsonl``. The insert is idempotent
+    (``ON CONFLICT DO NOTHING``), so re-running is safe. On success a sibling
+    ``ingested.json`` status marker is written unless ``mark_status`` is False.
+
+    Returns a result dict ``{entries, inserted, skipped, markers}``.
+    """
+    path = Path(log_path)
+    empty_result = {"entries": 0, "inserted": 0, "skipped": 0, "markers": 0}
+
+    if not path.exists():
+        logger.warning("Capture file not found — nothing to ingest: %s", path)
+        return empty_result
+
+    entries = _read_jsonl(path)
+    if not entries:
+        logger.info("Capture file is empty — nothing to ingest: %s", path)
+        return empty_result
+
+    conn = _get_connection()
+    try:
+        _ensure_schema(conn)
+        with conn.cursor() as cur:
+            manifest_count = _sync_capture_tile_manifest(cur)
+            logger.info("Synced %d global capture tiles", manifest_count)
+            inserted, skipped, total_markers = _insert_entries(cur, entries)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to ingest %s — file preserved for retry", path)
+        raise
+    finally:
+        conn.close()
+
+    result = {
+        "entries": len(entries),
+        "inserted": inserted,
+        "skipped": skipped,
+        "markers": total_markers,
+    }
+    logger.info(
+        "Ingested %s: %d entries, %d inserted, %d skipped, %d markers",
+        path, len(entries), inserted, skipped, total_markers,
+    )
+    if mark_status:
+        _write_ingest_marker(path, result)
+    return result
+
+
 def process_log(log_path=None):
     """Read captures_log.jsonl, batch-insert all entries, then archive the log.
 
@@ -667,62 +806,10 @@ def process_log(log_path=None):
     conn = _get_connection()
     try:
         _ensure_schema(conn)
-        inserted = 0
-        skipped = 0
-        total_markers = 0
         with conn.cursor() as cur:
             manifest_count = _sync_capture_tile_manifest(cur)
             logger.info("Synced %d global capture tiles", manifest_count)
-            for entry in entries:
-                if entry.get("tile_id") or entry.get("capture_type") == "tile":
-                    markers = _dedup_entry_markers(entry)
-                    row = _tile_entry_to_row(entry, markers)
-                    tile_id = row[0]
-                    captured_at = row[1]
-                    _upsert_entry_tile(cur, entry)
-                    logger.debug(
-                        "Inserting tile capture: tile=%s status=%s markers=%d",
-                        tile_id, _entry_status(entry), len(markers),
-                    )
-                    cur.execute(_INSERT_TILE_CAPTURE_SQL + " RETURNING id", row)
-                    result = cur.fetchone()
-                    if result:
-                        capture_id = result[0]
-                        inserted += 1
-                        m_count = _insert_global_markers(
-                            cur, capture_id, tile_id, captured_at, markers
-                        )
-                        total_markers += m_count
-                        logger.info(
-                            "Inserted tile_capture id=%d tile=%s (%d markers)",
-                            capture_id, tile_id, m_count,
-                        )
-                    else:
-                        skipped += 1
-                        logger.debug(
-                            "Skipped duplicate tile capture: tile=%s ts=%s",
-                            tile_id, entry.get("date_time"),
-                        )
-                    continue
-
-                region = entry.get("region", "?")
-                row = _entry_to_row(entry)
-                logger.debug("Inserting capture: region=%s status=%s tankers=%d cargos=%d",
-                             region, entry.get("status"), entry.get("tankers", 0),
-                             entry.get("cargos", 0))
-                cur.execute(_INSERT_SQL + " RETURNING id", row)
-                result = cur.fetchone()
-                if result:
-                    capture_id = result[0]
-                    inserted += 1
-                    m_count = _insert_markers(cur, capture_id, entry.get("markers", []))
-                    total_markers += m_count
-                    logger.info("Inserted capture id=%d region=%s (%d markers)",
-                                capture_id, region, m_count)
-                else:
-                    skipped += 1
-                    logger.debug("Skipped duplicate: region=%s ts=%s",
-                                 region, entry.get("date_time"))
+            inserted, skipped, total_markers = _insert_entries(cur, entries)
         conn.commit()
         logger.info(
             "Processed %d entries: %d inserted, %d skipped, %d markers",
@@ -747,3 +834,41 @@ def process_log(log_path=None):
     # Reset the log file for the next scrape run
     with open(log_path, "w") as f:
         pass  # empty file — scraper appends JSONL lines
+
+
+def _main(argv):
+    """CLI entry point.
+
+    Usage:
+        python update_database.py                       # legacy: ingest + archive
+                                                        # data/captures_log.jsonl
+        python update_database.py <path> [<path> ...]   # ingest specific run file(s)
+        python update_database.py ingest <path> [...]   # same, explicit subcommand
+
+    The per-file form does not move or reset the source; it writes an
+    ``<name>.ingested.json`` status marker beside each file on success.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    args = list(argv)
+    if args and args[0] == "ingest":
+        args = args[1:]
+
+    if not args:
+        process_log()
+        return 0
+
+    failures = 0
+    for path in args:
+        try:
+            ingest_file(path)
+        except Exception:
+            failures += 1
+            logger.exception("Ingest failed for %s", path)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
