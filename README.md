@@ -80,6 +80,113 @@ python discover_map.py                      # one shot JS introspection of Marin
 uvicorn api:app --reload                    # serve the dashboard API locally
 ```
 
+## Distributed capture: control plane + workers
+
+OceanScrape can keep running as a single server, **or** fan capture out to
+remote worker machines over a private network. The split is deliberate:
+
+* **Workers** are stateless capture nodes. They never touch PostgreSQL, never
+  read the control plane's `.env`, and never ingest. A worker claims a batch of
+  tile ids, captures them with the same `scraper_global` code, and uploads the
+  raw JSONL back to the control plane.
+* **The control plane** owns the queue, the leases, the uploaded artifacts, and
+  (optionally) the eventual ingest. It is the only process that talks to the
+  database.
+
+Capture jobs live in a persistent queue (SQLite by default, or Postgres via
+`WORKER_QUEUE_DSN=$DATABASE_URL`). Claiming is atomic and lease-based: a claimed
+job is invisible to other workers until its lease expires, so a crashed worker's
+batch is automatically reclaimed — no job is lost or double-captured.
+
+### Single-server mode (unchanged)
+
+Nothing above is required for a single box. The existing flows still work
+exactly as before:
+
+```bash
+python run.py                               # full pipeline (scrape → raw → ingest)
+python scraper_global.py --once             # one local capture run, raw only
+python update_database.py data/raw/runs/<run_id>/captures.jsonl   # ingest a run
+```
+
+### Control plane + worker mode
+
+On the **control plane** (the box with PostgreSQL):
+
+```bash
+# 1. Start the worker API (binds 127.0.0.1:8081 by default)
+WORKER_API_TOKEN=$(openssl rand -hex 24) python run.py serve
+
+# 2. Enqueue capture batches (in another shell, same WORKER_QUEUE_DSN)
+python run.py enqueue --regions global --batch-size 12
+python run.py enqueue --tier 1 --zoom 9 --batch-size 8
+python run.py enqueue --due-only            # only tiles due per schedule
+python run.py enqueue --regions global --dry-run   # preview without writing
+```
+
+On each **worker** host (needs the capture stack + its own proxy creds, but no
+DB):
+
+```bash
+export WORKER_TOKEN=<the token from the control plane>
+python run.py worker --server http://10.0.0.3:8081 --token-env WORKER_TOKEN --max-browsers 1
+```
+
+A worker process captures one batch at a time (one batch == one browser). To use
+more browsers on a host, run several worker processes. Send `SIGINT`/`SIGTERM`
+to stop gracefully after the current batch.
+
+By default the control plane stores uploaded raw JSONL under
+`data/raw/queue/<batch_id>.jsonl` and does **not** ingest (preserving the
+raw/ingest separation). Set `WORKER_API_AUTO_INGEST=1` to ingest on upload via
+the existing `update_database.ingest_file`, or ingest the artifacts later.
+
+> **Tile-id consistency:** workers rebuild each batch's tile geometry from their
+> own deterministic manifest, so every host must share the same
+> `GLOBAL_GRID_BBOX`, `GLOBAL_GRID_DEFAULT_ZOOM`, `VIEWPORT_WIDTH/HEIGHT`.
+
+### Hetzner private-network example
+
+Bind the control plane on the private interface and point workers at it over the
+private subnet (capture traffic and the token never traverse the public net):
+
+```bash
+# Control plane (10.0.0.3) — uses Postgres for the queue too
+WORKER_API_HOST=10.0.0.3 WORKER_API_PORT=8081 \
+WORKER_API_TOKEN=<shared-secret> WORKER_QUEUE_DSN=$DATABASE_URL \
+python run.py serve
+
+# Worker (10.0.0.4, 10.0.0.5, ...)
+SERVER_URL=http://10.0.0.3:8081 WORKER_TOKEN=<shared-secret> \
+python run.py worker --max-browsers 1
+```
+
+### Worker / control-plane configuration
+
+```
+# Control plane (worker API)
+WORKER_API_TOKEN                    Single bearer token workers must present
+WORKER_TOKENS                       Or a comma-separated set of accepted tokens
+WORKER_API_HOST                     Bind address (default 127.0.0.1; e.g. 10.0.0.3)
+WORKER_API_PORT                     Bind port (default 8081)
+WORKER_QUEUE_DSN                    Queue store (default sqlite:///data/worker_queue.sqlite3;
+                                    set to $DATABASE_URL to use Postgres)
+WORKER_ARTIFACTS_DIR               Where uploaded raw JSONL is stored (default data/raw/queue)
+WORKER_API_AUTO_INGEST             Default 0; set 1 to ingest artifacts on upload
+WORKER_API_ALLOW_NO_AUTH           Default 0; set 1 to allow unauthenticated (dev only)
+WORKER_LEASE_SECONDS               Default 600; lease/visibility timeout per batch
+WORKER_MAX_ATTEMPTS                Default 3; claim attempts before a batch is failed
+
+# Worker host
+SERVER_URL                          Control plane base URL (or pass --server)
+WORKER_TOKEN                        Bearer token (referenced via --token-env)
+WORKER_ID                           Optional stable worker id (default host-pid-rand)
+WORKER_SCRATCH_DIR                  Transient per-batch JSONL dir (default data/worker_scratch)
+```
+
+Tokens are never logged and are sent only in the `Authorization: Bearer` header;
+proxy credentials stay inside `scraper_global` and are likewise never emitted.
+
 ## Configuration (`.env`)
 
 ```
@@ -140,7 +247,11 @@ Region polygons are also overridable from `.env` (for example `NORTH_POLYGON="la
 | `update_database.py` | PostgreSQL schema bootstrap and batch insert from `captures_log.jsonl`. |
 | `api.py` | FastAPI service that powers the dashboard. |
 | `dashboard/index.html` | Leaflet based frontend with time scrubbing and filters. |
-| `run.py` | Orchestrator: scrape, then update database. |
+| `run.py` | Multi-mode entrypoint: full pipeline, plus `worker` / `enqueue` / `serve` subcommands. |
+| `worker_queue.py` | Persistent capture-job queue (SQLite/Postgres): atomic claim, leases, retries. |
+| `worker_api.py` | Control-plane FastAPI: token-auth claim/heartbeat/complete/fail + artifact upload. |
+| `worker.py` | Distributed capture worker client (claim → capture → upload raw JSONL). |
+| `worker_enqueue.py` | Turns tile-selection params into queued capture batches. |
 | `discover_map.py` | Dev tool that introspects how MarineTraffic stores its Leaflet instance. |
 
 ## Disclaimer
