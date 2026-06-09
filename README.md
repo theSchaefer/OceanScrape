@@ -122,6 +122,10 @@ python run.py enqueue --regions global --batch-size 12
 python run.py enqueue --tier 1 --zoom 9 --batch-size 8
 python run.py enqueue --due-only            # only tiles due per schedule
 python run.py enqueue --regions global --dry-run   # preview without writing
+
+# Or keep global waves running continuously (requires auto-ingest by default)
+WORKER_API_AUTO_INGEST=1 python run.py continuous \
+  --regions global --batch-size 12
 ```
 
 On each **worker** host (needs the capture stack + its own proxy creds, but no
@@ -140,6 +144,20 @@ By default the control plane stores uploaded raw JSONL under
 `data/raw/queue/<batch_id>.jsonl` and does **not** ingest (preserving the
 raw/ingest separation). Set `WORKER_API_AUTO_INGEST=1` to ingest on upload via
 the existing `update_database.ingest_file`, or ingest the artifacts later.
+
+`run.py continuous` owns one non-overlapping wave at a time. It writes its
+current enqueue id before creating jobs, resumes that wave after a process
+restart, waits for unrelated pre-existing queue work, and enqueues the next
+wave immediately after all batches are terminal. An exclusive lock prevents two
+local orchestrators from producing duplicate waves. By default it refuses to
+start without `WORKER_API_AUTO_INGEST=1` and stops before the next wave if any
+batch or auto-ingest fails. `SIGINT`/`SIGTERM` prevents another wave from being
+created but leaves the current jobs and artifacts intact.
+
+Each uploaded batch is ingested immediately after completion. Every tile now
+records a microsecond-precision UTC `captured_at` taken when its screenshot
+starts; `ingested_at` remains the later database-write time. Tiles in a batch
+therefore no longer share the browser/batch startup timestamp.
 
 > **Tile-id consistency:** workers rebuild each batch's tile geometry from their
 > own deterministic manifest, so every host must share the same
@@ -176,6 +194,9 @@ WORKER_API_AUTO_INGEST             Default 0; set 1 to ingest artifacts on uploa
 WORKER_API_ALLOW_NO_AUTH           Default 0; set 1 to allow unauthenticated (dev only)
 WORKER_LEASE_SECONDS               Default 600; lease/visibility timeout per batch
 WORKER_MAX_ATTEMPTS                Default 3; claim attempts before a batch is failed
+CONTINUOUS_POLL_SECONDS            Default 2; terminal-wave polling interval
+CONTINUOUS_STATE_FILE              Restart-safe current-wave state JSON
+CONTINUOUS_LOCK_FILE               Exclusive local orchestrator lock
 
 # Worker host
 SERVER_URL                          Control plane base URL (or pass --server)
@@ -205,7 +226,8 @@ GLOBAL_GRID_DEFAULT_ZOOM            Default 9 for the shipping-world base grid
 GLOBAL_TILE_BATCH_SIZE              Default 12 same-zoom tiles per browser worker
 TILE_ACCEPT_BUFFER_PX               Default 8 owner-acceptance buffer in Web-Mercator pixels
 RESPECT_TILE_SCHEDULE               Default 1; select only enabled tiles whose schedule is due
-MARKER_DEDUP_EPS_DEG                Default 0.003; collapse near-duplicate markers
+MARKER_DEDUP_EPS_DEG                Default 0.003; legacy/API-view dedup only;
+                                    global tile raw storage preserves all owned markers
 ENABLE_CROSS_ZOOM_QA                Default 1; diagnostic only for global tile capture
 QA_SAMPLE_RATE / QA_MAX_SAMPLES     Default 0.10 / 3 sampled baseline tiles per region
 LEAFLET_DIAGNOSTICS                 Default 0; set 1 to emit Leaflet/frame probes

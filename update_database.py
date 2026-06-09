@@ -164,10 +164,7 @@ CREATE TABLE IF NOT EXISTS global_vessel_positions (
     lat                 DOUBLE PRECISION NOT NULL,
     lon                 DOUBLE PRECISION NOT NULL,
     ship_type           VARCHAR(16) NOT NULL,
-    motion              VARCHAR(16) NOT NULL,
-    CONSTRAINT uq_global_marker_capture UNIQUE (
-        tile_capture_id, lat, lon, ship_type
-    )
+    motion              VARCHAR(16) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_gvp_time
@@ -250,7 +247,6 @@ _INSERT_GLOBAL_MARKER_SQL = """
 INSERT INTO global_vessel_positions (
     tile_capture_id, tile_id, captured_at, lat, lon, ship_type, motion
 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (tile_capture_id, lat, lon, ship_type) DO NOTHING
 """
 
 DEFAULT_LOG_PATH = Path("./data") / "captures_log.jsonl"
@@ -276,6 +272,12 @@ def _ensure_schema(conn):
     """Create the captures table and indexes if they don't exist."""
     with conn.cursor() as cur:
         cur.execute(_SCHEMA_SQL)
+        # Global tile captures preserve every owned detector output. Older
+        # installations used this constraint as an exact-marker dedup layer.
+        cur.execute(
+            "ALTER TABLE global_vessel_positions "
+            "DROP CONSTRAINT IF EXISTS uq_global_marker_capture"
+        )
     conn.commit()
 
 
@@ -314,18 +316,24 @@ def _sync_capture_tile_manifest(cur, tiles=None):
 
 
 def _parse_datetime(date_str):
-    """Convert the scraper's 'YYYY-MM-DD-HH-MM-SS' format to a UTC datetime."""
+    """Convert legacy or per-tile capture timestamps to a UTC datetime."""
+    for fmt in ("%Y-%m-%d-%H-%M-%S-%f", "%Y-%m-%d-%H-%M-%S"):
+        try:
+            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
     try:
-        return datetime.strptime(date_str, "%Y-%m-%d-%H-%M-%S").replace(
-            tzinfo=timezone.utc
+        parsed = datetime.fromisoformat(date_str)
+        return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(
+            timezone.utc
         )
     except (ValueError, TypeError):
         logger.warning("Could not parse date_time '%s', using current UTC time", date_str)
         return datetime.now(timezone.utc)
 
 
-def _dedup_entry_markers(entry):
-    """Return capture markers with overlapping-tile duplicates removed."""
+def _dedup_legacy_entry_markers(entry):
+    """Preserve legacy region behavior; global tile ingest does not call this."""
     return dedup_markers_spatial(entry.get("markers", []), MARKER_DEDUP_EPS_DEG)
 
 
@@ -355,7 +363,7 @@ def _entry_to_row(entry):
     if not region:
         region = "?"
 
-    markers = _dedup_entry_markers(entry)
+    markers = _dedup_legacy_entry_markers(entry)
     counts = _entry_counts(entry, markers)
 
     return (
@@ -477,11 +485,11 @@ def _insert_markers(cur, capture_id, markers):
 
 
 def _insert_global_markers(cur, tile_capture_id, tile_id, captured_at, markers):
-    """Batch-insert globally accepted marker positions for a tile capture."""
+    """Insert every globally owned detector output without spatial dedup."""
     if not markers:
         return 0
     inserted = 0
-    for m in dedup_markers_spatial(markers, MARKER_DEDUP_EPS_DEG):
+    for m in markers:
         lat = m.get("lat")
         lon = m.get("lon")
         if lat is None or lon is None:
@@ -504,7 +512,7 @@ def insert_tile_capture(data):
     conn = _get_connection()
     try:
         _ensure_schema(conn)
-        markers = _dedup_entry_markers(data)
+        markers = list(data.get("markers", []))
         row = _tile_entry_to_row(data, markers)
         captured_at = row[1]
         tile_id = row[0]
@@ -642,7 +650,7 @@ def _insert_entries(cur, entries):
     total_markers = 0
     for entry in entries:
         if entry.get("tile_id") or entry.get("capture_type") == "tile":
-            markers = _dedup_entry_markers(entry)
+            markers = list(entry.get("markers", []))
             row = _tile_entry_to_row(entry, markers)
             tile_id = row[0]
             captured_at = row[1]

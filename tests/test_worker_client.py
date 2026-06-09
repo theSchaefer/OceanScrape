@@ -147,8 +147,12 @@ def test_live_end_to_end_with_real_http_client():
     token = "live-token"
     q = Queue(f"sqlite:///{os.path.join(tmp, 'q.sqlite3')}")
     q.enqueue_batches([{"tile_ids": ["a", "b"], "zoom": 9}])
-    app = worker_api.create_app(q, tokens={token},
-                                artifacts_dir=os.path.join(tmp, "art"))
+    app = worker_api.create_app(
+        q,
+        tokens={token},
+        artifacts_dir=os.path.join(tmp, "art"),
+        auto_ingest=False,
+    )
 
     # ephemeral free port
     s = socket.socket()

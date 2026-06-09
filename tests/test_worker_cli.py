@@ -57,6 +57,13 @@ def test_run_py_enqueue_help():
     assert "--batch-size" in r.stdout
 
 
+def test_run_py_continuous_help():
+    r = _run(["run.py", "continuous", "--help"])
+    assert r.returncode == 0, r.stderr
+    assert "--state-file" in r.stdout
+    assert "--continue-on-wave-failure" in r.stdout
+
+
 def test_single_server_scraper_cli_still_runs():
     """The original scraper CLI must keep working (no DB / network needed)."""
     if not _HAS_PSYCOPG2:

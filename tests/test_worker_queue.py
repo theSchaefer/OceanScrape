@@ -134,6 +134,29 @@ def test_non_retryable_fail_is_terminal():
     assert f["status"] == FAILED
 
 
+def test_wave_reads_and_active_counts_are_not_limited():
+    q = _queue()
+    wave_a = q.enqueue_batches(
+        [{"tile_ids": [f"a{i}"], "zoom": 9} for i in range(120)],
+        enqueue_id="wave-a",
+    )
+    q.enqueue_batches(
+        [{"tile_ids": ["b"], "zoom": 12}],
+        enqueue_id="wave-b",
+    )
+
+    assert len(q.list_enqueue_jobs("wave-a")) == 120
+    assert q.enqueue_stats("wave-a")["pending"] == 120
+    assert q.count_active_jobs() == 121
+    assert q.count_active_jobs(exclude_enqueue_id="wave-a") == 1
+
+    claimed = q.claim("worker", now=1.0)
+    assert claimed["batch_id"] == wave_a[0]["batch_id"]
+    q.complete_batch(claimed["batch_id"], "worker", now=2.0)
+    assert q.enqueue_stats("wave-a")["done"] == 1
+    assert q.enqueue_stats("wave-a")["pending"] == 119
+
+
 def test_lease_guards_reject_non_owner():
     q = _queue()
     q.enqueue_batches([{"tile_ids": ["t1"], "zoom": 9}])

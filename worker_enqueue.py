@@ -62,13 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def run_enqueue(args) -> int:
-    region_filter = _csv(args.regions)
+def build_batch_payloads(*, regions=None, zoom=None, tier=None, tile_ids=None,
+                         batch_size=None, due_only=False):
+    """Select tiles and return queue payloads plus a by-zoom summary."""
+    region_filter = _csv(regions)
     if region_filter and any(r.lower() in _ALL_TOKENS for r in region_filter):
         region_filter = None
-    zoom_filter = [int(z) for z in (_csv(args.zoom) or [])] or None
-    tier_filter = _csv(args.tier)
-    tile_ids = _csv(args.tile_ids)
+    zoom_filter = [int(z) for z in (_csv(zoom) or [])] or None
+    tier_filter = _csv(tier)
+    selected_tile_ids = _csv(tile_ids)
 
     # Heavy imports happen here, after --help/arg validation.
     import scraper_global as sg
@@ -77,15 +79,12 @@ def run_enqueue(args) -> int:
         region_filter=region_filter,
         zoom_filter=zoom_filter,
         tier_filter=tier_filter,
-        tile_ids=tile_ids,
-        respect_schedule=args.due_only,
+        tile_ids=selected_tile_ids,
+        respect_schedule=due_only,
     )
-    if not tiles:
-        logger.warning("No tiles selected; nothing to enqueue.")
-        return 0
 
-    if args.batch_size:
-        sg.GLOBAL_TILE_BATCH_SIZE = int(args.batch_size)
+    if batch_size:
+        sg.GLOBAL_TILE_BATCH_SIZE = int(batch_size)
     batches = sg._chunk_global_tiles(tiles)
 
     payloads = [
@@ -96,6 +95,21 @@ def run_enqueue(args) -> int:
     by_zoom = {}
     for b in payloads:
         by_zoom[b["zoom"]] = by_zoom.get(b["zoom"], 0) + 1
+    return payloads, tiles, by_zoom
+
+
+def run_enqueue(args) -> int:
+    payloads, tiles, by_zoom = build_batch_payloads(
+        regions=args.regions,
+        zoom=args.zoom,
+        tier=args.tier,
+        tile_ids=args.tile_ids,
+        batch_size=args.batch_size,
+        due_only=args.due_only,
+    )
+    if not tiles:
+        logger.warning("No tiles selected; nothing to enqueue.")
+        return 0
 
     if args.dry_run:
         print(f"[dry-run] would enqueue {len(payloads)} batches "

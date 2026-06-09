@@ -214,6 +214,11 @@ def create_app(queue: Optional[Queue] = None, *, tokens: Optional[set] = None,
         result_meta = dict(result_meta)
         result_meta.setdefault("capture_count", len(body.captures))
 
+        ingest_result = None
+        if app.state.auto_ingest and artifact_path is not None:
+            ingest_result = _maybe_ingest(artifact_path)
+            result_meta["ingest"] = ingest_result
+
         try:
             updated = q.complete_batch(
                 batch_id, body.worker_id,
@@ -227,10 +232,6 @@ def create_app(queue: Optional[Queue] = None, *, tokens: Optional[set] = None,
             raise HTTPException(409, str(exc))
         except QueueError as exc:
             raise HTTPException(404, str(exc))
-
-        ingest_result = None
-        if app.state.auto_ingest and artifact_path is not None:
-            ingest_result = _maybe_ingest(artifact_path)
 
         return {
             "batch": q.public(updated),

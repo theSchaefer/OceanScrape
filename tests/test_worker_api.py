@@ -101,6 +101,49 @@ def test_claim_complete_flow_and_artifact():
                        headers=AUTH).json()["batch"] is None
 
 
+def test_auto_ingest_result_is_persisted_in_job_metadata():
+    tmp = tempfile.mkdtemp()
+    q = Queue(f"sqlite:///{os.path.join(tmp, 'q.sqlite3')}")
+    app = worker_api.create_app(
+        q,
+        tokens={TOKEN},
+        artifacts_dir=os.path.join(tmp, "artifacts"),
+        allow_no_auth=False,
+        auto_ingest=True,
+    )
+    client = TestClient(app)
+    q.enqueue_batches([{"tile_ids": ["t1"], "zoom": 9}])
+    claimed = client.post(
+        "/queue/claim", json={"worker_id": "w1"}, headers=AUTH
+    ).json()["batch"]
+
+    original = worker_api._maybe_ingest
+    worker_api._maybe_ingest = lambda _path: {
+        "ok": True, "entries": 1, "inserted": 1, "skipped": 0, "markers": 2,
+    }
+    try:
+        response = client.post(
+            f"/queue/{claimed['batch_id']}/complete",
+            json={
+                "worker_id": "w1",
+                "captures": [{
+                    "capture_type": "tile",
+                    "tile_id": "t1",
+                    "status": "success",
+                    "markers": [],
+                }],
+            },
+            headers=AUTH,
+        )
+    finally:
+        worker_api._maybe_ingest = original
+
+    assert response.status_code == 200
+    stored = q.get_job(claimed["batch_id"])
+    assert stored["result_meta"]["ingest"]["ok"] is True
+    assert stored["result_meta"]["ingest"]["inserted"] == 1
+
+
 def test_complete_rejects_lost_lease():
     client, q = _client()
     q.enqueue_batches([{"tile_ids": ["t1"], "zoom": 9}])

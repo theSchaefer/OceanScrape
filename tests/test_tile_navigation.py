@@ -133,10 +133,17 @@ def test_plan_navigation_zero_move():
 
 def test_plan_navigation_near_is_mouse_drag():
     # A few hundred metres at z12 -> a handful of drag steps.
-    plan = s._plan_navigation(10.0, 20.0, 10.0, 20.05, 12)
-    assert plan["steps_needed"] >= 1
-    assert plan["steps_needed"] <= s.URL_NAV_MAX_DRAG_STEPS
-    assert plan["mode"] == "mouse-drag"
+    saved_threshold = s.URL_NAV_MAX_DRAG_STEPS
+    try:
+        # Production may intentionally set 0 for URL-hopping-only. This test
+        # verifies the planner's normal near-drag behavior independently.
+        s.URL_NAV_MAX_DRAG_STEPS = 24
+        plan = s._plan_navigation(10.0, 20.0, 10.0, 20.05, 12)
+        assert plan["steps_needed"] >= 1
+        assert plan["steps_needed"] <= s.URL_NAV_MAX_DRAG_STEPS
+        assert plan["mode"] == "mouse-drag"
+    finally:
+        s.URL_NAV_MAX_DRAG_STEPS = saved_threshold
 
 
 def test_plan_navigation_far_is_url_load():

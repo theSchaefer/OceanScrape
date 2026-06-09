@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 
 _LATEST_RUN_POINTER = Path("data/raw/runs/LATEST")
-_SUBCOMMANDS = {"worker", "enqueue", "serve"}
+_SUBCOMMANDS = {"worker", "enqueue", "continuous", "serve"}
 
 
 def legacy_mode(image_files):
@@ -110,6 +110,9 @@ def main(argv=None):
         if cmd == "enqueue":
             from worker_enqueue import main as enqueue_main
             return enqueue_main(rest)
+        if cmd == "continuous":
+            from continuous_queue import main as continuous_main
+            return continuous_main(rest)
         if cmd == "serve":
             return _serve_main(rest)
 

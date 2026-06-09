@@ -50,6 +50,8 @@ DONE = "done"              # completed, artifact recorded
 FAILED = "failed"          # failed permanently (out of attempts / fatal)
 RETRYABLE = "retryable"    # failed but eligible to be re-claimed
 CLAIMABLE_STATES = (PENDING, RETRYABLE)
+ACTIVE_STATES = (PENDING, LEASED, RETRYABLE)
+TERMINAL_STATES = (DONE, FAILED)
 
 DEFAULT_LEASE_SECONDS = int(os.getenv("WORKER_LEASE_SECONDS", "600"))
 DEFAULT_MAX_ATTEMPTS = int(os.getenv("WORKER_MAX_ATTEMPTS", "3"))
@@ -533,6 +535,52 @@ class Queue:
             )
             params = (int(limit),)
         return [self._row_to_dict(r) for r in self._fetchall(sql, params)]
+
+    def list_enqueue_jobs(self, enqueue_id):
+        """Return every job in one enqueue wave, ordered by batch ordinal."""
+        sql = self._q(
+            f"SELECT {_COL_LIST} FROM capture_jobs WHERE enqueue_id=? "
+            "ORDER BY ordinal"
+        )
+        return [
+            self._row_to_dict(r)
+            for r in self._fetchall(sql, (enqueue_id,))
+        ]
+
+    def count_active_jobs(self, *, exclude_enqueue_id=None):
+        """Count jobs workers can still claim or are currently processing."""
+        placeholders = ", ".join("?" for _ in ACTIVE_STATES)
+        sql = (
+            "SELECT COUNT(*) FROM capture_jobs "
+            f"WHERE status IN ({placeholders})"
+        )
+        params = list(ACTIVE_STATES)
+        if exclude_enqueue_id is not None:
+            sql += " AND (enqueue_id IS NULL OR enqueue_id <> ?)"
+            params.append(exclude_enqueue_id)
+        row = self._fetchone(self._q(sql), tuple(params))
+        return int(row[0]) if row else 0
+
+    def enqueue_stats(self, enqueue_id):
+        """Return status counts for one enqueue wave without a row limit."""
+        rows = self._fetchall(
+            self._q(
+                "SELECT status, COUNT(*) FROM capture_jobs "
+                "WHERE enqueue_id=? GROUP BY status"
+            ),
+            (enqueue_id,),
+        )
+        by_status = {r[0]: r[1] for r in rows}
+        return {
+            "enqueue_id": enqueue_id,
+            "by_status": by_status,
+            "total": sum(by_status.values()),
+            "pending": by_status.get(PENDING, 0),
+            "leased": by_status.get(LEASED, 0),
+            "done": by_status.get(DONE, 0),
+            "failed": by_status.get(FAILED, 0),
+            "retryable": by_status.get(RETRYABLE, 0),
+        }
 
     def stats(self, *, now=None):
         rows = self._fetchall(

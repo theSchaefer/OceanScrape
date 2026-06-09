@@ -62,7 +62,6 @@ from grid import (
     tile_id as make_tile_id, _point_in_polygon,
     lat_to_pixel_y, lon_to_pixel_x, pixel_x_to_lon, pixel_y_to_lat,
 )
-from marker_dedup import dedup_markers_spatial
 from regions import REGIONS, REGION_TIERS, load_bbox_regions
 from update_database import get_due_tile_ids, ingest_file
 
@@ -115,10 +114,6 @@ AIS_FIRST_RESPONSE_GRACE_MS = int(os.getenv("AIS_FIRST_RESPONSE_GRACE_MS", "1200
 LEAFLET_DIAGNOSTICS = os.getenv("LEAFLET_DIAGNOSTICS", "0") == "1"
 USE_BBOX_TILING = os.getenv("USE_BBOX_TILING", "1") == "1"
 BBOX_OVERLAP_PX = int(os.getenv("BBOX_OVERLAP_PX", "128"))
-MARKER_DEDUP_EPS_DEG = float(os.getenv(
-    "MARKER_DEDUP_EPS_DEG",
-    os.getenv("VESSEL_DEDUP_EPS_DEG", "0.003"),
-))
 GLOBAL_GRID_BBOX = parse_global_bbox(os.getenv("GLOBAL_GRID_BBOX"))
 GLOBAL_GRID_DEFAULT_ZOOM = int(os.getenv("GLOBAL_GRID_DEFAULT_ZOOM", "9"))
 GLOBAL_TILE_BATCH_SIZE = int(os.getenv("GLOBAL_TILE_BATCH_SIZE", "12"))
@@ -2516,6 +2511,11 @@ def _global_tile_qa_flags():
     return flags
 
 
+def _owned_markers_for_tile(tile_id, markers):
+    """Apply deterministic tile ownership without spatially merging markers."""
+    return GLOBAL_TILE_INDEX.filter_markers_for_tile(tile_id, markers)
+
+
 def _save_tile_image(tile, timestamp_str, img_bytes):
     if not SAVE_IMAGES:
         return "", 0.0
@@ -2526,6 +2526,11 @@ def _save_tile_image(tile, timestamp_str, img_bytes):
     with open(output_path, "wb") as f:
         f.write(img_bytes)
     return str(output_path), output_path.stat().st_size / 1024
+
+
+def _utc_capture_timestamp():
+    """Return a UTC timestamp precise enough for per-tile capture identity."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S-%f")
 
 
 def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
@@ -2707,6 +2712,9 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
             screenshot_args = {"type": SCREENSHOT_FORMAT}
             if SCREENSHOT_FORMAT == "jpeg":
                 screenshot_args["quality"] = SCREENSHOT_QUALITY
+            # Timestamp the actual image acquisition, not the browser/batch
+            # startup. A 12-tile batch can span several minutes.
+            tile_timestamp_str = _utc_capture_timestamp()
             section_started = time.perf_counter()
             img_bytes = map_locator.screenshot(**screenshot_args)
             timing["screenshot_s"] = time.perf_counter() - section_started
@@ -2729,11 +2737,8 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
                 center_offset=center_offset,
             )
             timing["opencv_s"] = time.perf_counter() - section_started
-            accepted_markers, rejected_markers = GLOBAL_TILE_INDEX.filter_markers_for_tile(
+            accepted_markers, rejected_markers = _owned_markers_for_tile(
                 tid, raw_markers
-            )
-            accepted_markers = dedup_markers_spatial(
-                accepted_markers, MARKER_DEDUP_EPS_DEG
             )
             counts = _tile_result_counts(accepted_markers)
             tile_det = {
@@ -2783,11 +2788,13 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
                         tid, row, col, zoom, act_zoom,
                     )
 
-            saved_path, file_size_kb = _save_tile_image(tile, timestamp_str, img_bytes)
+            saved_path, file_size_kb = _save_tile_image(
+                tile, tile_timestamp_str, img_bytes
+            )
             nav_mode_used = _nav_mode_summary(nav_counts)
             projection_mode = _projection_mode_summary([tile_det])
             _emit_tile_log(
-                timestamp_str,
+                tile_timestamp_str,
                 tile,
                 saved_path,
                 "success",
@@ -2882,7 +2889,7 @@ def _capture_global_tile_batch(tile_batch, timestamp_str, page, map_dims,
                 timing.get("opencv_s", 0.0),
             )
             _emit_tile_log(
-                timestamp_str,
+                _utc_capture_timestamp(),
                 tile,
                 "",
                 "error",
