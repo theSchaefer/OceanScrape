@@ -33,10 +33,8 @@ import json
 import logging
 import math
 import os
-import platform
 import random
 import re
-import string
 import sys
 import threading
 import time
@@ -50,7 +48,7 @@ from PIL import Image, ImageDraw
 from patchright.sync_api import sync_playwright
 
 from debug_map_probe import run_map_probe, write_frame_scan
-from geo_profile import GeoProfile, resolve_all_proxies, EGYPT_FALLBACK_DATA
+from geo_profile import GeoProfile, resolve_all_proxies
 from global_tile_grid import (
     GlobalTileIndex,
     build_global_tile_manifest,
@@ -306,42 +304,13 @@ def _pick_batch_proxy(exclude_servers=()):
     burned) endpoint so a fresh attempt gets a genuinely different exit IP."""
     candidates = [p for p in proxies if p["server"] not in exclude_servers]
     proxy = random.choice(candidates or proxies)
-    fallback = GeoProfile(proxy=proxy, **EGYPT_FALLBACK_DATA)
-    geo = geo_profiles.get(proxy["server"], fallback)
+    geo = geo_profiles.get(proxy["server"])
+    if geo is None or not geo.exit_ip:
+        raise RuntimeError(
+            f"proxy geo profile unavailable for {proxy['server']}; "
+            "refusing to use a mismatched fallback identity"
+        )
     return proxy, geo
-
-# --- User agents --------------------------------------------------------------
-
-# UA lists keyed by actual OS — must match navigator.platform to avoid
-# Cloudflare cross-check detection.  Versions should track recent stable
-# Chrome releases; outdated versions are a strong bot signal.
-_CHROME_UA_BY_OS = {
-    "windows": [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-    ],
-    "linux": [
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-    ],
-    "darwin": [
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-    ],
-}
-
-# Detect host OS once at import time
-_HOST_OS = "linux" if platform.system() == "Linux" else (
-    "darwin" if platform.system() == "Darwin" else "windows"
-)
-
-
-def _random_user_agent() -> str:
-    return random.choice(_CHROME_UA_BY_OS[_HOST_OS])
-
 
 # --- Helpers ------------------------------------------------------------------
 
@@ -353,26 +322,28 @@ def build_url(lat, lon, zoom):
     )
 
 
+def _chrome_user_agent(browser_version):
+    """Build Chrome's reduced UA from the installed browser's actual major."""
+    major = str(browser_version).split(".", 1)[0]
+    if not major.isdigit():
+        raise ValueError(f"invalid Chrome version: {browser_version!r}")
+    if sys.platform == "darwin":
+        platform_token = "Macintosh; Intel Mac OS X 10_15_7"
+    elif sys.platform.startswith("win"):
+        platform_token = "Windows NT 10.0; Win64; x64"
+    else:
+        platform_token = "X11; Linux x86_64"
+    return (
+        f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+
+
 def _polygon_center(polygon):
     """Return (lat, lon) center of a polygon."""
     lats = [p[0] for p in polygon]
     lons = [p[1] for p in polygon]
     return ((min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2)
-
-
-def _random_cookies(domain):
-    """Generate random cookies to mimic a returning visitor."""
-    def _rand_str(n):
-        return "".join(random.choices(string.ascii_letters + string.digits, k=n))
-
-    cookies = [
-        {"name": "_ga", "value": f"GA1.2.{random.randint(100000000, 999999999)}.{random.randint(1600000000, 1710000000)}", "domain": domain, "path": "/"},
-        {"name": "_gid", "value": f"GA1.2.{random.randint(100000000, 999999999)}.{random.randint(1700000000, 1710000000)}", "domain": domain, "path": "/"},
-        {"name": "_gat", "value": "1", "domain": domain, "path": "/"},
-        {"name": "JSESSIONID", "value": _rand_str(32), "domain": domain, "path": "/"},
-        {"name": "SERVERID", "value": f"s{random.randint(1, 5)}", "domain": domain, "path": "/"},
-    ]
-    return random.sample(cookies, k=random.randint(2, len(cookies)))
 
 
 def dismiss_cookie_banner(page, timeout_ms=None):
@@ -1443,57 +1414,6 @@ def wait_for_map_tiles(page, timeout_ms=8000):
             return
         time.sleep(0.1)
     logger.warning("  wait_for_map_tiles: timed out after %dms", timeout_ms)
-
-
-# --- Stealth ------------------------------------------------------------------
-
-
-def _inject_stealth_scripts(page, geo: GeoProfile):
-    """Minimal stealth — Patchright already patches navigator.webdriver and
-    chrome.runtime.  Only add what Patchright does NOT handle."""
-    locale = geo.locale
-    language = locale.split("-")[0]
-
-    # navigator.platform must match the UA string's OS claim, otherwise
-    # Cloudflare's cross-check flags the mismatch as a bot.
-    plat_value = {
-        "windows": "Win32",
-        "linux": "Linux x86_64",
-        "darwin": "MacIntel",
-    }[_HOST_OS]
-
-    page.add_init_script(f"""
-    Object.defineProperty(navigator, 'languages', {{
-        get: () => ['{locale}', '{language}', 'en'],
-    }});
-
-    Object.defineProperty(navigator, 'platform', {{
-        get: () => '{plat_value}',
-    }});
-
-    const _origQuery = window.navigator.permissions.query.bind(navigator.permissions);
-    window.navigator.permissions.query = (params) =>
-        params.name === 'notifications'
-            ? Promise.resolve({{ state: Notification.permission }})
-            : _origQuery(params);
-
-    // Mimic a real Chrome plugin list — must be PluginArray-shaped, not raw ints.
-    // Real Chrome always has these two; returning integers trips any script that
-    // reads .name or .description.
-    Object.defineProperty(navigator, 'plugins', {{
-        get: () => {{
-            const pdf = {{ name: 'PDF Viewer', description: 'Portable Document Format',
-                          filename: 'internal-pdf-viewer', length: 1 }};
-            const native = {{ name: 'Chrome PDF Viewer', description: '',
-                             filename: 'internal-pdf-viewer', length: 1 }};
-            const arr = [pdf, native];
-            arr.item = (i) => arr[i];
-            arr.namedItem = (n) => arr.find(p => p.name === n) || null;
-            arr.refresh = () => {{}};
-            return arr;
-        }}
-    }});
-    """)
 
 
 def _inject_map_hooks(page):
@@ -3095,7 +3015,7 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
 
         try:
             with sync_playwright() as p:
-                _has_display = os.environ.get("DISPLAY") or _HOST_OS != "linux"
+                _has_display = os.environ.get("DISPLAY") or sys.platform != "linux"
                 chrome_args = ["--headless=new", "--disable-dev-shm-usage"]
                 if _has_display:
                     chrome_args += [
@@ -3122,9 +3042,8 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                     geolocation={"latitude": geo.latitude, "longitude": geo.longitude},
                     permissions=["geolocation"],
                     extra_http_headers={"Accept-Language": geo.accept_language},
-                    user_agent=_random_user_agent(),
+                    user_agent=_chrome_user_agent(browser.version),
                 )
-                context.add_cookies(_random_cookies(".marinetraffic.com"))
                 logger.info(
                     "[worker=%s batch=%s attempt=%d] browser+context started "
                     "proxy=%s",
@@ -3132,7 +3051,6 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 )
 
                 page = context.new_page()
-                _inject_stealth_scripts(page, geo)
                 _inject_map_hooks(page)
 
                 # Track vessel-data network responses so the per-tile AIS wait
@@ -3821,6 +3739,14 @@ def main():
     # Resolve proxy geolocations at startup
     logger.info("Resolving proxy geolocations...")
     geo_profiles = resolve_all_proxies(proxies)
+    unresolved = [
+        proxy["server"] for proxy in proxies
+        if not getattr(geo_profiles.get(proxy["server"]), "exit_ip", "")
+    ]
+    if unresolved:
+        raise RuntimeError(
+            "proxy geo resolution incomplete: " + ", ".join(unresolved)
+        )
     logger.info("Resolved %d/%d proxy profiles", len(geo_profiles), len(proxies))
 
     logger.info("Global tile summary: %s", selected_summary)

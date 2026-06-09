@@ -190,17 +190,23 @@ def _summarize(captures: list) -> dict:
 
 
 def _ensure_geo(no_geo: bool):
-    """Resolve proxy geolocations once (best-effort), like scraper main()."""
+    """Resolve proxy geolocations once before starting a browser."""
     global _geo_resolved
     if _geo_resolved or no_geo:
         return
     sg = _load_scraper()
-    try:
-        sg.geo_profiles = sg.resolve_all_proxies(sg.proxies)
-        logger.info("Resolved %d/%d proxy geo profiles",
-                    len(sg.geo_profiles), len(sg.proxies))
-    except Exception as exc:
-        logger.warning("Proxy geo resolution failed (%s); using fallbacks", exc)
+    profiles = sg.resolve_all_proxies(sg.proxies)
+    unresolved = [
+        proxy["server"] for proxy in sg.proxies
+        if not getattr(profiles.get(proxy["server"]), "exit_ip", "")
+    ]
+    if unresolved:
+        raise RuntimeError(
+            "proxy geo resolution incomplete: " + ", ".join(unresolved)
+        )
+    sg.geo_profiles = profiles
+    logger.info("Resolved %d/%d proxy geo profiles",
+                len(sg.geo_profiles), len(sg.proxies))
     _geo_resolved = True
 
 
