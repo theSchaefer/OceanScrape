@@ -23,7 +23,11 @@ import psycopg2.extras
 from dotenv import load_dotenv
 
 from global_tile_grid import build_global_tile_manifest, parse_global_bbox
-from marker_dedup import count_markers_by_type, dedup_markers_spatial
+from marker_dedup import (
+    count_markers_by_type,
+    dedup_markers_across_tiles,
+    dedup_markers_spatial,
+)
 
 load_dotenv()
 
@@ -129,6 +133,10 @@ CREATE INDEX IF NOT EXISTS idx_capture_tiles_enabled
 CREATE TABLE IF NOT EXISTS tile_captures (
     id                  BIGSERIAL PRIMARY KEY,
     tile_id             TEXT NOT NULL REFERENCES capture_tiles(tile_id) ON DELETE RESTRICT,
+    wave_id             TEXT,
+    enqueue_id          TEXT,
+    batch_id            TEXT,
+    worker_id           TEXT,
     captured_at         TIMESTAMPTZ NOT NULL,
     ingested_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     filepath            TEXT NOT NULL DEFAULT '',
@@ -150,11 +158,19 @@ CREATE TABLE IF NOT EXISTS tile_captures (
     CONSTRAINT uq_tile_capture_timestamp UNIQUE (tile_id, captured_at)
 );
 
+ALTER TABLE tile_captures ADD COLUMN IF NOT EXISTS wave_id TEXT;
+ALTER TABLE tile_captures ADD COLUMN IF NOT EXISTS enqueue_id TEXT;
+ALTER TABLE tile_captures ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE tile_captures ADD COLUMN IF NOT EXISTS worker_id TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_tile_captures_time
     ON tile_captures (captured_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_tile_captures_tile_time
     ON tile_captures (tile_id, captured_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tile_captures_wave
+    ON tile_captures (wave_id, tile_id);
 
 CREATE TABLE IF NOT EXISTS global_vessel_positions (
     id                  BIGSERIAL PRIMARY KEY,
@@ -175,6 +191,53 @@ CREATE INDEX IF NOT EXISTS idx_gvp_tile_time
 
 CREATE INDEX IF NOT EXISTS idx_gvp_lat_lon
     ON global_vessel_positions (lat, lon);
+
+CREATE TABLE IF NOT EXISTS capture_waves (
+    wave_id             TEXT PRIMARY KEY,
+    enqueue_id          TEXT NOT NULL UNIQUE,
+    status              VARCHAR(16) NOT NULL DEFAULT 'running',
+    started_at          TIMESTAMPTZ NOT NULL,
+    completed_at        TIMESTAMPTZ,
+    snapshot_at         TIMESTAMPTZ,
+    batch_count         INTEGER NOT NULL DEFAULT 0,
+    expected_tiles      INTEGER NOT NULL DEFAULT 0,
+    captured_tiles      INTEGER NOT NULL DEFAULT 0,
+    successful_tiles    INTEGER NOT NULL DEFAULT 0,
+    failed_tiles        INTEGER NOT NULL DEFAULT 0,
+    raw_markers         INTEGER NOT NULL DEFAULT 0,
+    snapshot_markers    INTEGER NOT NULL DEFAULT 0,
+    tile_ids            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    coverage            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    summary             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_waves_completed
+    ON capture_waves (status, snapshot_at DESC);
+
+CREATE TABLE IF NOT EXISTS wave_vessel_positions (
+    id                  BIGSERIAL PRIMARY KEY,
+    wave_id             TEXT NOT NULL REFERENCES capture_waves(wave_id) ON DELETE CASCADE,
+    tile_capture_id     BIGINT NOT NULL REFERENCES tile_captures(id) ON DELETE RESTRICT,
+    tile_id             TEXT NOT NULL,
+    zoom                SMALLINT NOT NULL,
+    captured_at         TIMESTAMPTZ NOT NULL,
+    snapshot_at         TIMESTAMPTZ NOT NULL,
+    lat                 DOUBLE PRECISION NOT NULL,
+    lon                 DOUBLE PRECISION NOT NULL,
+    ship_type           VARCHAR(16) NOT NULL,
+    motion              VARCHAR(16) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wvp_wave
+    ON wave_vessel_positions (wave_id);
+
+CREATE INDEX IF NOT EXISTS idx_wvp_snapshot
+    ON wave_vessel_positions (snapshot_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_wvp_lat_lon
+    ON wave_vessel_positions (lat, lon);
 """
 
 _INSERT_SQL = """
@@ -230,12 +293,14 @@ ON CONFLICT (tile_id) DO UPDATE SET
 
 _INSERT_TILE_CAPTURE_SQL = """
 INSERT INTO tile_captures (
-    tile_id, captured_at, filepath, zoom, status, file_size_kb,
+    tile_id, wave_id, enqueue_id, batch_id, worker_id,
+    captured_at, filepath, zoom, status, file_size_kb,
     tankers, cargos, moving_tankers, moving_cargos, markers,
     detections, nav_mode, projection_mode, qa_flags, qa_confidence,
     tile_bounds, capture_bounds
 ) VALUES (
-    %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
     %s, %s
@@ -247,6 +312,13 @@ _INSERT_GLOBAL_MARKER_SQL = """
 INSERT INTO global_vessel_positions (
     tile_capture_id, tile_id, captured_at, lat, lon, ship_type, motion
 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+"""
+
+_INSERT_WAVE_MARKER_SQL = """
+INSERT INTO wave_vessel_positions (
+    wave_id, tile_capture_id, tile_id, zoom, captured_at, snapshot_at,
+    lat, lon, ship_type, motion
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 DEFAULT_LOG_PATH = Path("./data") / "captures_log.jsonl"
@@ -272,6 +344,26 @@ def _ensure_schema(conn):
     """Create the captures table and indexes if they don't exist."""
     with conn.cursor() as cur:
         cur.execute(_SCHEMA_SQL)
+        cur.execute(
+            "ALTER TABLE tile_captures "
+            "ADD COLUMN IF NOT EXISTS wave_id TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE tile_captures "
+            "ADD COLUMN IF NOT EXISTS enqueue_id TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE tile_captures "
+            "ADD COLUMN IF NOT EXISTS batch_id TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE tile_captures "
+            "ADD COLUMN IF NOT EXISTS worker_id TEXT"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tile_captures_wave "
+            "ON tile_captures (wave_id, tile_id)"
+        )
         # Global tile captures preserve every owned detector output. Older
         # installations used this constraint as an exact-marker dedup layer.
         cur.execute(
@@ -330,6 +422,18 @@ def _parse_datetime(date_str):
     except (ValueError, TypeError):
         logger.warning("Could not parse date_time '%s', using current UTC time", date_str)
         return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(value):
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(
+            timezone.utc
+        )
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    return _parse_datetime(value)
 
 
 def _dedup_legacy_entry_markers(entry):
@@ -435,8 +539,14 @@ def _tile_entry_to_row(entry, markers):
     tile = _tile_from_entry(entry)
     counts = _entry_counts(entry, markers)
     captured_at = _parse_datetime(entry.get("date_time", ""))
+    wave_id = entry.get("wave_id") or entry.get("enqueue_id")
+    enqueue_id = entry.get("enqueue_id") or wave_id
     return (
         tile["tile_id"],
+        wave_id,
+        enqueue_id,
+        entry.get("batch_id"),
+        entry.get("worker_id"),
         captured_at,
         entry.get("filepath", ""),
         int(tile["zoom"]),
@@ -507,6 +617,215 @@ def _insert_global_markers(cur, tile_capture_id, tile_id, captured_at, markers):
     return inserted
 
 
+def begin_capture_wave(wave_id, tile_ids, batch_count, started_at=None):
+    """Create or refresh the warehouse record for a queued capture wave."""
+    ids = list(dict.fromkeys(tile_ids or []))
+    started = _as_utc_datetime(started_at)
+    conn = _get_connection()
+    try:
+        _ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO capture_waves (
+                    wave_id, enqueue_id, status, started_at, batch_count,
+                    expected_tiles, tile_ids, coverage, summary, updated_at
+                ) VALUES (
+                    %s, %s, 'running', %s, %s, %s, %s, %s, '{}'::jsonb, NOW()
+                )
+                ON CONFLICT (wave_id) DO UPDATE SET
+                    enqueue_id = EXCLUDED.enqueue_id,
+                    batch_count = EXCLUDED.batch_count,
+                    expected_tiles = EXCLUDED.expected_tiles,
+                    tile_ids = EXCLUDED.tile_ids,
+                    coverage = EXCLUDED.coverage,
+                    updated_at = NOW()
+            """, (
+                wave_id,
+                wave_id,
+                started,
+                int(batch_count),
+                len(ids),
+                psycopg2.extras.Json(ids),
+                psycopg2.extras.Json({
+                    "expected": len(ids),
+                    "captured": 0,
+                    "missing": ids,
+                }),
+            ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to register capture wave %s", wave_id)
+        raise
+    finally:
+        conn.close()
+
+
+def fail_capture_wave(wave_id, summary=None, completed_at=None):
+    """Mark a wave failed without publishing a dashboard snapshot."""
+    conn = _get_connection()
+    try:
+        _ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE capture_waves
+                SET status = 'failed',
+                    completed_at = %s,
+                    summary = %s,
+                    updated_at = NOW()
+                WHERE wave_id = %s
+            """, (
+                _as_utc_datetime(completed_at),
+                psycopg2.extras.Json(summary or {}),
+                wave_id,
+            ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to mark capture wave %s failed", wave_id)
+        raise
+    finally:
+        conn.close()
+
+
+def finalize_capture_wave(wave_id, summary=None, completed_at=None):
+    """Atomically publish one deduplicated dashboard snapshot for a wave.
+
+    Raw tile captures remain untouched. The snapshot selects the latest
+    successful raw capture for every expected tile, orders candidates by zoom
+    descending, and spatially deduplicates them so high-resolution captures
+    win before overlap duplicates are collapsed.
+    """
+    snapshot_at = _as_utc_datetime(completed_at)
+    conn = _get_connection()
+    try:
+        _ensure_schema(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT tile_ids, expected_tiles
+                FROM capture_waves
+                WHERE wave_id = %s
+                FOR UPDATE
+            """, (wave_id,))
+            wave = cur.fetchone()
+            if not wave:
+                raise RuntimeError(f"capture wave {wave_id!r} is not registered")
+
+            expected_ids = list(wave["tile_ids"] or [])
+            cur.execute("""
+                SELECT DISTINCT ON (tile_id)
+                       id, tile_id, zoom, captured_at, status
+                FROM tile_captures
+                WHERE wave_id = %s
+                  AND tile_id = ANY(%s)
+                ORDER BY tile_id, captured_at DESC, id DESC
+            """, (wave_id, expected_ids))
+            captures = cur.fetchall()
+            by_tile = {row["tile_id"]: row for row in captures}
+            missing = [tile_id for tile_id in expected_ids if tile_id not in by_tile]
+            unsuccessful = [
+                row["tile_id"] for row in captures
+                if row["status"] != "success"
+            ]
+            if missing or unsuccessful:
+                raise RuntimeError(
+                    f"wave {wave_id} is incomplete: "
+                    f"missing={len(missing)} unsuccessful={len(unsuccessful)}"
+                )
+
+            capture_ids = [row["id"] for row in captures]
+            cur.execute("""
+                SELECT gvp.id, gvp.tile_capture_id, gvp.tile_id,
+                       tc.zoom, gvp.captured_at, gvp.lat, gvp.lon,
+                       gvp.ship_type, gvp.motion
+                FROM global_vessel_positions gvp
+                JOIN tile_captures tc ON tc.id = gvp.tile_capture_id
+                WHERE gvp.tile_capture_id = ANY(%s)
+                ORDER BY tc.zoom DESC, gvp.captured_at DESC, gvp.id
+            """, (capture_ids,))
+            raw_rows = cur.fetchall()
+            candidates = [{
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "type": row["ship_type"],
+                "motion": row["motion"],
+                "tile_capture_id": row["tile_capture_id"],
+                "tile_id": row["tile_id"],
+                "zoom": row["zoom"],
+                "captured_at": row["captured_at"],
+            } for row in raw_rows]
+            snapshot_markers = dedup_markers_across_tiles(
+                candidates, MARKER_DEDUP_EPS_DEG
+            )
+
+            cur.execute(
+                "DELETE FROM wave_vessel_positions WHERE wave_id = %s",
+                (wave_id,),
+            )
+            for marker in snapshot_markers:
+                cur.execute(_INSERT_WAVE_MARKER_SQL, (
+                    wave_id,
+                    marker["tile_capture_id"],
+                    marker["tile_id"],
+                    int(marker["zoom"]),
+                    marker["captured_at"],
+                    snapshot_at,
+                    float(marker["lat"]),
+                    float(marker["lon"]),
+                    marker.get("type", "unknown"),
+                    marker.get("motion", "unknown"),
+                ))
+
+            coverage = {
+                "expected": len(expected_ids),
+                "captured": len(captures),
+                "successful": len(captures),
+                "failed": 0,
+                "missing": [],
+            }
+            cur.execute("""
+                UPDATE capture_waves
+                SET status = 'completed',
+                    completed_at = %s,
+                    snapshot_at = %s,
+                    captured_tiles = %s,
+                    successful_tiles = %s,
+                    failed_tiles = 0,
+                    raw_markers = %s,
+                    snapshot_markers = %s,
+                    coverage = %s,
+                    summary = %s,
+                    updated_at = NOW()
+                WHERE wave_id = %s
+            """, (
+                snapshot_at,
+                snapshot_at,
+                len(captures),
+                len(captures),
+                len(raw_rows),
+                len(snapshot_markers),
+                psycopg2.extras.Json(coverage),
+                psycopg2.extras.Json(summary or {}),
+                wave_id,
+            ))
+        conn.commit()
+        result = {
+            "wave_id": wave_id,
+            "snapshot_at": snapshot_at.isoformat(),
+            "tiles": len(captures),
+            "raw_markers": len(raw_rows),
+            "snapshot_markers": len(snapshot_markers),
+        }
+        logger.info("Published capture wave snapshot: %s", result)
+        return result
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to finalize capture wave %s", wave_id)
+        raise
+    finally:
+        conn.close()
+
+
 def insert_tile_capture(data):
     """Insert a single global tile capture into PostgreSQL."""
     conn = _get_connection()
@@ -514,7 +833,7 @@ def insert_tile_capture(data):
         _ensure_schema(conn)
         markers = list(data.get("markers", []))
         row = _tile_entry_to_row(data, markers)
-        captured_at = row[1]
+        captured_at = row[5]
         tile_id = row[0]
         with conn.cursor() as cur:
             _upsert_entry_tile(cur, data)
@@ -653,7 +972,7 @@ def _insert_entries(cur, entries):
             markers = list(entry.get("markers", []))
             row = _tile_entry_to_row(entry, markers)
             tile_id = row[0]
-            captured_at = row[1]
+            captured_at = row[5]
             _upsert_entry_tile(cur, entry)
             logger.debug(
                 "Inserting tile capture: tile=%s status=%s markers=%d",

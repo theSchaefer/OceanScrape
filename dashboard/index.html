@@ -200,9 +200,12 @@ kbd{background:var(--surface2);border:1px solid var(--border);border-radius:2px;
   <div class="sb-section">
     <div class="sb-title">Pipeline Status</div>
     <div class="status-row"><span class="status-dot" id="status-dot"></span><span id="status-text">Loading...</span></div>
-    <div class="status-row"><span style="color:var(--text-dim)">Last scrape:</span> <span id="status-last">--</span></div>
-    <div class="status-row"><span style="color:var(--text-dim)">Next run:</span> <span id="status-next">--</span></div>
-    <div class="status-row"><span style="color:var(--text-dim)">Ships detected:</span> <span id="status-ships">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Latest wave:</span> <span id="status-wave">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Published:</span> <span id="status-last">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Coverage:</span> <span id="status-coverage">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Snapshot markers:</span> <span id="status-ships">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Raw markers:</span> <span id="status-raw">--</span></div>
+    <div class="status-row"><span style="color:var(--text-dim)">Next expected:</span> <span id="status-next">--</span></div>
   </div>
   <div class="sb-section">
     <div class="sb-title">Filters</div>
@@ -717,10 +720,18 @@ async function loadStatus() {
     const ageMin = last ? (Date.now() - last.getTime()) / 60000 : Infinity;
     dot.className = 'status-dot ' + (ageMin < d.interval_minutes * 1.5 ? 'green' : ageMin < d.interval_minutes * 3 ? 'yellow' : 'red');
     $('#status-text').textContent = ageMin < d.interval_minutes * 1.5 ? 'Healthy' : 'Delayed';
+    $('#status-wave').textContent = d.wave_id ? d.wave_id.replace('enq_cont_', '').slice(0, 12) : '--';
+    $('#status-wave').title = d.wave_id || '';
     $('#status-last').textContent = last ? last.toLocaleString() : '--';
     $('#status-next').textContent = d.next_scheduled ? new Date(d.next_scheduled).toLocaleString() : '--';
     const ships = d.last_run_stats ? d.last_run_stats.total_ships : 0;
     $('#status-ships').textContent = ships != null ? ships.toLocaleString() : '--';
+    const raw = d.last_run_stats ? d.last_run_stats.raw_markers : null;
+    $('#status-raw').textContent = raw != null ? raw.toLocaleString() : '--';
+    const cov = d.coverage;
+    $('#status-coverage').textContent = cov
+      ? `${cov.successful || 0}/${cov.expected || 0} tiles`
+      : '--';
   } catch(e) {}
 }
 
@@ -749,9 +760,10 @@ async function loadVessels(timestamp) {
       const cov = d.coverage;
       const partial = cov && cov.regions_expected > 1
         && cov.regions_returned < cov.regions_expected
-        ? ` (${cov.regions_returned}/${cov.regions_expected} regions)` : '';
+        ? ` (${cov.regions_returned}/${cov.regions_expected} tiles)` : '';
       $('#last-updated').textContent =
-        'Data: ' + new Date(d.timestamp).toLocaleString() + partial;
+        'Wave ' + (d.wave_id ? d.wave_id.replace('enq_cont_', '').slice(0, 10) : '--')
+        + ' · ' + new Date(d.timestamp).toLocaleString() + partial;
     }
   } catch(e) {}
 }

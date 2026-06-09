@@ -206,13 +206,18 @@ def create_app(queue: Optional[Queue] = None, *, tokens: Optional[set] = None,
         job = q.get_job(batch_id)
         if job is None:
             raise HTTPException(404, f"unknown batch {batch_id!r}")
+        if job["status"] != "leased" or job["claimed_by"] != body.worker_id:
+            raise HTTPException(
+                409, f"batch {batch_id!r} not leased by {body.worker_id!r}"
+            )
 
+        captures = _attach_capture_provenance(job, body.worker_id, body.captures)
         artifact_path = _write_artifact(
-            app.state.artifacts_dir, batch_id, job.get("job_id"), body.captures,
+            app.state.artifacts_dir, batch_id, job.get("job_id"), captures,
         )
-        result_meta = body.stats or _summarize_captures(body.captures)
+        result_meta = body.stats or _summarize_captures(captures)
         result_meta = dict(result_meta)
-        result_meta.setdefault("capture_count", len(body.captures))
+        result_meta.setdefault("capture_count", len(captures))
 
         ingest_result = None
         if app.state.auto_ingest and artifact_path is not None:
@@ -271,6 +276,20 @@ def create_app(queue: Optional[Queue] = None, *, tokens: Optional[set] = None,
 # ---------------------------------------------------------------------------
 # Artifact + ingest helpers
 # ---------------------------------------------------------------------------
+
+def _attach_capture_provenance(job, worker_id, captures):
+    """Add queue provenance to every raw capture before it is persisted."""
+    enriched = []
+    wave_id = job.get("enqueue_id")
+    for capture in captures:
+        row = dict(capture)
+        row["wave_id"] = wave_id
+        row["enqueue_id"] = wave_id
+        row["batch_id"] = job["batch_id"]
+        row["worker_id"] = worker_id
+        enriched.append(row)
+    return enriched
+
 
 def _write_artifact(artifacts_dir: Path, batch_id, job_id, captures) -> Optional[Path]:
     """Persist a worker's uploaded raw captures as a JSONL artifact file.

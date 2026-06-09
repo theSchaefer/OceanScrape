@@ -10,6 +10,7 @@ Run with::
     .venv/Scripts/python.exe tests/test_worker_api.py   # standalone
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -94,6 +95,11 @@ def test_claim_complete_flow_and_artifact():
     with open(body["artifact_path"], encoding="utf-8") as f:
         lines = [ln for ln in f if ln.strip()]
     assert len(lines) == 2
+    stored_capture = json.loads(lines[0])
+    assert stored_capture["wave_id"] == claimed["enqueue_id"]
+    assert stored_capture["enqueue_id"] == claimed["enqueue_id"]
+    assert stored_capture["batch_id"] == batch_id
+    assert stored_capture["worker_id"] == "w1"
     assert body["batch"]["result_meta"]["tankers"] == 2
 
     # job is gone from the claimable set

@@ -253,15 +253,41 @@ def _latest_global_snapshot(cur, timestamp=None):
     if timestamp:
         ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         cur.execute("""
-            SELECT captured_at
-            FROM tile_captures
-            ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
+            SELECT snapshot_at AS captured_at
+            FROM capture_waves
+            WHERE status = 'completed' AND snapshot_at IS NOT NULL
+            ORDER BY ABS(EXTRACT(EPOCH FROM snapshot_at - %s))
             LIMIT 1
         """, (ts,))
     else:
-        cur.execute("SELECT MAX(captured_at) AS captured_at FROM tile_captures")
+        cur.execute("""
+            SELECT MAX(snapshot_at) AS captured_at
+            FROM capture_waves
+            WHERE status = 'completed'
+        """)
     row = cur.fetchone()
     return row["captured_at"] if row else None
+
+
+def _wave_for_snapshot(cur, timestamp=None):
+    if timestamp:
+        ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        cur.execute("""
+            SELECT *
+            FROM capture_waves
+            WHERE status = 'completed' AND snapshot_at IS NOT NULL
+            ORDER BY ABS(EXTRACT(EPOCH FROM snapshot_at - %s))
+            LIMIT 1
+        """, (ts,))
+    else:
+        cur.execute("""
+            SELECT *
+            FROM capture_waves
+            WHERE status = 'completed' AND snapshot_at IS NOT NULL
+            ORDER BY snapshot_at DESC
+            LIMIT 1
+        """)
+    return cur.fetchone()
 
 
 def _global_rows_for_polygon(cur, polygon, snapshot_ts=None,
@@ -269,26 +295,26 @@ def _global_rows_for_polygon(cur, polygon, snapshot_ts=None,
                              type_filter=None, motion_filter=None,
                              bucket_trunc=None):
     bbox = _polygon_bbox(polygon)
-    select_bucket = ", date_trunc(%s, gvp.captured_at) AS bucket" if bucket_trunc else ""
+    select_bucket = ", date_trunc(%s, gvp.snapshot_at) AS bucket" if bucket_trunc else ""
     args = []
     if bucket_trunc:
         args.append(bucket_trunc)
     sql = f"""
-        SELECT gvp.tile_id, gvp.captured_at, gvp.lat, gvp.lon,
+        SELECT gvp.tile_id, gvp.snapshot_at AS captured_at, gvp.lat, gvp.lon,
                gvp.ship_type, gvp.motion{select_bucket}
-        FROM global_vessel_positions gvp
+        FROM wave_vessel_positions gvp
         WHERE gvp.lat BETWEEN %s AND %s
           AND gvp.lon BETWEEN %s AND %s
     """
     args.extend([bbox[1], bbox[3], bbox[0], bbox[2]])
     if snapshot_ts is not None:
-        sql += " AND gvp.captured_at = %s"
+        sql += " AND gvp.snapshot_at = %s"
         args.append(snapshot_ts)
     if start_dt is not None:
-        sql += " AND gvp.captured_at >= %s"
+        sql += " AND gvp.snapshot_at >= %s"
         args.append(start_dt)
     if end_dt is not None:
-        sql += " AND gvp.captured_at <= %s"
+        sql += " AND gvp.snapshot_at <= %s"
         args.append(end_dt)
     if type_filter:
         sql += " AND gvp.ship_type = %s"
@@ -296,7 +322,7 @@ def _global_rows_for_polygon(cur, polygon, snapshot_ts=None,
     if motion_filter:
         sql += " AND gvp.motion = %s"
         args.append(motion_filter)
-    sql += " ORDER BY gvp.captured_at, gvp.id"
+    sql += " ORDER BY gvp.snapshot_at, gvp.id"
     cur.execute(sql, args)
     return [
         r for r in cur.fetchall()
@@ -384,9 +410,8 @@ def get_config():
 def get_status():
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT MAX(captured_at) AS last_scrape FROM tile_captures")
-            row = cur.fetchone()
-            last_scrape = row["last_scrape"] if row else None
+            wave = _wave_for_snapshot(cur)
+            last_scrape = wave["snapshot_at"] if wave else None
 
             cur.execute("SELECT COUNT(*) AS total FROM tile_captures")
             total_captures = cur.fetchone()["total"]
@@ -398,15 +423,19 @@ def get_status():
             regions_active = cur.fetchone()["cnt"]
 
             last_run_stats = None
-            if last_scrape:
+            if wave:
                 cur.execute("""
-                    SELECT COUNT(*) FILTER (WHERE status = 'success') AS regions_ok,
-                           COUNT(*) FILTER (WHERE status != 'success') AS regions_failed,
-                           SUM(tankers + cargos + moving_tankers + moving_cargos) AS total_ships
-                    FROM tile_captures
-                    WHERE captured_at = %s
-                """, (last_scrape,))
-                last_run_stats = dict(cur.fetchone())
+                    SELECT COUNT(*) AS total_ships
+                    FROM wave_vessel_positions
+                    WHERE wave_id = %s
+                """, (wave["wave_id"],))
+                last_run_stats = {
+                    "regions_ok": wave["successful_tiles"],
+                    "regions_failed": wave["failed_tiles"],
+                    "total_ships": cur.fetchone()["total_ships"],
+                    "raw_markers": wave["raw_markers"],
+                    "snapshot_markers": wave["snapshot_markers"],
+                }
 
     next_scheduled = None
     if last_scrape:
@@ -420,6 +449,9 @@ def get_status():
         "total_markers": total_markers,
         "regions_active": regions_active,
         "last_run_stats": last_run_stats,
+        "wave_id": wave["wave_id"] if wave else None,
+        "wave_status": wave["status"] if wave else None,
+        "coverage": wave["coverage"] if wave else None,
     }
 
 
@@ -552,7 +584,8 @@ def get_regions_global():
     regions_out = []
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            snapshot_ts = _latest_global_snapshot(cur)
+            wave = _wave_for_snapshot(cur)
+            snapshot_ts = wave["snapshot_at"] if wave else None
             cur.execute("SELECT * FROM custom_regions ORDER BY created_at")
             custom_rows = cur.fetchall()
             cur.execute("""
@@ -994,25 +1027,21 @@ def get_vessels_global(
     type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
     motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
     timestamp: Optional[str] = None,
-    dedup: bool = True,
+    dedup: bool = False,
     dedup_eps: Optional[float] = Query(None, ge=0, le=1),
 ):
     snapshot_ts = None
     vessels = []
     tiles_expected = 0
     tiles_returned = 0
+    wave_id = None
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            snapshot_ts = _latest_global_snapshot(cur, timestamp=timestamp)
-            cur.execute("SELECT COUNT(*) AS total FROM capture_tiles WHERE enabled")
-            tiles_expected = cur.fetchone()["total"]
-            if snapshot_ts:
-                cur.execute("""
-                    SELECT COUNT(*) AS total
-                    FROM tile_captures
-                    WHERE captured_at = %s
-                """, (snapshot_ts,))
-                tiles_returned = cur.fetchone()["total"]
+            wave = _wave_for_snapshot(cur, timestamp=timestamp)
+            snapshot_ts = wave["snapshot_at"] if wave else None
+            wave_id = wave["wave_id"] if wave else None
+            tiles_expected = wave["expected_tiles"] if wave else 0
+            tiles_returned = wave["successful_tiles"] if wave else 0
 
             if region:
                 _name, polygon, _is_custom = _resolve_region(cur, region)
@@ -1028,10 +1057,14 @@ def get_vessels_global(
             elif snapshot_ts:
                 sql = """
                     SELECT tile_id, captured_at, lat, lon, ship_type, motion
-                    FROM global_vessel_positions
-                    WHERE captured_at = %s
+                    FROM (
+                        SELECT tile_id, snapshot_at AS captured_at, lat, lon,
+                               ship_type, motion, id
+                        FROM wave_vessel_positions
+                        WHERE wave_id = %s
+                    ) snapshot
                 """
-                args = [snapshot_ts]
+                args = [wave_id]
                 if type:
                     sql += " AND ship_type = %s"
                     args.append(type)
@@ -1061,6 +1094,7 @@ def get_vessels_global(
 
     snapshot_iso = snapshot_ts.isoformat() if snapshot_ts else None
     return {
+        "wave_id": wave_id,
         "timestamp": snapshot_iso,
         "snapshot_timestamp": snapshot_iso,
         "coverage": {
@@ -1531,19 +1565,19 @@ def _load_tiles(cur, tile_ids):
 def _tile_rows(cur, tile_ids, snapshot_ts=None, start_dt=None, end_dt=None,
                type_filter=None, motion_filter=None):
     sql = """
-        SELECT tile_id, captured_at, lat, lon, ship_type, motion
-        FROM global_vessel_positions
+        SELECT tile_id, snapshot_at AS captured_at, lat, lon, ship_type, motion
+        FROM wave_vessel_positions
         WHERE tile_id = ANY(%s)
     """
     args = [list(tile_ids)]
     if snapshot_ts is not None:
-        sql += " AND captured_at = %s"
+        sql += " AND snapshot_at = %s"
         args.append(snapshot_ts)
     if start_dt is not None:
-        sql += " AND captured_at >= %s"
+        sql += " AND snapshot_at >= %s"
         args.append(start_dt)
     if end_dt is not None:
-        sql += " AND captured_at <= %s"
+        sql += " AND snapshot_at <= %s"
         args.append(end_dt)
     if type_filter:
         sql += " AND ship_type = %s"
@@ -1551,7 +1585,7 @@ def _tile_rows(cur, tile_ids, snapshot_ts=None, start_dt=None, end_dt=None,
     if motion_filter:
         sql += " AND motion = %s"
         args.append(motion_filter)
-    sql += " ORDER BY captured_at, id"
+    sql += " ORDER BY snapshot_at, id"
     cur.execute(sql, args)
     return cur.fetchall()
 
@@ -1563,13 +1597,13 @@ def _build_tile_analytics(tile_ids, area_km2, start_dt, end_dt, granularity):
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT date_trunc(%s, captured_at) AS bucket,
-                       captured_at, ship_type, motion
-                FROM global_vessel_positions
+                SELECT date_trunc(%s, snapshot_at) AS bucket,
+                       snapshot_at AS captured_at, ship_type, motion
+                FROM wave_vessel_positions
                 WHERE tile_id = ANY(%s)
-                  AND captured_at >= %s
-                  AND captured_at <= %s
-                ORDER BY captured_at
+                  AND snapshot_at >= %s
+                  AND snapshot_at <= %s
+                ORDER BY snapshot_at
             """, (trunc, list(tile_ids), start_dt, end_dt))
             rows = cur.fetchall()
 
@@ -1771,26 +1805,13 @@ def get_tile_vessels(
     type: Optional[str] = Query(None, pattern="^(tanker|cargo)$"),
     motion: Optional[str] = Query(None, pattern="^(moving|stationary)$"),
     timestamp: Optional[str] = None,
-    dedup: bool = True,
+    dedup: bool = False,
     dedup_eps: Optional[float] = Query(None, ge=0, le=1),
 ):
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if timestamp:
-                ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                cur.execute("""
-                    SELECT captured_at FROM tile_captures
-                    WHERE tile_id = %s
-                    ORDER BY ABS(EXTRACT(EPOCH FROM captured_at - %s))
-                    LIMIT 1
-                """, (tile_id, ts))
-            else:
-                cur.execute("""
-                    SELECT MAX(captured_at) AS captured_at FROM tile_captures
-                    WHERE tile_id = %s
-                """, (tile_id,))
-            row = cur.fetchone()
-            snapshot_ts = row["captured_at"] if row else None
+            wave = _wave_for_snapshot(cur, timestamp=timestamp)
+            snapshot_ts = wave["snapshot_at"] if wave else None
             rows = _tile_rows(
                 cur, [tile_id], snapshot_ts=snapshot_ts,
                 type_filter=type, motion_filter=motion,
@@ -1843,17 +1864,19 @@ def get_timeline():
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT MIN(captured_at) AS earliest,
-                       MAX(captured_at) AS latest,
+                SELECT MIN(snapshot_at) AS earliest,
+                       MAX(snapshot_at) AS latest,
                        COUNT(*) AS total_captures
-                FROM tile_captures
+                FROM capture_waves
+                WHERE status = 'completed'
             """)
             row = cur.fetchone()
 
             cur.execute("""
-                SELECT DISTINCT captured_at
-                FROM tile_captures
-                ORDER BY captured_at DESC
+                SELECT snapshot_at AS captured_at
+                FROM capture_waves
+                WHERE status = 'completed' AND snapshot_at IS NOT NULL
+                ORDER BY snapshot_at DESC
                 LIMIT 200
             """)
             snapshots = [r["captured_at"].isoformat() for r in cur.fetchall()]

@@ -100,7 +100,8 @@ def summarize_wave(jobs: list[dict], *, require_auto_ingest=True) -> dict:
 class ContinuousQueueRunner:
     def __init__(self, queue: Queue, payload_factory, *, state_path: Path,
                  poll_seconds=2.0, max_attempts=None,
-                 continue_on_wave_failure=False, require_auto_ingest=True):
+                 continue_on_wave_failure=False, require_auto_ingest=True,
+                 begin_wave=None, finalize_wave=None, fail_wave=None):
         self.queue = queue
         self.payload_factory = payload_factory
         self.state_path = Path(state_path)
@@ -108,6 +109,9 @@ class ContinuousQueueRunner:
         self.max_attempts = max_attempts
         self.continue_on_wave_failure = continue_on_wave_failure
         self.require_auto_ingest = require_auto_ingest
+        self.begin_wave = begin_wave
+        self.finalize_wave = finalize_wave
+        self.fail_wave = fail_wave
         self.stop = threading.Event()
 
     def request_stop(self):
@@ -137,6 +141,13 @@ class ContinuousQueueRunner:
         # Persist the chosen id first. If the process dies before enqueue, the
         # empty wave is reconstructed with the same id after restart.
         self._save(state)
+        if self.begin_wave:
+            self.begin_wave(
+                enqueue_id,
+                [tile_id for batch in payloads for tile_id in batch["tile_ids"]],
+                len(payloads),
+                state["current_started_at"],
+            )
         created = self.queue.enqueue_batches(
             payloads,
             max_attempts=self.max_attempts,
@@ -154,6 +165,13 @@ class ContinuousQueueRunner:
         if not payloads:
             return False
         enqueue_id = state["current_enqueue_id"]
+        if self.begin_wave:
+            self.begin_wave(
+                enqueue_id,
+                [tile_id for batch in payloads for tile_id in batch["tile_ids"]],
+                len(payloads),
+                state.get("current_started_at"),
+            )
         created = self.queue.enqueue_batches(
             payloads,
             max_attempts=self.max_attempts,
@@ -185,22 +203,37 @@ class ContinuousQueueRunner:
                     self.stop.wait(self.poll_seconds)
                     continue
 
+                has_batch_failure = bool(summary["by_status"].get("failed"))
+                has_ingest_failure = bool(summary["ingest_failures"])
+                has_tile_failure = summary["tiles_failed"] > 0
+                unhealthy = (
+                    has_batch_failure or has_ingest_failure or has_tile_failure
+                )
+                completed_at = max(
+                    (job.get("completed_at") or 0) for job in jobs
+                ) or time.time()
+                if unhealthy:
+                    if self.fail_wave:
+                        self.fail_wave(enqueue_id, summary, completed_at)
+                elif self.finalize_wave:
+                    summary["snapshot"] = self.finalize_wave(
+                        enqueue_id, summary, completed_at
+                    )
+
                 state["waves_completed"] = int(state["waves_completed"]) + 1
                 state["last_enqueue_id"] = enqueue_id
-                state["last_completed_at"] = time.time()
+                state["last_completed_at"] = completed_at
                 state["last_summary"] = summary
                 state["current_enqueue_id"] = None
                 self._save(state)
                 logger.info("Completed wave %s: %s", enqueue_id, summary)
 
-                has_batch_failure = bool(summary["by_status"].get("failed"))
-                has_ingest_failure = bool(summary["ingest_failures"])
-                if ((has_batch_failure or has_ingest_failure)
-                        and not self.continue_on_wave_failure):
+                if unhealthy and not self.continue_on_wave_failure:
                     logger.error(
                         "Stopping after unhealthy wave: failed_batches=%d "
-                        "ingest_failures=%d",
+                        "failed_tiles=%d ingest_failures=%d",
                         summary["by_status"].get("failed", 0),
+                        summary["tiles_failed"],
                         len(summary["ingest_failures"]),
                     )
                     return 1
@@ -306,6 +339,12 @@ def main(argv=None):
         )
         return payloads, len(tiles), by_zoom
 
+    from update_database import (
+        begin_capture_wave as _begin_capture_wave,
+        fail_capture_wave as _fail_capture_wave,
+        finalize_capture_wave as _finalize_capture_wave,
+    )
+
     runner = ContinuousQueueRunner(
         Queue(args.queue_dsn or default_dsn()),
         payload_factory,
@@ -314,6 +353,9 @@ def main(argv=None):
         max_attempts=args.max_attempts,
         continue_on_wave_failure=args.continue_on_wave_failure,
         require_auto_ingest=not args.allow_no_auto_ingest,
+        begin_wave=_begin_capture_wave,
+        finalize_wave=_finalize_capture_wave,
+        fail_wave=_fail_capture_wave,
     )
 
     def handle_signal(signum, _frame):

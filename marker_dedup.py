@@ -71,6 +71,54 @@ def dedup_markers_spatial(markers, eps_deg):
     return kept
 
 
+def dedup_markers_across_tiles(markers, eps_deg):
+    """Collapse spatial duplicates only when they came from different tiles.
+
+    Input order defines priority. Wave snapshots pass higher zoom levels first,
+    so zoom-specific duplicates resolve to the highest-resolution capture while
+    distinct nearby detections within one raw tile remain untouched.
+    """
+    if eps_deg <= 0 or not markers:
+        return list(markers or [])
+
+    cells = {}
+    kept = []
+    eps = float(eps_deg)
+
+    for marker in markers:
+        if marker.get("lat") is None or marker.get("lon") is None:
+            kept.append(marker)
+            continue
+
+        ship_type = marker.get("type", "unknown")
+        lat_cell = math.floor(float(marker["lat"]) / eps)
+        lon_cell = math.floor(float(marker["lon"]) / eps)
+        duplicate_idx = None
+
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                key = (lat_cell + dy, lon_cell + dx, ship_type)
+                for idx in cells.get(key, []):
+                    if kept[idx].get("tile_id") == marker.get("tile_id"):
+                        continue
+                    if _marker_distance_deg(kept[idx], marker) <= eps:
+                        duplicate_idx = idx
+                        break
+                if duplicate_idx is not None:
+                    break
+            if duplicate_idx is not None:
+                break
+
+        if duplicate_idx is None:
+            idx = len(kept)
+            kept.append(marker)
+            cells.setdefault((lat_cell, lon_cell, ship_type), []).append(idx)
+        else:
+            kept[duplicate_idx] = _merge_marker(kept[duplicate_idx], marker)
+
+    return kept
+
+
 def count_markers_by_type(markers):
     """Return scraper-compatible counts for marker dictionaries."""
     counts = {

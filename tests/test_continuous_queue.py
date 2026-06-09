@@ -191,6 +191,44 @@ def test_summarize_wave_flags_missing_auto_ingest_result():
     assert relaxed["ingest_failures"] == []
 
 
+def test_runner_registers_and_finalizes_healthy_wave():
+    q = _queue()
+    root = Path(tempfile.mkdtemp())
+    events = []
+    runner = ContinuousQueueRunner(
+        q,
+        _payload_factory,
+        state_path=root / "state.json",
+        poll_seconds=0.01,
+        begin_wave=lambda wave_id, tile_ids, batches, started: events.append(
+            ("begin", wave_id, tile_ids, batches, started)
+        ),
+        finalize_wave=lambda wave_id, summary, completed: (
+            events.append(("finalize", wave_id, summary["tiles_ok"], completed))
+            or {"wave_id": wave_id, "snapshot_markers": 10}
+        ),
+        fail_wave=lambda *args: events.append(("fail", *args)),
+    )
+    worker_stop = threading.Event()
+    seen_waves = []
+    worker = threading.Thread(
+        target=_complete_jobs, args=(q, worker_stop, seen_waves), daemon=True,
+    )
+    worker.start()
+    try:
+        assert runner.run(max_completed_waves=1) == 0
+    finally:
+        worker_stop.set()
+        worker.join(timeout=1)
+
+    assert events[0][0] == "begin"
+    assert events[0][2] == ["a", "b", "c"]
+    assert events[0][3] == 2
+    assert events[1][0] == "finalize"
+    state = json.loads((root / "state.json").read_text())
+    assert state["last_summary"]["snapshot"]["snapshot_markers"] == 10
+
+
 def _run_all():
     failures = 0
     for name, fn in sorted(globals().items()):

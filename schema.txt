@@ -43,3 +43,60 @@ via Web Mercator projection. Ships are anonymous — no identity data
   motion          VARCHAR(16)       -- "stationary" (circle) or "moving" (arrow)
 
   UNIQUE (capture_id, lat, lon)
+
+
+Table: tile_captures
+--------------------
+Stores raw global tile captures. Each tile keeps its real screenshot timestamp
+and queue provenance; marker arrays are not spatially deduplicated here.
+
+  id              BIGSERIAL PRIMARY KEY
+  tile_id         TEXT
+  wave_id         TEXT              -- Canonical capture wave id
+  enqueue_id      TEXT              -- Queue enqueue id (same as wave_id)
+  batch_id        TEXT              -- Queue batch that produced the tile
+  worker_id       TEXT              -- Worker that uploaded the batch
+  captured_at     TIMESTAMPTZ       -- Actual per-tile screenshot time
+  ingested_at     TIMESTAMPTZ       -- Raw database insert time
+
+
+Table: capture_waves
+--------------------
+One row per global queue wave. Only status "completed" rows have a published
+dashboard snapshot.
+
+  wave_id             TEXT PRIMARY KEY
+  enqueue_id          TEXT UNIQUE
+  status              VARCHAR(16)   -- running, completed, or failed
+  started_at          TIMESTAMPTZ
+  completed_at        TIMESTAMPTZ
+  snapshot_at         TIMESTAMPTZ   -- Shared dashboard timestamp
+  batch_count         INTEGER
+  expected_tiles      INTEGER
+  captured_tiles      INTEGER
+  successful_tiles    INTEGER
+  failed_tiles        INTEGER
+  raw_markers         INTEGER
+  snapshot_markers    INTEGER
+  tile_ids            JSONB
+  coverage            JSONB
+  summary             JSONB
+
+
+Table: wave_vessel_positions
+----------------------------
+Atomically published dashboard markers for a completed wave. Higher zoom wins
+when the same marker appears in multiple zoom levels; spatial overlap
+deduplication only compares markers from different tiles.
+
+  id                  BIGSERIAL PRIMARY KEY
+  wave_id             TEXT              -- FK -> capture_waves(wave_id)
+  tile_capture_id     BIGINT            -- FK -> tile_captures(id)
+  tile_id             TEXT
+  zoom                SMALLINT
+  captured_at         TIMESTAMPTZ       -- Original tile capture time
+  snapshot_at         TIMESTAMPTZ       -- Shared wave timestamp
+  lat                 DOUBLE PRECISION
+  lon                 DOUBLE PRECISION
+  ship_type           VARCHAR(16)
+  motion              VARCHAR(16)

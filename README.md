@@ -159,6 +159,19 @@ records a microsecond-precision UTC `captured_at` taken when its screenshot
 starts; `ingested_at` remains the later database-write time. Tiles in a batch
 therefore no longer share the browser/batch startup timestamp.
 
+Raw queue captures also store `wave_id`, `enqueue_id`, `batch_id`, and
+`worker_id`. The orchestrator creates a `capture_waves` row when a wave starts.
+After every batch has completed and its raw artifact has been ingested, it
+atomically publishes one dashboard snapshot in `wave_vessel_positions`.
+Higher-zoom markers are considered first and spatial duplicates are collapsed
+only across different tiles; nearby raw markers from the same tile remain
+distinct. Failed or incomplete waves are never visible as dashboard snapshots.
+
+The dashboard API, timeline, region analytics, tile analytics, and exports read
+these completed wave snapshots. `tile_captures` and
+`global_vessel_positions` remain the complete per-tile raw history for audit or
+future reprocessing.
+
 > **Tile-id consistency:** workers rebuild each batch's tile geometry from their
 > own deterministic manifest, so every host must share the same
 > `GLOBAL_GRID_BBOX`, `GLOBAL_GRID_DEFAULT_ZOOM`, `VIEWPORT_WIDTH/HEIGHT`.
