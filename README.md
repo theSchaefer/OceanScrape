@@ -216,6 +216,10 @@ SERVER_URL                          Control plane base URL (or pass --server)
 WORKER_TOKEN                        Bearer token (referenced via --token-env)
 WORKER_ID                           Optional stable worker id (default host-pid-rand)
 WORKER_SCRATCH_DIR                  Transient per-batch JSONL dir (default data/worker_scratch)
+SUSPECT_EMPTY_RETRY                Default 0; retry suspect batches with fresh browser/proxy
+SUSPECT_EMPTY_MAX_RETRIES          Default 1; bounded retries per suspect batch
+SUSPECT_EMPTY_ZOOM9_MIN_LAT        Default -50; southern Zoom-9 retry latitude
+SUSPECT_EMPTY_ZOOM9_MAX_LAT        Default 70; northern Zoom-9 retry latitude
 ```
 
 Tokens are never logged and are sent only in the `Authorization: Bearer` header;

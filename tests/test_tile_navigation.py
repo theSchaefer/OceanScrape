@@ -123,6 +123,39 @@ def test_chunk_respects_batch_size():
     assert all(len(b) <= s.GLOBAL_TILE_BATCH_SIZE for b in batches)
 
 
+# --- suspect-empty retry policy ----------------------------------------------
+
+def _attempt(raw_total=0, ok_tiles=12, setup_failed=False):
+    return {
+        "raw_total": raw_total,
+        "ok_tiles": ok_tiles,
+        "setup_failed": setup_failed,
+    }
+
+
+def test_suspect_empty_hotspot_batch():
+    batch = [{**_tile(12, 10, 10), "center_lat": 80.0}]
+    assert s._suspect_empty_reason(batch, 1, _attempt()) == "hotspot"
+
+
+def test_suspect_empty_zoom9_active_latitude_batch():
+    batch = [{**_tile(9, 10, 10), "center_lat": 20.0}]
+    assert (
+        s._suspect_empty_reason(batch, 0, _attempt())
+        == "zoom9_active_latitude"
+    )
+
+
+def test_suspect_empty_zoom9_polar_batch_is_not_retried():
+    batch = [{**_tile(9, 5, 5), "center_lat": 74.0}]
+    assert s._suspect_empty_reason(batch, 0, _attempt()) is None
+
+
+def test_suspect_empty_zoom9_nonempty_batch_is_not_retried():
+    batch = [{**_tile(9, 10, 10), "center_lat": 20.0}]
+    assert s._suspect_empty_reason(batch, 0, _attempt(raw_total=2)) is None
+
+
 # --- _plan_navigation ---------------------------------------------------------
 
 def test_plan_navigation_zero_move():

@@ -153,6 +153,12 @@ RETRY_BACKOFF_BASE = 5  # seconds
 # rather than genuinely empty ocean, so it is flagged as ``suspect_empty_batch``.
 SUSPECT_EMPTY_RAW_THRESHOLD = int(os.getenv("SUSPECT_EMPTY_RAW_THRESHOLD", "1"))
 SUSPECT_EMPTY_MIN_HOTSPOTS = int(os.getenv("SUSPECT_EMPTY_MIN_HOTSPOTS", "1"))
+SUSPECT_EMPTY_ZOOM9_MIN_LAT = float(
+    os.getenv("SUSPECT_EMPTY_ZOOM9_MIN_LAT", "-50")
+)
+SUSPECT_EMPTY_ZOOM9_MAX_LAT = float(
+    os.getenv("SUSPECT_EMPTY_ZOOM9_MAX_LAT", "70")
+)
 # Optional, bounded retry of a suspect batch with a fresh browser + fresh proxy.
 # OFF by default: when enabled, per-tile logging is deferred so only the winning
 # attempt is persisted (the DB upserts ON CONFLICT (tile_id, captured_at) DO
@@ -173,6 +179,33 @@ def _is_crash_error(exc: Exception) -> bool:
     """Return True if the exception looks like a Patchright/Chromium crash."""
     msg = str(exc).lower()
     return any(p in msg for p in _CRASH_PATTERNS)
+
+
+def _suspect_empty_reason(tile_batch, hotspot_tiles, attempt):
+    """Classify successful near-empty batches that merit a fresh session.
+
+    Zoom-9 global tiles are not region-seeded, so the hotspot-only rule misses
+    empty AIS sessions across otherwise busy ocean lanes. Limit the fallback
+    to a configurable latitude belt to avoid retrying predictably empty polar
+    and far-southern batches.
+    """
+    if (
+        attempt["setup_failed"]
+        or attempt["ok_tiles"] <= 0
+        or attempt["raw_total"] > SUSPECT_EMPTY_RAW_THRESHOLD
+    ):
+        return None
+    if hotspot_tiles >= SUSPECT_EMPTY_MIN_HOTSPOTS:
+        return "hotspot"
+    if tile_batch and int(tile_batch[0]["zoom"]) == 9:
+        if any(
+            SUSPECT_EMPTY_ZOOM9_MIN_LAT
+            <= float(tile["center_lat"])
+            <= SUSPECT_EMPTY_ZOOM9_MAX_LAT
+            for tile in tile_batch
+        ):
+            return "zoom9_active_latitude"
+    return None
 
 
 # --- Tile grid cache ----------------------------------------------------------
@@ -3274,19 +3307,18 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
             attempt["failed_tiles"], hotspot_tiles,
         )
 
-        # Suspect-empty: a batch that captured tiles successfully over known
-        # hotspots but saw ~no raw markers — almost certainly an empty AIS
-        # session (burned/blocked exit IP), not genuinely empty ocean.
-        suspect = (
-            hotspot_tiles >= SUSPECT_EMPTY_MIN_HOTSPOTS
-            and not attempt["setup_failed"]
-            and attempt["ok_tiles"] > 0
-            and attempt["raw_total"] <= SUSPECT_EMPTY_RAW_THRESHOLD
+        # Suspect-empty: a successful batch over a known hotspot, or a zoom-9
+        # batch in the active latitude belt, that saw almost no raw markers.
+        suspect_reason = _suspect_empty_reason(
+            tile_batch, hotspot_tiles, attempt
         )
+        suspect = suspect_reason is not None
         attempt["suspect"] = suspect
+        attempt["suspect_reason"] = suspect_reason
         if suspect:
             logger.warning("%s", json.dumps({
                 "event": "suspect_empty_batch",
+                "reason": suspect_reason,
                 "worker": worker_id,
                 "batch": batch_label,
                 "attempt": attempt_idx,
@@ -3301,6 +3333,8 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
                 "raw_total": attempt["raw_total"],
                 "accepted_total": attempt["accepted_total"],
                 "raw_threshold": SUSPECT_EMPTY_RAW_THRESHOLD,
+                "zoom9_latitude_min": SUSPECT_EMPTY_ZOOM9_MIN_LAT,
+                "zoom9_latitude_max": SUSPECT_EMPTY_ZOOM9_MAX_LAT,
                 "retry_enabled": SUSPECT_EMPTY_RETRY,
             }, sort_keys=True))
 
