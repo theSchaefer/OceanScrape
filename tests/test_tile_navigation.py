@@ -94,6 +94,22 @@ def test_select_global_tiles_preserves_snake_order():
     assert _has_no_snake_violation(sel)
 
 
+def test_global_exclusions_apply_but_explicit_tile_ids_override():
+    target = s.GLOBAL_TILE_MANIFEST[0]["tile_id"]
+    saved = s.GLOBAL_TILE_EXCLUDE_IDS
+    try:
+        s.GLOBAL_TILE_EXCLUDE_IDS = frozenset({target})
+        selected = s._select_global_tiles(respect_schedule=False)
+        assert target not in {t["tile_id"] for t in selected}
+
+        explicit = s._select_global_tiles(
+            tile_ids=[target], respect_schedule=False
+        )
+        assert [t["tile_id"] for t in explicit] == [target]
+    finally:
+        s.GLOBAL_TILE_EXCLUDE_IDS = saved
+
+
 # --- _chunk_global_tiles ------------------------------------------------------
 
 def test_chunk_keeps_zoom_order_and_within_zoom_order():
@@ -154,6 +170,19 @@ def test_suspect_empty_zoom9_polar_batch_is_not_retried():
 def test_suspect_empty_zoom9_nonempty_batch_is_not_retried():
     batch = [{**_tile(9, 10, 10), "center_lat": 20.0}]
     assert s._suspect_empty_reason(batch, 0, _attempt(raw_total=2)) is None
+
+
+def test_exhausted_suspect_can_be_requeued():
+    saved_retry = s.SUSPECT_EMPTY_RETRY
+    saved_requeue = s.SUSPECT_EMPTY_REQUEUE_EXHAUSTED
+    try:
+        s.SUSPECT_EMPTY_RETRY = True
+        s.SUSPECT_EMPTY_REQUEUE_EXHAUSTED = True
+        assert s._should_requeue_exhausted_suspect({"suspect": True})
+        assert not s._should_requeue_exhausted_suspect({"suspect": False})
+    finally:
+        s.SUSPECT_EMPTY_RETRY = saved_retry
+        s.SUSPECT_EMPTY_REQUEUE_EXHAUSTED = saved_requeue
 
 
 # --- _plan_navigation ---------------------------------------------------------

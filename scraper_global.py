@@ -117,6 +117,11 @@ BBOX_OVERLAP_PX = int(os.getenv("BBOX_OVERLAP_PX", "128"))
 GLOBAL_GRID_BBOX = parse_global_bbox(os.getenv("GLOBAL_GRID_BBOX"))
 GLOBAL_GRID_DEFAULT_ZOOM = int(os.getenv("GLOBAL_GRID_DEFAULT_ZOOM", "9"))
 GLOBAL_TILE_BATCH_SIZE = int(os.getenv("GLOBAL_TILE_BATCH_SIZE", "12"))
+GLOBAL_TILE_EXCLUDE_IDS = frozenset(
+    tile_id
+    for tile_id in re.split(r"[\s,]+", os.getenv("GLOBAL_TILE_EXCLUDE_IDS", ""))
+    if tile_id
+)
 TILE_ACCEPT_BUFFER_PX = int(os.getenv("TILE_ACCEPT_BUFFER_PX", "8"))
 RESPECT_TILE_SCHEDULE = os.getenv("RESPECT_TILE_SCHEDULE", "1") == "1"
 ENABLE_CROSS_ZOOM_QA = os.getenv("ENABLE_CROSS_ZOOM_QA", "1") == "1"
@@ -166,6 +171,9 @@ SUSPECT_EMPTY_ZOOM9_MAX_LAT = float(
 # capture). Deferring trades away mid-batch crash-resilience, hence opt-in.
 SUSPECT_EMPTY_RETRY = os.getenv("SUSPECT_EMPTY_RETRY", "0") == "1"
 SUSPECT_EMPTY_MAX_RETRIES = int(os.getenv("SUSPECT_EMPTY_MAX_RETRIES", "1"))
+SUSPECT_EMPTY_REQUEUE_EXHAUSTED = (
+    os.getenv("SUSPECT_EMPTY_REQUEUE_EXHAUSTED", "0") == "1"
+)
 
 # Error substrings that indicate a browser/driver crash (retryable)
 _CRASH_PATTERNS = (
@@ -206,6 +214,16 @@ def _suspect_empty_reason(tile_batch, hotspot_tiles, attempt):
         ):
             return "zoom9_active_latitude"
     return None
+
+
+def _should_requeue_exhausted_suspect(best):
+    """Return whether a still-suspect winning attempt needs a queue retry."""
+    return bool(
+        SUSPECT_EMPTY_RETRY
+        and SUSPECT_EMPTY_REQUEUE_EXHAUSTED
+        and best
+        and best.get("suspect")
+    )
 
 
 # --- Tile grid cache ----------------------------------------------------------
@@ -3355,6 +3373,21 @@ def capture_tile_batch_worker(tile_batch, timestamp_str):
         results = {"_retryable": [t["tile_id"] for t in tile_batch]}
         return results
 
+    if _should_requeue_exhausted_suspect(best):
+        logger.warning("%s", json.dumps({
+            "event": "suspect_empty_batch_exhausted",
+            "worker": worker_id,
+            "batch": batch_label,
+            "attempts": max_attempts,
+            "reason": best.get("suspect_reason"),
+            "raw_total": best.get("raw_total", 0),
+            "accepted_total": best.get("accepted_total", 0),
+            "action": "queue_retry",
+        }, sort_keys=True))
+        # Deferred logging means no empty captures reached the scratch artifact.
+        # The empty artifact makes worker.process_batch fail this job retryably.
+        return {"_retryable": [t["tile_id"] for t in tile_batch]}
+
     # Flush only the winning attempt's deferred logs (retry path); when
     # deferral is off, the batch already wrote logs incrementally.
     if defer_log and best.get("log_buffer"):
@@ -3478,6 +3511,21 @@ def _select_global_tiles(region_filter=None, zoom_filter=None, tier_filter=None,
             t for t in tiles
             if any(tile_intersects_polygon(t, polygon) for polygon in polygons)
         ]
+
+    # Normal global waves may omit known non-productive cells. Explicit tile
+    # selection remains an override so excluded cells can still be diagnosed.
+    if GLOBAL_TILE_EXCLUDE_IDS and not tile_ids:
+        before = len(tiles)
+        tiles = [
+            t for t in tiles
+            if t["tile_id"] not in GLOBAL_TILE_EXCLUDE_IDS
+        ]
+        logger.info(
+            "Global tile exclusion filter: %d/%d retained (%d excluded)",
+            len(tiles),
+            before,
+            before - len(tiles),
+        )
 
     if respect_schedule and RESPECT_TILE_SCHEDULE:
         try:

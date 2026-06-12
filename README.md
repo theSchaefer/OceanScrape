@@ -218,6 +218,7 @@ WORKER_ID                           Optional stable worker id (default host-pid-
 WORKER_SCRATCH_DIR                  Transient per-batch JSONL dir (default data/worker_scratch)
 SUSPECT_EMPTY_RETRY                Default 0; retry suspect batches with fresh browser/proxy
 SUSPECT_EMPTY_MAX_RETRIES          Default 1; bounded retries per suspect batch
+SUSPECT_EMPTY_REQUEUE_EXHAUSTED    Default 0; queue-retry a still-suspect batch
 SUSPECT_EMPTY_ZOOM9_MIN_LAT        Default -50; southern Zoom-9 retry latitude
 SUSPECT_EMPTY_ZOOM9_MAX_LAT        Default 70; northern Zoom-9 retry latitude
 ```
@@ -241,6 +242,8 @@ BBOX_OVERLAP_PX                     Default 128 screenshot-pixel overlap between
 GLOBAL_GRID_BBOX                    Default -60,-180,75,180 (min_lat,min_lon,max_lat,max_lon)
 GLOBAL_GRID_DEFAULT_ZOOM            Default 9 for the shipping-world base grid
 GLOBAL_TILE_BATCH_SIZE              Default 12 same-zoom tiles per browser worker
+GLOBAL_TILE_EXCLUDE_IDS             Comma/whitespace-separated ids skipped by global waves;
+                                    explicit --tile-ids remains a diagnostic override
 TILE_ACCEPT_BUFFER_PX               Default 8 owner-acceptance buffer in Web-Mercator pixels
 RESPECT_TILE_SCHEDULE               Default 1; select only enabled tiles whose schedule is due
 MARKER_DEDUP_EPS_DEG                Default 0.003; legacy/API-view dedup only;
